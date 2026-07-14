@@ -155,4 +155,14 @@ mod tests {
             .unwrap();
         assert!(matches.get_flag("quiet"));
     }
+
+    #[test]
+    fn quiet_and_verbose_can_be_combined() {
+        let (plugins, _) = dummy();
+        let matches = build_command(&plugins)
+            .try_get_matches_from(["soroban-forge", "--quiet", "--verbose", "dummy", "--flag"])
+            .unwrap();
+        assert!(matches.get_flag("quiet"));
+        assert!(matches.get_flag("verbose"));
+    }
 }
