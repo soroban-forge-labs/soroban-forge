@@ -286,6 +286,16 @@ mod tests {
     }
 
     #[test]
+    fn creation_report_includes_next_steps() {
+        let report = format_created_report("demo", "token", Path::new("demo"));
+        assert!(report.contains("cd demo"));
+        assert!(report.contains("cargo test"));
+        assert!(report.contains("stellar contract build"));
+        assert!(report.contains("soroban-forge test-init"));
+        assert!(report.contains("soroban-forge ci-init"));
+    }
+
+    #[test]
     fn validates_project_names() {
         assert!(validate_project_name("my-project").is_ok());
         assert!(validate_project_name("a1_b2").is_ok());
