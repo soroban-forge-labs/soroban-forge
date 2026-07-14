@@ -261,6 +261,13 @@ mod tests {
     }
 
     #[test]
+    fn report_explains_missing_testutils() {
+        let report = format_report(&contract_info(false, false), &[]);
+        assert!(report.contains("warning: dev-dependencies"));
+        assert!(report.contains("features = [\"testutils\"]"));
+    }
+
+    #[test]
     fn generates_harness_for_hello_world_output() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("demo");
