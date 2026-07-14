@@ -7,7 +7,7 @@ fn hello_greets() {
     let contract_id = env.register(HelloContract, ());
     let client = HelloContractClient::new(&env, &contract_id);
 
-    let words = client.hello(&String::from_str(&env, "Forge"));
+    let words = client.hello(&String::from_str(&env, "Forge")); // minor formatting
     assert_eq!(
         words,
         vec![
