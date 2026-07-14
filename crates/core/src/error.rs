@@ -32,6 +32,8 @@ pub enum ForgeError {
         source: std::io::Error,
     },
 
+    /// Catch-all for errors that don't fit a specific variant above.
+    /// Prefer a more specific variant when adding new error cases.
     #[error("{0}")]
     Other(String),
 }
