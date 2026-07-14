@@ -38,6 +38,15 @@ pub fn available_templates() -> Vec<&'static str> {
     names
 }
 
+/// Render the template catalogue shown by `new --list-templates`.
+pub fn format_template_list(templates: &[&str]) -> String {
+    let mut out = String::from("available templates:\n");
+    for name in templates {
+        out.push_str(&format!("  {name}\n"));
+    }
+    out
+}
+
 /// A project name must be a valid cargo package name: lowercase ASCII
 /// letters, digits, `-` or `_`, starting with a letter.
 pub fn validate_project_name(name: &str) -> Result<()> {
@@ -192,10 +201,7 @@ impl ForgePlugin for ScaffoldPlugin {
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         if matches.get_flag("list") {
-            println!("available templates:");
-            for name in available_templates() {
-                println!("  {name}");
-            }
+            print!("{}", format_template_list(&available_templates()));
             return Ok(());
         }
 
