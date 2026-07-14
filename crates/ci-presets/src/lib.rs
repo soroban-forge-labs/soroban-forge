@@ -207,6 +207,13 @@ mod tests {
     }
 
     #[test]
+    fn deploy_report_explains_required_secret() {
+        let report = format_report("github", "demo", &["deploy.yml"], true);
+        assert!(report.contains("STELLAR_DEPLOYER_SECRET"));
+        assert!(report.contains("Settings → Secrets and variables → Actions"));
+    }
+
+    #[test]
     fn unknown_provider_error_lists_available() {
         let dir = tempfile::tempdir().unwrap();
         let err = generate(dir.path(), "gitlab", "demo", false, false).unwrap_err();
