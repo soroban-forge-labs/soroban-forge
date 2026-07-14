@@ -243,6 +243,23 @@ mod tests {
         .unwrap();
     }
 
+    fn contract_info(has_constructor: bool, has_testutils: bool) -> ContractInfo {
+        ContractInfo {
+            package_name: "demo".into(),
+            crate_name: "demo".into(),
+            contract_type: "DemoContract".into(),
+            has_constructor,
+            has_testutils,
+        }
+    }
+
+    #[test]
+    fn report_lists_generated_files() {
+        let report = format_report(&contract_info(false, true), &["tests/a.rs", "tests/b.rs"]);
+        assert!(report.contains("contract `DemoContract` (crate `demo`)"));
+        assert!(report.contains("  tests/a.rs\n  tests/b.rs\n"));
+    }
+
     #[test]
     fn generates_harness_for_hello_world_output() {
         let tmp = tempfile::tempdir().unwrap();
