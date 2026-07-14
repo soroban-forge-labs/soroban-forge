@@ -1,0 +1,42 @@
+[package]
+name = "soroban-forge"
+description = "Scaffolding, test-harness and CI toolkit for Soroban smart contracts on Stellar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "soroban-forge"
+path = "src/main.rs"
+
+[dependencies]
+soroban-forge-core = { path = "crates/core" }
+soroban-forge-scaffold = { path = "crates/scaffold" }
+soroban-forge-testgen = { path = "crates/testgen" }
+soroban-forge-ci-presets = { path = "crates/ci-presets" }
+soroban-forge-doctor = { path = "crates/doctor" }
+
+[workspace]
+members = ["crates/*"]
+# Templates and generated examples are standalone cargo projects, not workspace members.
+exclude = ["templates", "examples"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/soroban-forge-labs/soroban-forge"
+rust-version = "1.84"
+
+[workspace.dependencies]
+soroban-forge-core = { path = "crates/core" }
+clap = "4.5"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
+log = "0.4"
+env_logger = "0.11"
+include_dir = "0.7"
+tempfile = "3"

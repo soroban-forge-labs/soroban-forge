@@ -1,0 +1,4 @@
+# soroban-forge project configuration
+[project]
+name = "hello-forge"
+authors = ["Joseph <josepholadele001@gmail.com>"]

@@ -1,0 +1,13 @@
+[package]
+name = "soroban-forge-doctor"
+description = "Environment checks (doctor command) for soroban-forge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+soroban-forge-core.workspace = true
+clap.workspace = true
+log.workspace = true

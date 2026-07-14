@@ -1,0 +1,19 @@
+[package]
+name = "soroban-forge-testgen"
+description = "Test harness generator for soroban-forge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+soroban-forge-core.workspace = true
+clap.workspace = true
+toml.workspace = true
+serde.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+soroban-forge-scaffold = { path = "../scaffold" }
