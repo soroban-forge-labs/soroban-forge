@@ -16,6 +16,9 @@ Implements `soroban-forge doctor`, which verifies:
 Exits non-zero when any required check fails, so it can gate CI or setup
 scripts.
 
+The global `--quiet` flag suppresses the health report, but failed required
+checks still produce a non-zero exit and the top-level error message.
+
 The check logic (`version_at_least`, `format_report`) is pure and unit-tested;
 only the thin `capture()` helper touches the system.
 
