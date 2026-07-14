@@ -105,4 +105,16 @@ mod tests {
         let v = vars(&[("a", "1"), ("b", "2")]);
         assert_eq!(render_str("{{a}}{{b}}", &v), "12");
     }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        let v = vars(&[("a", "1")]);
+        assert_eq!(render_str("", &v), "");
+    }
+
+    #[test]
+    fn empty_vars_leaves_input_unchanged() {
+        let v = Vars::new();
+        assert_eq!(render_str("{{project_name}}", &v), "{{project_name}}");
+    }
 }
