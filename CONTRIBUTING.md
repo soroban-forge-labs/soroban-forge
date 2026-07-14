@@ -54,6 +54,25 @@ cargo run -- new demo --template token
 cd demo && cargo test && cd .. && rm -rf demo
 ```
 
+## Commit conventions
+
+We follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <short description>
+
+types: feat | fix | docs | refactor | test | chore
+scope: core | scaffold | testgen | ci-presets | doctor (optional)
+
+Examples:
+  feat(scaffold): add nft contract template
+  fix(core): handle missing forge.toml gracefully
+  docs: update quickstart in README
+```
+
+Keep commits focused — one logical change per commit makes review easier and
+bisects cleaner.
+
 Working on templates or presets? They are embedded into the binary at compile
 time (`include_dir`), so just edit the files under `templates/` or `presets/`
 and rebuild. Do **not** rename `Cargo.toml.hbs` files to `Cargo.toml` — cargo
