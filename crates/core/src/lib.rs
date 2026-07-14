@@ -16,7 +16,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod plugin;
-pub mod render;
+pub mod render; // template renderer
 
 pub use cli::run;
 pub use config::ForgeConfig;
