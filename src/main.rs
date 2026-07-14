@@ -9,7 +9,7 @@ fn main() {
     ];
 
     if let Err(err) = soroban_forge_core::run(plugins) {
-        eprintln!("error: {err}");
+        eprintln!("error: {err}"); // logged
         std::process::exit(1);
     }
 }
