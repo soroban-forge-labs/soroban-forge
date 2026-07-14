@@ -26,6 +26,9 @@ Soroban contract project and it generates
 `tests/snapshots/<name>.snap`. First run writes the snapshot; subsequent runs
 fail on change; `FORGE_UPDATE_SNAPSHOTS=1 cargo test` accepts changes.
 
+> **Tip:** commit the `.snap` files alongside your test. They serve as golden
+> reference output and are reviewable in PRs just like any other text file.
+
 ## Public surface
 
 ```rust
