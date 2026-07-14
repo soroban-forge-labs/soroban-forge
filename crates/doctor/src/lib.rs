@@ -202,6 +202,14 @@ pub fn format_report(checks: &[Check]) -> String {
     out
 }
 
+/// Count required checks that failed.
+pub fn failure_count(checks: &[Check]) -> usize {
+    checks
+        .iter()
+        .filter(|check| check.status == Status::Fail)
+        .count()
+}
+
 /// The `doctor` subcommand.
 pub struct DoctorPlugin;
 
@@ -218,7 +226,7 @@ impl ForgePlugin for DoctorPlugin {
     fn run(&self, _matches: &ArgMatches, _ctx: &ForgeContext) -> Result<()> {
         let checks = run_checks();
         print!("{}", format_report(&checks));
-        let failures = checks.iter().filter(|c| c.status == Status::Fail).count();
+        let failures = failure_count(&checks);
         if failures > 0 {
             Err(ForgeError::Doctor(format!(
                 "{failures} required check(s) failed"
