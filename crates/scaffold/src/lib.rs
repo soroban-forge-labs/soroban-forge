@@ -280,6 +280,12 @@ mod tests {
     }
 
     #[test]
+    fn creation_report_identifies_project_and_template() {
+        let report = format_created_report("demo", "token", Path::new("/tmp/demo"));
+        assert!(report.starts_with("created `demo` from template `token` at /tmp/demo\n"));
+    }
+
+    #[test]
     fn validates_project_names() {
         assert!(validate_project_name("my-project").is_ok());
         assert!(validate_project_name("a1_b2").is_ok());
