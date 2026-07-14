@@ -1,4 +1,13 @@
 //! Command construction and dispatch.
+//!
+//! Three public functions each own one phase of the CLI lifecycle:
+//!
+//! - [`build_command`] — assemble the top-level `clap::Command` tree from registered plugins.
+//! - [`dispatch`] — route parsed `ArgMatches` to the matching plugin and build a [`ForgeContext`].
+//! - [`run`] — entry point for the binary: parses `std::env::args`, initialises logging, then calls the two above.
+//!
+//! Plugins never interact with `clap` directly beyond returning their `clap::Command`; all routing
+//! lives here so the plugin interface stays minimal.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
