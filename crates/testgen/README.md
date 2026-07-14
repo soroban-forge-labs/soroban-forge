@@ -10,6 +10,9 @@ Soroban contract project and it generates
 | `tests/common/mod.rs`  | fixtures: mocked-auth `Env`, account generator, ledger-time control, token (SAC) setup + funding, snapshot assertion helper |
 | `tests/forge_smoke.rs` | smoke test registering the detected `#[contract]` type and constructing its client |
 
+The global `--quiet` flag suppresses the generated-file report and follow-up
+notes without changing which harness files are written.
+
 ## How detection works
 
 `detect.rs` inspects the target without heavy parsing:
