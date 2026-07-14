@@ -186,7 +186,9 @@ impl ForgePlugin for CiPresetsPlugin {
 
         let written = generate(&dir, provider, &name, deploy, matches.get_flag("force"))?;
 
-        print!("{}", format_report(provider, &name, &written, deploy));
+        if !ctx.quiet {
+            print!("{}", format_report(provider, &name, &written, deploy));
+        }
         Ok(())
     }
 }
