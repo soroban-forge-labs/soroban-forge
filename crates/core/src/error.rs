@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 /// Convenience alias used across all soroban-forge crates.
-pub type Result<T> = std::result::Result<T, ForgeError>;
+pub type Result<T> = std::result::Result<T, ForgeError>; // common Result alias
 
 /// The error type shared by the CLI core and all plugins.
 #[derive(Debug, Error)]
