@@ -29,6 +29,8 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/soroban-forge-labs/soroban-forge"
 rust-version = "1.84"
+keywords = ["soroban", "stellar", "smart-contracts", "scaffold", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 soroban-forge-core = { path = "crates/core" }
