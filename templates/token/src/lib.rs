@@ -11,7 +11,7 @@ use soroban_sdk::{
 };
 
 /// Ledgers per day, assuming ~5s per ledger.
-pub const DAY_IN_LEDGERS: u32 = 17280;
+pub const DAY_IN_LEDGERS: u32 = 17280; // estimated (5s/ledger)
 /// How long balance entries live before they need a TTL extension.
 pub const BALANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Extend a balance entry's TTL when it drops below this threshold.
