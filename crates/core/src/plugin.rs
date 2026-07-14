@@ -56,3 +56,15 @@ pub trait ForgePlugin {
     /// Execute the subcommand.
     fn run(&self, matches: &clap::ArgMatches, ctx: &ForgeContext) -> Result<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_is_not_quiet_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ForgeContext::new(dir.path().to_path_buf(), false).unwrap();
+        assert!(!ctx.quiet);
+    }
+}
