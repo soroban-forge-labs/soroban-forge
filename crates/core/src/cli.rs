@@ -37,6 +37,7 @@ pub fn build_command(plugins: &[Box<dyn ForgePlugin>]) -> Command {
 /// Route parsed matches to the owning plugin.
 pub fn dispatch(plugins: &[Box<dyn ForgePlugin>], matches: &ArgMatches) -> Result<()> {
     let verbose = matches.get_flag("verbose");
+    let quiet = matches.get_flag("quiet");
     let (name, sub_matches) = matches
         .subcommand()
         .ok_or_else(|| ForgeError::InvalidArgument("a subcommand is required".into()))?;
@@ -47,7 +48,7 @@ pub fn dispatch(plugins: &[Box<dyn ForgePlugin>], matches: &ArgMatches) -> Resul
         .ok_or_else(|| ForgeError::InvalidArgument(format!("unknown subcommand `{name}`")))?;
 
     let cwd = std::env::current_dir().map_err(ForgeError::io("determining current directory"))?;
-    let ctx = ForgeContext::new(cwd, verbose)?;
+    let ctx = ForgeContext::with_output(cwd, verbose, quiet)?;
 
     log::debug!("dispatching to plugin `{}`", plugin.name());
     plugin.run(sub_matches, &ctx)
