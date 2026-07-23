@@ -5,6 +5,7 @@
 - **[Architecture](architecture.md)** — how the five modules fit together.
 - **[Troubleshooting / FAQ](troubleshooting.md)** — fixes for common setup
   and build failures.
+- **[Exit codes](exit-codes.md)** — the stable exit-code contract for CI/scripts.
 
 Per-module reference docs live next to the code, one README per module:
 

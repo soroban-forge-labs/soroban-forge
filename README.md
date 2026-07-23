@@ -82,6 +82,12 @@ up an issue — [ISSUES.md](ISSUES.md) lists well-scoped starter work.
 
 `soroban-forge doctor` checks all of this for you.
 
+## Exit codes
+
+`soroban-forge` uses a small set of stable exit codes (`0` success, `1`
+user error, `2` missing tool, `3` internal error) so CI/scripts can branch
+on outcome — see [docs/exit-codes.md](docs/exit-codes.md).
+
 ## License
 
 [Apache-2.0](LICENSE)

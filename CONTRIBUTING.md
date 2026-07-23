@@ -72,6 +72,11 @@ would treat the template as a real package.
   tests, workflows pass `actionlint`.
 - No secrets in code or generated files — workflows reference GitHub secrets
   only.
+- Plugins report failures by returning `Err(ForgeError::...)`, never by
+  calling `std::process::exit` themselves — the binary derives the process
+  exit code from the error variant (see
+  [docs/exit-codes.md](docs/exit-codes.md)), and a plugin exiting directly
+  would bypass that.
 
 ## Picking up work
 

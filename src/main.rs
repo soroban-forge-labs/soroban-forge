@@ -11,6 +11,6 @@ fn main() {
 
     if let Err(err) = soroban_forge_core::run(plugins) {
         eprintln!("error: {err}"); // logged
-        std::process::exit(1);
+        std::process::exit(err.exit_code().into());
     }
 }

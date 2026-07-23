@@ -137,10 +137,9 @@ fn run_stellar_bindings(wasm: &Path, output: &Path) -> Result<()> {
                 "stellar contract bindings typescript failed:\n{stderr}"
             )))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ForgeError::Other(
-            "stellar-cli not found on PATH — install it and try again (run `soroban-forge doctor` for instructions)"
-                .into(),
-        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(ForgeError::ToolMissing("stellar-cli".into()))
+        }
         Err(e) => Err(ForgeError::io("running stellar contract bindings typescript")(e)),
     }
 }
