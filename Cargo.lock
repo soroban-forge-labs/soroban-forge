@@ -425,12 +425,26 @@ dependencies = [
 name = "soroban-forge"
 version = "0.1.0"
 dependencies = [
+ "soroban-forge-bindings-ts",
  "soroban-forge-ci-presets",
  "soroban-forge-core",
  "soroban-forge-doctor",
  "soroban-forge-scaffold",
+ "soroban-forge-templates",
  "soroban-forge-testgen",
  "tempfile",
+]
+
+[[package]]
+name = "soroban-forge-bindings-ts"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "log",
+ "serde",
+ "soroban-forge-core",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -477,6 +491,16 @@ dependencies = [
  "log",
  "soroban-forge-core",
  "tempfile",
+]
+
+[[package]]
+name = "soroban-forge-templates"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "log",
+ "soroban-forge-core",
+ "soroban-forge-scaffold",
 ]
 
 [[package]]

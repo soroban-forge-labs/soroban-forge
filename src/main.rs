@@ -7,6 +7,7 @@ fn main() {
         Box::new(soroban_forge_ci_presets::CiPresetsPlugin),
         Box::new(soroban_forge_doctor::DoctorPlugin),
         Box::new(soroban_forge_bindings_ts::BindingsTsPlugin),
+        Box::new(soroban_forge_templates::TemplatesPlugin),
     ];
 
     if let Err(err) = soroban_forge_core::run(plugins) {

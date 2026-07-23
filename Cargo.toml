@@ -17,7 +17,8 @@ soroban-forge-scaffold = { path = "crates/scaffold" }
 soroban-forge-testgen = { path = "crates/testgen" }
 soroban-forge-ci-presets = { path = "crates/ci-presets" }
 soroban-forge-doctor = { path = "crates/doctor" }
-soroban-forge-bindings-ts = { path = "crates/bindings-ts" }
+soroban-forge-bindings-ts = { path = "crates/binding-ts" }
+soroban-forge-templates = { path = "crates/templates" }
 
 [dev-dependencies]
 tempfile.workspace = true

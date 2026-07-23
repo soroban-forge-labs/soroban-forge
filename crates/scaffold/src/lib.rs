@@ -38,6 +38,40 @@ pub fn available_templates() -> Vec<&'static str> {
     names
 }
 
+/// One-line description for a bundled template, or `None` for unknown names.
+///
+/// This is the single source of truth for template descriptions, used by both
+/// the `templates` subcommand and any future JSON output layer.
+pub fn template_description(name: &str) -> Option<&'static str> {
+    match name {
+        "crowdfund" => Some("escrow/deadline crowdfunding contract"),
+        "hello-world" => Some("minimal greeter contract (recommended starting point)"),
+        "token" => Some("SEP-41 fungible token (soroban_sdk::token::TokenInterface)"),
+        _ => None,
+    }
+}
+
+/// Metadata for a single bundled template.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateInfo {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+/// Return metadata for every bundled template, sorted by name.
+///
+/// Designed so callers (the `templates` subcommand, future `--json` output,
+/// etc.) work only with this slice — not with raw name/description pairs.
+pub fn template_catalog() -> Vec<TemplateInfo> {
+    available_templates()
+        .into_iter()
+        .map(|name| TemplateInfo {
+            name,
+            description: template_description(name).unwrap_or("no description available"),
+        })
+        .collect()
+}
+
 /// Render the template catalogue shown by `new --list-templates`.
 pub fn format_template_list(templates: &[&str]) -> String {
     let mut out = String::from("available templates:\n");
@@ -281,6 +315,44 @@ mod tests {
     fn template_list_report_has_heading_and_items() {
         let report = format_template_list(&["hello-world", "token"]);
         assert_eq!(report, "available templates:\n  hello-world\n  token\n");
+    }
+
+    #[test]
+    fn every_bundled_template_has_a_description() {
+        for name in available_templates() {
+            assert!(
+                template_description(name).is_some(),
+                "template `{name}` has no description — add one to `template_description()`"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_template_description_is_none() {
+        assert_eq!(template_description("does-not-exist"), None);
+    }
+
+    #[test]
+    fn catalog_returns_all_templates_with_descriptions() {
+        let catalog = template_catalog();
+        let names: Vec<&str> = catalog.iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["crowdfund", "hello-world", "token"]);
+        for entry in &catalog {
+            assert!(
+                !entry.description.is_empty(),
+                "empty description for `{}`",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_is_sorted_by_name() {
+        let catalog = template_catalog();
+        let names: Vec<&str> = catalog.iter().map(|t| t.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
     }
 
     #[test]

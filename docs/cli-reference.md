@@ -11,6 +11,7 @@ Global options may appear before or after a subcommand and can be combined.
 ## Commands
 
 - `soroban-forge new <name> --template <t>` — create a contract project.
+- `soroban-forge templates` — list all bundled contract templates with descriptions.
 - `soroban-forge test-init` — generate a test harness.
 - `soroban-forge ci-init --provider github` — generate CI workflows.
 - `soroban-forge doctor` — check the local Soroban toolchain.
