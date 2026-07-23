@@ -201,6 +201,7 @@ fn write_pre_commit_config(dest: &Path, force: bool) -> Result<()> {
 pub fn init_git(dest: &Path) -> Result<()> {
     let status = std::process::Command::new("git")
         .arg("init")
+        .arg("--quiet")
         .arg(dest)
         .status();
     match status {
@@ -355,21 +356,11 @@ impl ForgePlugin for ScaffoldPlugin {
             write_pre_commit_config(&dest, force)?;
         }
 
-        println!(
-            "created `{name}` from template `{template}` at {}",
-            dest.display()
-        );
-        println!();
-        println!("next steps:");
-        println!("  cd {name}");
-        println!("  cargo test                      # run the template's unit tests");
-        println!("  stellar contract build          # build the deployable wasm");
-        println!("  soroban-forge test-init         # add a generated test harness");
-        println!("  soroban-forge ci-init           # add GitHub Actions workflows");
-        if matches.get_flag("pre-commit") {
-            println!("  pre-commit install              # enable the git hooks");
         if !ctx.quiet {
             print!("{}", format_created_report(name, &template, &dest));
+            if matches.get_flag("pre-commit") {
+                println!("  pre-commit install              # enable the git hooks");
+            }
         }
         Ok(())
     }
