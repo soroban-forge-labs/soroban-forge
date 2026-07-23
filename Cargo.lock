@@ -489,8 +489,10 @@ dependencies = [
  "clap",
  "include_dir",
  "log",
+ "serde",
  "soroban-forge-core",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

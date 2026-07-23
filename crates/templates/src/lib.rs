@@ -79,7 +79,7 @@ mod tests {
             .iter()
             .map(|(name, description)| TemplateInfo {
                 name,
-                description,
+                description: description.to_string(),
             })
             .collect()
     }
@@ -180,7 +180,7 @@ mod tests {
                 entry.name
             );
             assert!(
-                output.contains(entry.description),
+                output.contains(&entry.description),
                 "description for `{}` missing from listing output",
                 entry.name
             );

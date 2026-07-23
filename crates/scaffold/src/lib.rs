@@ -10,9 +10,16 @@
 //! is how templates ship a `Cargo.toml.hbs` without cargo mistaking it for a
 //! real manifest.
 //!
-//! Available variables: `project_name`, `crate_name`, `author`, `sdk_version`.
+//! Available variables: `project_name`, `crate_name`, `author`, `sdk_version`,
+//! plus any extra variables a template declares in its `template.toml` (see
+//! [`manifest`]).
+
+mod manifest;
+
+pub use manifest::{TemplateManifest, TemplateVariable};
 
 use std::collections::BTreeMap;
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
@@ -21,6 +28,9 @@ use soroban_forge_core::render::{render_str, Vars};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../templates");
+
+/// Name of the per-template metadata file (see [`manifest::TemplateManifest`]).
+const MANIFEST_FILE_NAME: &str = "template.toml";
 
 /// The soroban-sdk version pinned into generated projects.
 /// TODO(verify): bump when a new stable soroban-sdk major is released.
@@ -58,24 +68,39 @@ pub fn available_templates() -> Vec<&'static str> {
     names
 }
 
+/// Load `template.toml` for `name`, or a default (empty) manifest when the
+/// template hasn't been migrated to carry one yet.
+pub fn load_manifest(name: &str) -> Result<TemplateManifest> {
+    let template_dir = TEMPLATES.get_dir(name).ok_or_else(|| {
+        ForgeError::Template(format!(
+            "unknown template `{name}` (available: {})",
+            available_templates().join(", ")
+        ))
+    })?;
+    match template_dir.get_file(format!("{name}/{MANIFEST_FILE_NAME}")) {
+        Some(file) => {
+            let raw = file
+                .contents_utf8()
+                .ok_or_else(|| ForgeError::Template(format!("{MANIFEST_FILE_NAME} is not UTF-8")))?;
+            TemplateManifest::parse(raw, name)
+        }
+        None => Ok(TemplateManifest::default()),
+    }
+}
+
 /// One-line description for a bundled template, or `None` for unknown names.
 ///
-/// This is the single source of truth for template descriptions, used by both
-/// the `templates` subcommand and any future JSON output layer.
-pub fn template_description(name: &str) -> Option<&'static str> {
-    match name {
-        "crowdfund" => Some("escrow/deadline crowdfunding contract"),
-        "hello-world" => Some("minimal greeter contract (recommended starting point)"),
-        "token" => Some("SEP-41 fungible token (soroban_sdk::token::TokenInterface)"),
-        _ => None,
-    }
+/// Reads `template.toml` first; templates without a manifest (or without a
+/// `description` key) have no description here.
+pub fn template_description(name: &str) -> Option<String> {
+    load_manifest(name).ok().and_then(|m| m.description)
 }
 
 /// Metadata for a single bundled template.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemplateInfo {
     pub name: &'static str,
-    pub description: &'static str,
+    pub description: String,
 }
 
 /// Return metadata for every bundled template, sorted by name.
@@ -87,7 +112,8 @@ pub fn template_catalog() -> Vec<TemplateInfo> {
         .into_iter()
         .map(|name| TemplateInfo {
             name,
-            description: template_description(name).unwrap_or("no description available"),
+            description: template_description(name)
+                .unwrap_or_else(|| "no description available".to_string()),
         })
         .collect()
 }
@@ -126,6 +152,70 @@ pub fn project_vars(project_name: &str, author: &str) -> Vars {
     vars
 }
 
+/// Parse `--var name=value` occurrences into a name → value map.
+pub fn parse_var_overrides(pairs: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for pair in pairs {
+        let (name, value) = pair.split_once('=').ok_or_else(|| {
+            ForgeError::InvalidArgument(format!(
+                "`--var {pair}` is not in `name=value` form"
+            ))
+        })?;
+        out.insert(name.to_string(), value.to_string());
+    }
+    Ok(out)
+}
+
+/// Resolve a template's extra variables (declared in its `template.toml`)
+/// into a name → value map, in this priority order:
+///
+/// 1. `--var name=value` overrides
+/// 2. an interactive prompt, when `interactive` is set
+/// 3. the variable's declared default
+///
+/// `interactive` should be `false` in quiet mode and whenever stdin isn't a
+/// terminal, so CI and scripted use never blocks waiting for input.
+pub fn resolve_extra_vars(
+    manifest: &TemplateManifest,
+    overrides: &BTreeMap<String, String>,
+    interactive: bool,
+) -> Result<Vars> {
+    let mut vars = Vars::new();
+    for var in &manifest.variables {
+        let value = if let Some(v) = overrides.get(&var.name) {
+            v.clone()
+        } else if interactive {
+            prompt_for(&var.prompt, &var.default)?
+        } else {
+            var.default.clone()
+        };
+        vars.insert(var.name.clone(), value);
+    }
+    Ok(vars)
+}
+
+/// Prompt `question [default: default]` on stdout and read a line from
+/// stdin, returning `default` when the answer is empty.
+fn prompt_for(question: &str, default: &str) -> Result<String> {
+    print!("{question} [{default}]: ");
+    std::io::stdout()
+        .flush()
+        .map_err(ForgeError::io("writing prompt"))?;
+
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(ForgeError::io("reading prompt response"))?;
+
+    let answer = line.trim();
+    if answer.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(answer.to_string())
+    }
+}
+
 /// Generate `template` into `dest` (which must not already exist unless
 /// `force` is set). This is the programmatic API behind `soroban-forge new`.
 pub fn generate(template: &str, dest: &Path, vars: &Vars, force: bool) -> Result<()> {
@@ -155,6 +245,10 @@ fn render_dir(dir: &Dir<'_>, template_root: &str, dest: &Path, vars: &Vars) -> R
             .path()
             .strip_prefix(template_root)
             .expect("embedded file path must start with the template name");
+        // Metadata, not project content: never copied into the generated project.
+        if rel == Path::new(MANIFEST_FILE_NAME) {
+            continue;
+        }
         let mut rel_str = render_str(&rel.to_string_lossy(), vars);
         if let Some(stripped) = rel_str.strip_suffix(".hbs") {
             rel_str = stripped.to_string();
@@ -231,9 +325,10 @@ fn default_author(ctx: &ForgeContext) -> String {
         .unwrap_or_else(|| "Your Name".to_string())
 }
 
-/// Render the successful project creation report.
-pub fn format_created_report(name: &str, template: &str, dest: &Path) -> String {
-    format!(
+/// Render the successful project creation report, including any
+/// template-specific post-generate hints from `template.toml`.
+pub fn format_created_report(name: &str, template: &str, dest: &Path, hints: &[String]) -> String {
+    let mut out = format!(
         "created `{name}` from template `{template}` at {}\n\n\
          next steps:\n\
            cd {name}\n\
@@ -242,7 +337,14 @@ pub fn format_created_report(name: &str, template: &str, dest: &Path) -> String 
            soroban-forge test-init         # add a generated test harness\n\
            soroban-forge ci-init           # add GitHub Actions workflows\n",
         dest.display()
-    )
+    );
+    if !hints.is_empty() {
+        out.push_str("\ntemplate notes:\n");
+        for hint in hints {
+            out.push_str(&format!("  - {hint}\n"));
+        }
+    }
+    out
 }
 
 /// The `new` subcommand.
@@ -302,6 +404,20 @@ impl ForgePlugin for ScaffoldPlugin {
                     .action(ArgAction::SetTrue)
                     .help("Overwrite the target directory if it exists"),
             )
+            .arg(
+                Arg::new("var")
+                    .long("var")
+                    .action(ArgAction::Append)
+                    .value_name("name=value")
+                    .help("Set a template-specific variable (see template.toml); repeatable"),
+            )
+            .arg(
+                Arg::new("yes")
+                    .long("yes")
+                    .short('y')
+                    .action(ArgAction::SetTrue)
+                    .help("Never prompt; use template.toml defaults for unset variables"),
+            )
     }
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
@@ -340,11 +456,26 @@ impl ForgePlugin for ScaffoldPlugin {
 
         let force = matches.get_flag("force");
 
+        let manifest = load_manifest(&template)?;
+        let overrides = parse_var_overrides(
+            &matches
+                .get_many::<String>("var")
+                .map(|vals| vals.cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+        )?;
+        // Never prompt when quiet, --yes was passed, or stdin isn't a terminal
+        // (e.g. CI) — scripted use must never block waiting for input.
+        let interactive = !ctx.quiet && !matches.get_flag("yes") && std::io::stdin().is_terminal();
+        let extra_vars = resolve_extra_vars(&manifest, &overrides, interactive)?;
+
+        let mut vars = project_vars(name, &author);
+        vars.extend(extra_vars);
+
         log::debug!(
             "scaffolding `{name}` from template `{template}` into {}",
             dest.display()
         );
-        generate(&template, &dest, &project_vars(name, &author), force)?;
+        generate(&template, &dest, &vars, force)?;
 
         if !matches.get_flag("no-git") {
             if let Err(err) = init_git(&dest) {
@@ -357,7 +488,10 @@ impl ForgePlugin for ScaffoldPlugin {
         }
 
         if !ctx.quiet {
-            print!("{}", format_created_report(name, &template, &dest));
+            print!(
+                "{}",
+                format_created_report(name, &template, &dest, manifest.hints())
+            );
             if matches.get_flag("pre-commit") {
                 println!("  pre-commit install              # enable the git hooks");
             }
@@ -369,6 +503,57 @@ impl ForgePlugin for ScaffoldPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_var_overrides() {
+        let overrides =
+            parse_var_overrides(&["token_symbol=XYZ".to_string(), "token_decimals=2".to_string()])
+                .unwrap();
+        assert_eq!(overrides.get("token_symbol").map(String::as_str), Some("XYZ"));
+        assert_eq!(overrides.get("token_decimals").map(String::as_str), Some("2"));
+    }
+
+    #[test]
+    fn var_override_without_equals_is_an_error() {
+        assert!(parse_var_overrides(&["oops".to_string()]).is_err());
+    }
+
+    #[test]
+    fn resolve_extra_vars_prefers_overrides_then_defaults() {
+        let manifest = TemplateManifest::parse(
+            r#"
+[[variable]]
+name = "token_symbol"
+prompt = "Symbol"
+default = "MYT"
+"#,
+            "token",
+        )
+        .unwrap();
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("token_symbol".to_string(), "XYZ".to_string());
+        let vars = resolve_extra_vars(&manifest, &overrides, false).unwrap();
+        assert_eq!(vars.get("token_symbol").map(String::as_str), Some("XYZ"));
+
+        let vars = resolve_extra_vars(&manifest, &BTreeMap::new(), false).unwrap();
+        assert_eq!(vars.get("token_symbol").map(String::as_str), Some("MYT"));
+    }
+
+    #[test]
+    fn template_toml_is_not_copied_into_generated_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("demo");
+        generate("token", &dest, &project_vars("demo", "A"), false).unwrap();
+        assert!(!dest.join("template.toml").exists());
+    }
+
+    #[test]
+    fn token_template_manifest_declares_expected_variables() {
+        let manifest = load_manifest("token").unwrap();
+        let names: Vec<&str> = manifest.variables.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, vec!["token_name", "token_symbol", "token_decimals"]);
+    }
 
     #[test]
     fn lists_all_three_templates() {
@@ -424,18 +609,32 @@ mod tests {
 
     #[test]
     fn creation_report_identifies_project_and_template() {
-        let report = format_created_report("demo", "token", Path::new("/tmp/demo"));
+        let report = format_created_report("demo", "token", Path::new("/tmp/demo"), &[]);
         assert!(report.starts_with("created `demo` from template `token` at /tmp/demo\n"));
     }
 
     #[test]
     fn creation_report_includes_next_steps() {
-        let report = format_created_report("demo", "token", Path::new("demo"));
+        let report = format_created_report("demo", "token", Path::new("demo"), &[]);
         assert!(report.contains("cd demo"));
         assert!(report.contains("cargo test"));
         assert!(report.contains("stellar contract build"));
         assert!(report.contains("soroban-forge test-init"));
         assert!(report.contains("soroban-forge ci-init"));
+    }
+
+    #[test]
+    fn creation_report_includes_hints_when_present() {
+        let hints = vec!["deploy with --decimals 7".to_string()];
+        let report = format_created_report("demo", "token", Path::new("demo"), &hints);
+        assert!(report.contains("template notes:"));
+        assert!(report.contains("deploy with --decimals 7"));
+    }
+
+    #[test]
+    fn creation_report_omits_notes_section_without_hints() {
+        let report = format_created_report("demo", "token", Path::new("demo"), &[]);
+        assert!(!report.contains("template notes:"));
     }
 
     #[test]

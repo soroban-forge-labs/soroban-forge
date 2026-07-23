@@ -1,0 +1,21 @@
+description = "SEP-41 fungible token (soroban_sdk::token::TokenInterface)"
+
+[[variable]]
+name = "token_name"
+prompt = "Token name"
+default = "My Token"
+
+[[variable]]
+name = "token_symbol"
+prompt = "Token symbol"
+default = "MYT"
+
+[[variable]]
+name = "token_decimals"
+prompt = "Decimals"
+default = "7"
+
+[post_generate]
+hints = [
+  "the constructor takes admin, decimals, name, symbol — see the deploy command in README.md",
+]
