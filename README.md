@@ -12,6 +12,8 @@
 
 ## Quickstart
 
+[![asciinema cast](https://asciinema.org/a/soroban-forge-zero-to-testnet.svg)](https://asciinema.org/a/soroban-forge-zero-to-testnet)
+
 ```sh
 # 1. install (from source, v0.1)
 git clone https://github.com/soroban-forge-labs/soroban-forge
