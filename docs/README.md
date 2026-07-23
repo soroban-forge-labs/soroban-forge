@@ -15,3 +15,7 @@ Per-module reference docs live next to the code, one README per module:
 | 3 — Test harness generator | [crates/testgen/README.md](../crates/testgen/README.md) |
 | 4 — CI/CD presets | [crates/ci-presets/README.md](../crates/ci-presets/README.md) · [presets/README.md](../presets/README.md) |
 | 5 — Doctor & DX | [crates/doctor/README.md](../crates/doctor/README.md) |
+
+## Reference
+
+- **[Glossary](../developer_notes/glossary.md)** — definitions for Soroban and soroban-forge terms (WASM, Ledger, TTL, SAC, XDR, and more).
