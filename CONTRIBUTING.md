@@ -12,6 +12,7 @@ five hundred) can work in parallel with minimal merge conflicts.
 | 3 — Test harness generator | `crates/testgen` | Person C | `test-init` |
 | 4 — CI/CD & DevOps presets | `crates/ci-presets`, `presets/` | Person D | `ci-init` |
 | 5 — Docs, examples & DX | `crates/doctor`, `docs/`, `examples/` | Person E | `doctor` |
+| 6 — TypeScript bindings generator | `crates/bindings-ts` | Person F | `bindings ts` |
 
 Rules of the road:
 

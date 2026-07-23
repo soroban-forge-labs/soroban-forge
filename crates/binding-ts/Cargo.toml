@@ -1,0 +1,18 @@
+[package]
+name = "soroban-forge-bindings-ts"
+description = "TypeScript client bindings generator for soroban-forge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+soroban-forge-core.workspace = true
+clap.workspace = true
+toml.workspace = true
+serde.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

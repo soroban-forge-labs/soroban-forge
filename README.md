@@ -8,6 +8,7 @@
 - `soroban-forge test-init` — generate fixtures, a smoke test and a snapshot helper for an existing contract
 - `soroban-forge ci-init` — add GitHub Actions workflows (build+test, contract-size check, optional testnet deploy)
 - `soroban-forge doctor` — verify your toolchain and get fix instructions
+- `soroban-forge bindings ts` — generate a TypeScript client package from a built contract
 
 ## Quickstart
 
@@ -47,6 +48,8 @@ Hitting an error? Check the
 | `test-init`                      | generate `tests/` fixtures + smoke test for a contract    |
 | `ci-init --provider github`      | write CI workflows; `--deploy` adds manual testnet deploy |
 | `doctor`                         | check rustc/cargo, `wasm32v1-none` target, stellar-cli    |
+| `bindings ts`                    | generate a TypeScript client package from a built contract wasm |
+
 
 All commands read an optional [`forge.toml`](crates/core/src/config.rs) in the
 project directory (name, authors, default template) — generated projects get
@@ -65,6 +68,8 @@ with its own README, tests and a small public surface; they meet only at the
 | 3 — Test harness generator | [`crates/testgen`](crates/testgen) | `test-init` |
 | 4 — CI/CD presets | [`crates/ci-presets`](crates/ci-presets) + [`presets/`](presets) | `ci-init` |
 | 5 — Docs & DX | [`crates/doctor`](crates/doctor) + [`docs/`](docs) + [`examples/`](examples) | `doctor` |
+| 6 — TypeScript bindings | [`crates/bindings-ts`](crates/bindings-ts) | `bindings ts` |
+
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ownership map and how to pick
 up an issue — [ISSUES.md](ISSUES.md) lists well-scoped starter work.

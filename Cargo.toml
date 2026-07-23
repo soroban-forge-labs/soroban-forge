@@ -17,6 +17,7 @@ soroban-forge-scaffold = { path = "crates/scaffold" }
 soroban-forge-testgen = { path = "crates/testgen" }
 soroban-forge-ci-presets = { path = "crates/ci-presets" }
 soroban-forge-doctor = { path = "crates/doctor" }
+soroban-forge-bindings-ts = { path = "crates/bindings-ts" }
 
 [workspace]
 members = ["crates/*"]
