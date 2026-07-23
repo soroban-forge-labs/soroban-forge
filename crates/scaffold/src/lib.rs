@@ -475,6 +475,14 @@ mod tests {
         assert!(dest.join("src/lib.rs").is_file());
         assert!(dest.join("src/test.rs").is_file());
         assert!(dest.join("forge.toml").is_file());
+        assert!(dest.join("README.md").is_file());
+
+        let readme = std::fs::read_to_string(dest.join("README.md")).unwrap();
+        assert!(readme.contains("# demo"));
+        assert!(readme.contains("cargo test"));
+        assert!(readme.contains("stellar contract build"));
+        assert!(readme.contains("stellar contract deploy"));
+        assert!(readme.contains("demo.wasm"));
 
         // No unrendered placeholders anywhere.
         for entry in walk(&dest) {
@@ -503,6 +511,23 @@ mod tests {
                     entry.display()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_template_generates_readme_with_build_and_deploy_instructions() {
+        for template in available_templates() {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("my-contract");
+            generate(template, &dest, &project_vars("my-contract", "A"), false).unwrap();
+            let readme_path = dest.join("README.md");
+            assert!(readme_path.is_file(), "README.md missing for template {template}");
+            let contents = std::fs::read_to_string(&readme_path).unwrap();
+            assert!(contents.contains("# my-contract"), "template {template} title substitution");
+            assert!(contents.contains("cargo test"), "template {template} test step");
+            assert!(contents.contains("stellar contract build"), "template {template} build step");
+            assert!(contents.contains("stellar contract deploy"), "template {template} deploy step");
+            assert!(contents.contains("my_contract.wasm"), "template {template} crate name substitution");
         }
     }
 
