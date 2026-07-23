@@ -430,6 +430,7 @@ dependencies = [
  "soroban-forge-doctor",
  "soroban-forge-scaffold",
  "soroban-forge-testgen",
+ "tempfile",
 ]
 
 [[package]]

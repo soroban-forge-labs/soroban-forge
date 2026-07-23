@@ -125,6 +125,25 @@ pub fn generate(
     Ok(written)
 }
 
+/// Render the report for generated CI workflows.
+pub fn format_report(
+    provider: &str,
+    name: &str,
+    written: &[impl AsRef<str>],
+    deploy: bool,
+) -> String {
+    let mut out = format!("wrote {provider} workflows for `{name}`:\n");
+    for path in written {
+        out.push_str(&format!("  {}\n", path.as_ref()));
+    }
+    if deploy {
+        out.push_str("\nthe deploy workflow needs a GitHub secret named STELLAR_DEPLOYER_SECRET\n");
+        out.push_str("(a funded testnet account's secret key). Add it under:\n");
+        out.push_str("  repo → Settings → Secrets and variables → Actions\n");
+    }
+    out
+}
+
 /// The `ci-init` subcommand.
 pub struct CiPresetsPlugin;
 
@@ -172,15 +191,8 @@ impl ForgePlugin for CiPresetsPlugin {
 
         let written = generate(&dir, provider, &name, deploy, matches.get_flag("force"))?;
 
-        println!("wrote {provider} workflows for `{name}`:");
-        for path in written {
-            println!("  {path}");
-        }
-        if deploy {
-            println!();
-            println!("the deploy workflow needs a GitHub secret named STELLAR_DEPLOYER_SECRET");
-            println!("(a funded testnet account's secret key). Add it under:");
-            println!("  repo → Settings → Secrets and variables → Actions");
+        if !ctx.quiet {
+            print!("{}", format_report(provider, &name, &written, deploy));
         }
         Ok(())
     }
@@ -193,6 +205,28 @@ mod tests {
     #[test]
     fn github_is_the_only_provider() {
         assert_eq!(available_providers(), vec!["github"]);
+    }
+
+    #[test]
+    fn report_lists_provider_project_and_files() {
+        let report = format_report("github", "demo", &["a.yml", "b.yml"], false);
+        assert_eq!(
+            report,
+            "wrote github workflows for `demo`:\n  a.yml\n  b.yml\n"
+        );
+    }
+
+    #[test]
+    fn deploy_report_explains_required_secret() {
+        let report = format_report("github", "demo", &["deploy.yml"], true);
+        assert!(report.contains("STELLAR_DEPLOYER_SECRET"));
+        assert!(report.contains("Settings → Secrets and variables → Actions"));
+    }
+
+    #[test]
+    fn base_report_omits_deploy_guidance() {
+        let report = format_report("github", "demo", &["build.yml"], false);
+        assert!(!report.contains("STELLAR_DEPLOYER_SECRET"));
     }
 
     #[test]

@@ -18,16 +18,24 @@ pub struct ForgeContext {
     pub config: Option<ForgeConfig>,
     /// Whether `--verbose` was passed.
     pub verbose: bool,
+    /// Whether informational command output should be suppressed.
+    pub quiet: bool,
 }
 
 impl ForgeContext {
     /// Build a context for `cwd`, loading `forge.toml` if present.
     pub fn new(cwd: PathBuf, verbose: bool) -> Result<Self> {
+        Self::with_output(cwd, verbose, false)
+    }
+
+    /// Build a context with explicit output controls.
+    pub fn with_output(cwd: PathBuf, verbose: bool, quiet: bool) -> Result<Self> {
         let config = ForgeConfig::load_from(&cwd)?;
         Ok(Self {
             cwd,
             config,
             verbose,
+            quiet,
         })
     }
 }
@@ -47,4 +55,23 @@ pub trait ForgePlugin {
 
     /// Execute the subcommand.
     fn run(&self, matches: &clap::ArgMatches, ctx: &ForgeContext) -> Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_is_not_quiet_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ForgeContext::new(dir.path().to_path_buf(), false).unwrap();
+        assert!(!ctx.quiet);
+    }
+
+    #[test]
+    fn context_accepts_explicit_quiet_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ForgeContext::with_output(dir.path().to_path_buf(), false, true).unwrap();
+        assert!(ctx.quiet);
+    }
 }

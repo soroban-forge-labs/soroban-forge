@@ -11,6 +11,9 @@ GitHub Actions workflows into the target project:
 | `contract-size.yml`  | PR                  | fails when the wasm exceeds `MAX_WASM_KB`      |
 | `testnet-deploy.yml` | manual (`--deploy`) | wraps official `stellar contract deploy`       |
 
+The global `--quiet` flag suppresses the workflow summary and deploy-secret
+reminder without changing the generated workflows.
+
 ## Security stance
 
 The deploy workflow **never stores keys**. It references

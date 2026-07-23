@@ -166,6 +166,33 @@ pub fn generate(dir: &Path, force: bool) -> Result<(ContractInfo, Vec<&'static s
     Ok((info, written))
 }
 
+/// Render the report for a generated test harness.
+pub fn format_report(info: &ContractInfo, written: &[&str]) -> String {
+    let mut out = format!(
+        "generated test harness for contract `{}` (crate `{}`):\n",
+        info.contract_type, info.crate_name
+    );
+    for rel in written {
+        out.push_str(&format!("  {rel}\n"));
+    }
+    if !info.has_testutils {
+        out.push_str(
+            "\nwarning: dev-dependencies do not enable soroban-sdk's `testutils` feature.\n",
+        );
+        out.push_str("add this to Cargo.toml or the generated tests will not compile:\n\n");
+        out.push_str("  [dev-dependencies]\n");
+        out.push_str("  soroban-sdk = { version = \"*\", features = [\"testutils\"] }\n");
+    }
+    if info.has_constructor {
+        out.push_str(&format!(
+            "\nnote: `{}` has a __constructor, so the smoke test is #[ignore]d until you fill in its arguments.\n",
+            info.contract_type
+        ));
+    }
+    out.push_str("\nrun them with: cargo test\n");
+    out
+}
+
 /// The `test-init` subcommand.
 pub struct TestgenPlugin;
 
@@ -198,30 +225,9 @@ impl ForgePlugin for TestgenPlugin {
 
         let (info, written) = generate(&dir, matches.get_flag("force"))?;
 
-        println!(
-            "generated test harness for contract `{}` (crate `{}`):",
-            info.contract_type, info.crate_name
-        );
-        for rel in written {
-            println!("  {rel}");
+        if !ctx.quiet {
+            print!("{}", format_report(&info, &written));
         }
-        if !info.has_testutils {
-            println!();
-            println!("warning: dev-dependencies do not enable soroban-sdk's `testutils` feature.");
-            println!("add this to Cargo.toml or the generated tests will not compile:");
-            println!();
-            println!("  [dev-dependencies]");
-            println!("  soroban-sdk = {{ version = \"*\", features = [\"testutils\"] }}");
-        }
-        if info.has_constructor {
-            println!();
-            println!(
-                "note: `{}` has a __constructor, so the smoke test is #[ignore]d until you fill in its arguments.",
-                info.contract_type
-            );
-        }
-        println!();
-        println!("run them with: cargo test");
         Ok(())
     }
 }
@@ -239,6 +245,37 @@ mod tests {
             false,
         )
         .unwrap();
+    }
+
+    fn contract_info(has_constructor: bool, has_testutils: bool) -> ContractInfo {
+        ContractInfo {
+            package_name: "demo".into(),
+            crate_name: "demo".into(),
+            contract_type: "DemoContract".into(),
+            has_constructor,
+            has_testutils,
+        }
+    }
+
+    #[test]
+    fn report_lists_generated_files() {
+        let report = format_report(&contract_info(false, true), &["tests/a.rs", "tests/b.rs"]);
+        assert!(report.contains("contract `DemoContract` (crate `demo`)"));
+        assert!(report.contains("  tests/a.rs\n  tests/b.rs\n"));
+    }
+
+    #[test]
+    fn report_explains_missing_testutils() {
+        let report = format_report(&contract_info(false, false), &[]);
+        assert!(report.contains("warning: dev-dependencies"));
+        assert!(report.contains("features = [\"testutils\"]"));
+    }
+
+    #[test]
+    fn report_explains_constructor_follow_up() {
+        let report = format_report(&contract_info(true, true), &[]);
+        assert!(report.contains("DemoContract` has a __constructor"));
+        assert!(report.contains("#[ignore]d"));
     }
 
     #[test]

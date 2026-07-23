@@ -9,7 +9,9 @@ use crate::plugin::{ForgeContext, ForgePlugin};
 pub fn build_command(plugins: &[Box<dyn ForgePlugin>]) -> Command {
     let mut cmd = Command::new("soroban-forge")
         .version(env!("CARGO_PKG_VERSION"))
-        .about("Scaffolding, test-harness and CI toolkit for Soroban smart contracts on Stellar (CLI)")
+        .about(
+            "Scaffolding, test-harness and CI toolkit for Soroban smart contracts on Stellar (CLI)",
+        )
         .subcommand_required(true)
         .arg_required_else_help(true)
         .arg(
@@ -19,6 +21,14 @@ pub fn build_command(plugins: &[Box<dyn ForgePlugin>]) -> Command {
                 .global(true)
                 .action(ArgAction::SetTrue)
                 .help("Enable verbose (debug) logging"),
+        )
+        .arg(
+            Arg::new("quiet")
+                .long("quiet")
+                .short('q')
+                .global(true)
+                .action(ArgAction::SetTrue)
+                .help("Suppress informational command output"),
         );
     for plugin in plugins {
         cmd = cmd.subcommand(plugin.command());
@@ -29,6 +39,7 @@ pub fn build_command(plugins: &[Box<dyn ForgePlugin>]) -> Command {
 /// Route parsed matches to the owning plugin.
 pub fn dispatch(plugins: &[Box<dyn ForgePlugin>], matches: &ArgMatches) -> Result<()> {
     let verbose = matches.get_flag("verbose");
+    let quiet = matches.get_flag("quiet");
     let (name, sub_matches) = matches
         .subcommand()
         .ok_or_else(|| ForgeError::InvalidArgument("a subcommand is required".into()))?;
@@ -39,7 +50,7 @@ pub fn dispatch(plugins: &[Box<dyn ForgePlugin>], matches: &ArgMatches) -> Resul
         .ok_or_else(|| ForgeError::InvalidArgument(format!("unknown subcommand `{name}`")))?;
 
     let cwd = std::env::current_dir().map_err(ForgeError::io("determining current directory"))?;
-    let ctx = ForgeContext::new(cwd, verbose)?;
+    let ctx = ForgeContext::with_output(cwd, verbose, quiet)?;
 
     log::debug!("dispatching to plugin `{}`", plugin.name());
     plugin.run(sub_matches, &ctx)
@@ -107,6 +118,14 @@ mod tests {
     }
 
     #[test]
+    fn help_lists_quiet_flag() {
+        let (plugins, _) = dummy();
+        let help = build_command(&plugins).render_long_help().to_string();
+        assert!(help.contains("--quiet"));
+        assert!(help.contains("Suppress informational command output"));
+    }
+
+    #[test]
     fn version_is_workspace_version() {
         let (plugins, _) = dummy();
         let cmd = build_command(&plugins);
@@ -128,5 +147,24 @@ mod tests {
         let (plugins, _) = dummy();
         let result = build_command(&plugins).try_get_matches_from(["soroban-forge", "nonexistent"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn quiet_is_global_after_subcommand() {
+        let (plugins, _) = dummy();
+        let matches = build_command(&plugins)
+            .try_get_matches_from(["soroban-forge", "dummy", "--flag", "--quiet"])
+            .unwrap();
+        assert!(matches.get_flag("quiet"));
+    }
+
+    #[test]
+    fn quiet_and_verbose_can_be_combined() {
+        let (plugins, _) = dummy();
+        let matches = build_command(&plugins)
+            .try_get_matches_from(["soroban-forge", "--quiet", "--verbose", "dummy", "--flag"])
+            .unwrap();
+        assert!(matches.get_flag("quiet"));
+        assert!(matches.get_flag("verbose"));
     }
 }

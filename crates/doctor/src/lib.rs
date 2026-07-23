@@ -202,6 +202,14 @@ pub fn format_report(checks: &[Check]) -> String {
     out
 }
 
+/// Count required checks that failed.
+pub fn failure_count(checks: &[Check]) -> usize {
+    checks
+        .iter()
+        .filter(|check| check.status == Status::Fail)
+        .count()
+}
+
 /// The `doctor` subcommand.
 pub struct DoctorPlugin;
 
@@ -215,10 +223,12 @@ impl ForgePlugin for DoctorPlugin {
             .about("Check that Rust, the wasm32v1-none target and stellar-cli are installed")
     }
 
-    fn run(&self, _matches: &ArgMatches, _ctx: &ForgeContext) -> Result<()> {
+    fn run(&self, _matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         let checks = run_checks();
-        print!("{}", format_report(&checks));
-        let failures = checks.iter().filter(|c| c.status == Status::Fail).count();
+        if !ctx.quiet {
+            print!("{}", format_report(&checks));
+        }
+        let failures = failure_count(&checks);
         if failures > 0 {
             Err(ForgeError::Doctor(format!(
                 "{failures} required check(s) failed"
@@ -274,5 +284,41 @@ mod tests {
             fix: None,
         }];
         assert!(format_report(&checks).contains("all checks passed"));
+    }
+
+    #[test]
+    fn failure_count_ignores_passes_and_warnings() {
+        let checks = [
+            Check {
+                name: "pass",
+                status: Status::Pass,
+                detail: String::new(),
+                fix: None,
+            },
+            Check {
+                name: "warn",
+                status: Status::Warn,
+                detail: String::new(),
+                fix: None,
+            },
+            Check {
+                name: "fail",
+                status: Status::Fail,
+                detail: String::new(),
+                fix: None,
+            },
+        ];
+        assert_eq!(failure_count(&checks), 1);
+    }
+
+    #[test]
+    fn successful_checks_have_zero_failures() {
+        let checks = [Check {
+            name: "rustc",
+            status: Status::Pass,
+            detail: "rustc 1.84.0".into(),
+            fix: None,
+        }];
+        assert_eq!(failure_count(&checks), 0);
     }
 }

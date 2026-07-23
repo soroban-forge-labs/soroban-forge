@@ -7,7 +7,8 @@ This crate is the only shared dependency between the feature modules. It owns:
 - **Argument parsing & routing** (`cli.rs`) — builds the top-level `clap`
   command from registered plugins and dispatches to them.
 - **Plugin interface** (`plugin.rs`) — the `ForgePlugin` trait implemented by
-  every feature module, plus `ForgeContext` (cwd, parsed config, verbosity).
+  every feature module, plus `ForgeContext` (cwd, parsed config, verbosity,
+  and quiet-mode state).
 - **Config loading** (`config.rs`) — the optional `forge.toml` file.
 - **Errors** (`error.rs`) — `ForgeError` / `Result` shared by all crates.
 - **Template rendering** (`render.rs`) — minimal `{{var}}` substitution used
@@ -34,6 +35,9 @@ Adding a new module = new crate implementing `ForgePlugin` + one line in
   untouched, so GitHub Actions `${{ secrets.X }}` expressions survive
   rendering (see `render.rs` tests).
 - `forge.toml` is entirely optional; every field has a sensible default.
+- `--quiet` is global and exposed to plugins as `ForgeContext::quiet`; plugins
+  suppress successful informational reports while retaining errors and exit
+  semantics.
 
 ## Tests
 

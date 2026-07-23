@@ -4,6 +4,9 @@ Project scaffolding and contract templates. **Owner: Person B.**
 
 Implements the `soroban-forge new <name> --template <t>` subcommand.
 
+Successful creation messages and template listings honor the global
+`--quiet` flag. Project generation and validation still run normally.
+
 ## Templates
 
 Templates are plain directory trees under the repository's top-level
