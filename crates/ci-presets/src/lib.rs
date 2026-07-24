@@ -42,6 +42,7 @@ pub fn available_providers() -> Vec<&'static str> {
 pub fn output_dir(provider: &str) -> &'static str {
     match provider {
         "github" => ".github/workflows",
+        "gitlab" => ".",
         _ => unreachable!("validated against available_providers()"),
     }
 }
@@ -98,10 +99,22 @@ pub fn generate(
     std::fs::create_dir_all(&out_dir)
         .map_err(ForgeError::io(format!("creating {}", out_dir.display())))?;
 
-    let mut selected: Vec<&str> = BASE_WORKFLOWS.to_vec();
-    if deploy {
-        selected.push(DEPLOY_WORKFLOW);
-    }
+    let selected: Vec<&str> = match provider {
+        "github" => {
+            let mut list = BASE_WORKFLOWS.to_vec();
+            if deploy {
+                list.push(DEPLOY_WORKFLOW);
+            }
+            list
+        }
+        "gitlab" => vec![".gitlab-ci.yml"],
+        _ => {
+            return Err(ForgeError::InvalidArgument(format!(
+                "unknown provider `{provider}` (available: {})",
+                available_providers().join(", ")
+            )));
+        }
+    };
 
     let mut written = Vec::new();
     for name in selected {
@@ -120,7 +133,12 @@ pub fn generate(
         }
         std::fs::write(&out_path, render_str(contents, &vars))
             .map_err(ForgeError::io(format!("writing {}", out_path.display())))?;
-        written.push(format!("{out_rel}/{name}"));
+        let rel_path = if out_rel == "." {
+            name.to_string()
+        } else {
+            format!("{out_rel}/{name}")
+        };
+        written.push(rel_path);
     }
     Ok(written)
 }
@@ -137,9 +155,21 @@ pub fn format_report(
         out.push_str(&format!("  {}\n", path.as_ref()));
     }
     if deploy {
-        out.push_str("\nthe deploy workflow needs a GitHub secret named STELLAR_DEPLOYER_SECRET\n");
-        out.push_str("(a funded testnet account's secret key). Add it under:\n");
-        out.push_str("  repo → Settings → Secrets and variables → Actions\n");
+        let secret_kind = if provider == "gitlab" {
+            "GitLab CI/CD variable"
+        } else {
+            "GitHub secret"
+        };
+        let secret_location = if provider == "gitlab" {
+            "  repo → Settings → CI/CD → Variables\n"
+        } else {
+            "  repo → Settings → Secrets and variables → Actions\n"
+        };
+        out.push_str(&format!(
+            "\nthe deploy workflow needs a {secret_kind} named STELLAR_DEPLOYER_SECRET\n\
+             (a funded testnet account's secret key). Add it under:\n\
+             {secret_location}"
+        ));
     }
     out
 }
@@ -159,7 +189,7 @@ impl ForgePlugin for CiPresetsPlugin {
                 Arg::new("provider")
                     .long("provider")
                     .default_value("github")
-                    .help("CI provider (only `github` in v0.1)"),
+                    .help("CI provider (`github` or `gitlab`)"),
             )
             .arg(
                 Arg::new("deploy")
@@ -211,8 +241,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn github_is_the_only_provider() {
-        assert_eq!(available_providers(), vec!["github"]);
+    fn available_providers_includes_github_and_gitlab() {
+        assert_eq!(available_providers(), vec!["github", "gitlab"]);
     }
 
     #[test]
@@ -240,8 +270,8 @@ mod tests {
     #[test]
     fn unknown_provider_error_lists_available() {
         let dir = tempfile::tempdir().unwrap();
-        let err = generate(dir.path(), "gitlab", "demo", false, false).unwrap_err();
-        assert!(err.to_string().contains("github"));
+        let err = generate(dir.path(), "unknown", "demo", false, false).unwrap_err();
+        assert!(err.to_string().contains("github, gitlab"));
     }
 
     #[test]
@@ -263,6 +293,18 @@ mod tests {
             .path()
             .join(".github/workflows/testnet-deploy.yml")
             .exists());
+    }
+
+    #[test]
+    fn writes_gitlab_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = generate(dir.path(), "gitlab", "demo-gitlab", false, false).unwrap();
+        assert_eq!(written, vec![".gitlab-ci.yml"]);
+        let contents = std::fs::read_to_string(dir.path().join(".gitlab-ci.yml")).unwrap();
+        assert!(contents.contains("CI/CD configuration for demo-gitlab"));
+        assert!(contents.contains("build-and-test"));
+        assert!(contents.contains("contract-size"));
+        assert!(contents.contains("demo_gitlab.wasm"));
     }
 
     #[test]
