@@ -76,7 +76,7 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
     Ok(ContractInfo {
         crate_name: manifest.package.name.replace('-', "_"),
         package_name: manifest.package.name,
-        contract_type,
+        contract_types,
         has_constructor,
         has_testutils: manifest_has_testutils(&manifest.dev_dependencies),
         constructor_args,
@@ -214,7 +214,8 @@ fn map_type_to_default(ty: &str) -> String {
 
 /// Find the struct annotated with `#[contract]` (exactly — not
 /// `#[contractimpl]` or `#[contracttype]`).
-pub fn find_contract_type(source: &str) -> Option<String> {
+pub fn find_contract_types(source: &str) -> Vec<String> {
+    let mut results: Vec<String> = Vec::new();
     let mut saw_contract_attr = false;
     for line in source.lines() {
         let line = line.trim();

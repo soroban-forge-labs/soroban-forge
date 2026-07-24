@@ -118,7 +118,7 @@ pub fn generate(dir: &Path, force: bool) -> Result<(ContractInfo, Vec<&'static s
 
     let mut vars = Vars::new();
     vars.insert("crate_name".into(), info.crate_name.clone());
-    vars.insert("contract_type".into(), info.contract_type.clone());
+    vars.insert("contract_type".into(), info.contract_types.first().cloned().unwrap_or_default());
     vars.insert("contract_args".into(), info.constructor_args.clone());
 
     let files: [(&'static str, String); 2] = [
@@ -169,7 +169,7 @@ pub fn format_report(info: &ContractInfo, written: &[&str]) -> String {
     if info.has_constructor {
         out.push_str(&format!(
             "\nnote: `{}` has a __constructor; real arguments were generated in the smoke test. Review and adjust them as needed.\n",
-            info.contract_type
+            info.contract_types.first().cloned().unwrap_or_default()
         ));
     }
     out.push_str("\nrun them with: cargo test\n");
@@ -210,7 +210,7 @@ impl ForgePlugin for TestgenPlugin {
 
         if ctx.json {
             let report = serde_json::json!({
-                "contract_type": info.contract_type,
+                "contract_type": info.contract_types.first().cloned().unwrap_or_default(),
                 "crate_name": info.crate_name,
                 "package_name": info.package_name,
                 "has_constructor": info.has_constructor,
