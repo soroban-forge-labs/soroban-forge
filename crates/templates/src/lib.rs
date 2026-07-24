@@ -62,7 +62,9 @@ impl ForgePlugin for TemplatesPlugin {
     fn run(&self, _matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         let catalog = soroban_forge_scaffold::template_catalog();
         log::debug!("listing {} bundled templates", catalog.len());
-        if !ctx.quiet {
+        if ctx.json {
+            println!("{}", serde_json::to_string_pretty(&catalog).unwrap());
+        } else if !ctx.quiet {
             print!("{}", format_template_listing(&catalog));
         }
         Ok(())

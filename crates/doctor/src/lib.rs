@@ -16,7 +16,8 @@ use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 pub const MIN_RUST: (u32, u32) = (1, 84); // minimum major.minor
 
 /// Outcome of a single environment check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Status {
     /// Requirement met.
     Pass,
@@ -27,7 +28,7 @@ pub enum Status {
 }
 
 /// One line of the doctor report.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Check {
     pub name: &'static str,
     pub status: Status,
@@ -225,7 +226,16 @@ impl ForgePlugin for DoctorPlugin {
 
     fn run(&self, _matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         let checks = run_checks();
-        if !ctx.quiet {
+        if ctx.json {
+            let failures = checks.iter().filter(|c| c.status == Status::Fail).count();
+            let warnings = checks.iter().filter(|c| c.status == Status::Warn).count();
+            let report = serde_json::json!({
+                "checks": checks,
+                "failures": failures,
+                "warnings": warnings,
+            });
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        } else if !ctx.quiet {
             print!("{}", format_report(&checks));
         }
         let failures = failure_count(&checks);

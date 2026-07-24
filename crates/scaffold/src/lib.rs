@@ -72,7 +72,7 @@ pub fn template_description(name: &str) -> Option<&'static str> {
 }
 
 /// Metadata for a single bundled template.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TemplateInfo {
     pub name: &'static str,
     pub description: &'static str,
@@ -305,7 +305,13 @@ impl ForgePlugin for ScaffoldPlugin {
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         if matches.get_flag("list") {
-            if !ctx.quiet {
+            if ctx.json {
+                let templates = available_templates();
+                let list = serde_json::json!({
+                    "templates": templates
+                });
+                println!("{}", serde_json::to_string_pretty(&list).unwrap());
+            } else if !ctx.quiet {
                 print!("{}", format_template_list(&available_templates()));
             }
             return Ok(());
@@ -355,21 +361,33 @@ impl ForgePlugin for ScaffoldPlugin {
             write_pre_commit_config(&dest, force)?;
         }
 
-        println!(
-            "created `{name}` from template `{template}` at {}",
-            dest.display()
-        );
-        println!();
-        println!("next steps:");
-        println!("  cd {name}");
-        println!("  cargo test                      # run the template's unit tests");
-        println!("  stellar contract build          # build the deployable wasm");
-        println!("  soroban-forge test-init         # add a generated test harness");
-        println!("  soroban-forge ci-init           # add GitHub Actions workflows");
-        if matches.get_flag("pre-commit") {
-            println!("  pre-commit install              # enable the git hooks");
-        if !ctx.quiet {
-            print!("{}", format_created_report(name, &template, &dest));
+        if ctx.json {
+            let report = serde_json::json!({
+                "project_name": name,
+                "template": template,
+                "destination": dest.display().to_string(),
+                "git_initialized": !matches.get_flag("no-git"),
+                "pre_commit_written": matches.get_flag("pre-commit"),
+            });
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        } else {
+            println!(
+                "created `{name}` from template `{template}` at {}",
+                dest.display()
+            );
+            println!();
+            println!("next steps:");
+            println!("  cd {name}");
+            println!("  cargo test                      # run the template's unit tests");
+            println!("  stellar contract build          # build the deployable wasm");
+            println!("  soroban-forge test-init         # add a generated test harness");
+            println!("  soroban-forge ci-init           # add GitHub Actions workflows");
+            if matches.get_flag("pre-commit") {
+                println!("  pre-commit install              # enable the git hooks");
+            }
+            if !ctx.quiet {
+                print!("{}", format_created_report(name, &template, &dest));
+            }
         }
         Ok(())
     }

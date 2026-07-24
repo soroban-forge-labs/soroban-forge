@@ -20,22 +20,25 @@ pub struct ForgeContext {
     pub verbose: bool,
     /// Whether informational command output should be suppressed.
     pub quiet: bool,
+    /// Whether structured JSON should be printed instead of text output.
+    pub json: bool,
 }
 
 impl ForgeContext {
     /// Build a context for `cwd`, loading `forge.toml` if present.
     pub fn new(cwd: PathBuf, verbose: bool) -> Result<Self> {
-        Self::with_output(cwd, verbose, false)
+        Self::with_output(cwd, verbose, false, false)
     }
 
     /// Build a context with explicit output controls.
-    pub fn with_output(cwd: PathBuf, verbose: bool, quiet: bool) -> Result<Self> {
+    pub fn with_output(cwd: PathBuf, verbose: bool, quiet: bool, json: bool) -> Result<Self> {
         let config = ForgeConfig::load_from(&cwd)?;
         Ok(Self {
             cwd,
             config,
             verbose,
             quiet,
+            json,
         })
     }
 }
@@ -66,12 +69,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ForgeContext::new(dir.path().to_path_buf(), false).unwrap();
         assert!(!ctx.quiet);
+        assert!(!ctx.json);
     }
 
     #[test]
     fn context_accepts_explicit_quiet_mode() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ForgeContext::with_output(dir.path().to_path_buf(), false, true).unwrap();
+        let ctx = ForgeContext::with_output(dir.path().to_path_buf(), false, true, false).unwrap();
         assert!(ctx.quiet);
+    }
+
+    #[test]
+    fn context_accepts_explicit_json_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ForgeContext::with_output(dir.path().to_path_buf(), false, false, true).unwrap();
+        assert!(ctx.json);
     }
 }

@@ -191,7 +191,15 @@ impl ForgePlugin for CiPresetsPlugin {
 
         let written = generate(&dir, provider, &name, deploy, matches.get_flag("force"))?;
 
-        if !ctx.quiet {
+        if ctx.json {
+            let report = serde_json::json!({
+                "provider": provider,
+                "project_name": name,
+                "written_files": written,
+                "deploy_enabled": deploy
+            });
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        } else if !ctx.quiet {
             print!("{}", format_report(provider, &name, &written, deploy));
         }
         Ok(())

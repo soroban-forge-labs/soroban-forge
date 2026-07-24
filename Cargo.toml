@@ -40,6 +40,7 @@ soroban-forge-core = { path = "crates/core" }
 clap = "4.5"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 toml = "0.9"
 log = "0.4"
 env_logger = "0.11"
