@@ -12,6 +12,8 @@
 
 ## Quickstart
 
+[![asciinema cast](https://asciinema.org/a/soroban-forge-zero-to-testnet.svg)](https://asciinema.org/a/soroban-forge-zero-to-testnet)
+
 ```sh
 # 1. install (from source, v0.1)
 git clone https://github.com/soroban-forge-labs/soroban-forge
@@ -20,7 +22,7 @@ cd soroban-forge && cargo install --path .
 # 2. check your environment
 soroban-forge doctor
 
-# 3. create a project (templates: hello-world, token, crowdfund)
+# 3. create a project (templates: hello-world, nft, token, crowdfund)
 soroban-forge new my-token --template token
 cd my-token
 
@@ -87,6 +89,10 @@ up an issue — [ISSUES.md](ISSUES.md) lists well-scoped starter work.
 `soroban-forge` uses a small set of stable exit codes (`0` success, `1`
 user error, `2` missing tool, `3` internal error) so CI/scripts can branch
 on outcome — see [docs/exit-codes.md](docs/exit-codes.md).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a full history of notable changes and release notes.
 
 ## License
 

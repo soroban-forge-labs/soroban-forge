@@ -22,6 +22,7 @@ soroban-forge-templates = { path = "crates/templates" }
 
 [dev-dependencies]
 tempfile.workspace = true
+serde_json.workspace = true
 
 [workspace]
 members = ["crates/*"]
@@ -37,9 +38,11 @@ rust-version = "1.84"
 
 [workspace.dependencies]
 soroban-forge-core = { path = "crates/core" }
+soroban-forge-scaffold = { path = "crates/scaffold" }
 clap = "4.5"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 toml = "0.9"
 log = "0.4"
 env_logger = "0.11"

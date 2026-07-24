@@ -12,6 +12,8 @@ soroban-forge-core.workspace = true
 clap.workspace = true
 include_dir.workspace = true
 log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

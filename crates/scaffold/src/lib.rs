@@ -66,13 +66,14 @@ pub fn template_description(name: &str) -> Option<&'static str> {
     match name {
         "crowdfund" => Some("escrow/deadline crowdfunding contract"),
         "hello-world" => Some("minimal greeter contract (recommended starting point)"),
+        "nft" => Some("NFT (non-fungible token) with per-token metadata and minting"),
         "token" => Some("SEP-41 fungible token (soroban_sdk::token::TokenInterface)"),
         _ => None,
     }
 }
 
 /// Metadata for a single bundled template.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TemplateInfo {
     pub name: &'static str,
     pub description: &'static str,
@@ -117,12 +118,13 @@ pub fn validate_project_name(name: &str) -> Result<()> {
 }
 
 /// Build the variable map for a project.
-pub fn project_vars(project_name: &str, author: &str) -> Vars {
+pub fn project_vars(project_name: &str, author: &str, edition: &str) -> Vars {
     let mut vars = BTreeMap::new();
     vars.insert("project_name".into(), project_name.to_string());
     vars.insert("crate_name".into(), project_name.replace('-', "_"));
     vars.insert("author".into(), author.to_string());
     vars.insert("sdk_version".into(), SOROBAN_SDK_VERSION.to_string());
+    vars.insert("edition".into(), edition.to_string());
     vars
 }
 
@@ -199,13 +201,14 @@ fn write_pre_commit_config(dest: &Path, force: bool) -> Result<()> {
 
 /// Initialize a git repository in `dest`.
 pub fn init_git(dest: &Path) -> Result<()> {
-    let status = std::process::Command::new("git")
+    let output = std::process::Command::new("git")
         .arg("init")
+        .arg("-q")
         .arg(dest)
-        .status();
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(ForgeError::Other(format!("`git init` exited with status {s}"))),
+        .output();
+    match output {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(ForgeError::Other(format!("`git init` exited with status {}", o.status))),
         Err(e) => Err(ForgeError::io("executing `git init`")(e)),
     }
 }
@@ -290,6 +293,12 @@ impl ForgePlugin for ScaffoldPlugin {
                     .help("Add a .pre-commit-config.yaml with rustfmt and clippy hooks"),
             )
             .arg(
+                Arg::new("edition")
+                    .long("edition")
+                    .help("Rust edition for the generated Cargo.toml [default: 2021]")
+                    .value_parser(["2021", "2024"]),
+            )
+            .arg(
                 Arg::new("no-git")
                     .long("no-git")
                     .action(ArgAction::SetTrue)
@@ -305,7 +314,13 @@ impl ForgePlugin for ScaffoldPlugin {
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         if matches.get_flag("list") {
-            if !ctx.quiet {
+            if ctx.json {
+                let templates = available_templates();
+                let list = serde_json::json!({
+                    "templates": templates
+                });
+                println!("{}", serde_json::to_string_pretty(&list).unwrap());
+            } else if !ctx.quiet {
                 print!("{}", format_template_list(&available_templates()));
             }
             return Ok(());
@@ -331,6 +346,11 @@ impl ForgePlugin for ScaffoldPlugin {
             .cloned()
             .unwrap_or_else(|| default_author(ctx));
 
+        let edition = matches
+            .get_one::<String>("edition")
+            .cloned()
+            .unwrap_or_else(|| "2021".to_string());
+
         let parent = matches
             .get_one::<String>("output")
             .map(|o| ctx.cwd.join(o))
@@ -343,7 +363,7 @@ impl ForgePlugin for ScaffoldPlugin {
             "scaffolding `{name}` from template `{template}` into {}",
             dest.display()
         );
-        generate(&template, &dest, &project_vars(name, &author), force)?;
+        generate(&template, &dest, &project_vars(name, &author, &edition), force)?;
 
         if !matches.get_flag("no-git") {
             if let Err(err) = init_git(&dest) {
@@ -355,21 +375,21 @@ impl ForgePlugin for ScaffoldPlugin {
             write_pre_commit_config(&dest, force)?;
         }
 
-        println!(
-            "created `{name}` from template `{template}` at {}",
-            dest.display()
-        );
-        println!();
-        println!("next steps:");
-        println!("  cd {name}");
-        println!("  cargo test                      # run the template's unit tests");
-        println!("  stellar contract build          # build the deployable wasm");
-        println!("  soroban-forge test-init         # add a generated test harness");
-        println!("  soroban-forge ci-init           # add GitHub Actions workflows");
-        if matches.get_flag("pre-commit") {
-            println!("  pre-commit install              # enable the git hooks");
         if !ctx.quiet {
-            print!("{}", format_created_report(name, &template, &dest));
+            println!(
+                "created `{name}` from template `{template}` at {}",
+                dest.display()
+            );
+            println!();
+            println!("next steps:");
+            println!("  cd {name}");
+            println!("  cargo test                      # run the template's unit tests");
+            println!("  stellar contract build          # build the deployable wasm");
+            println!("  soroban-forge test-init         # add a generated test harness");
+            println!("  soroban-forge ci-init           # add GitHub Actions workflows");
+            if matches.get_flag("pre-commit") {
+                println!("  pre-commit install              # enable the git hooks");
+            }
         }
         Ok(())
     }
@@ -380,17 +400,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lists_all_three_templates() {
+    fn lists_all_bundled_templates() {
         assert_eq!(
             available_templates(),
-            vec!["crowdfund", "hello-world", "token"]
+            vec!["crowdfund", "hello-world", "nft", "token"]
         );
     }
 
     #[test]
     fn template_list_report_has_heading_and_items() {
-        let report = format_template_list(&["hello-world", "token"]);
-        assert_eq!(report, "available templates:\n  hello-world\n  token\n");
+        let report = format_template_list(&["hello-world", "nft", "token"]);
+        assert_eq!(report, "available templates:\n  hello-world\n  nft\n  token\n");
     }
 
     #[test]
@@ -412,7 +432,7 @@ mod tests {
     fn catalog_returns_all_templates_with_descriptions() {
         let catalog = template_catalog();
         let names: Vec<&str> = catalog.iter().map(|t| t.name).collect();
-        assert_eq!(names, vec!["crowdfund", "hello-world", "token"]);
+        assert_eq!(names, vec!["crowdfund", "hello-world", "nft", "token"]);
         for entry in &catalog {
             assert!(
                 !entry.description.is_empty(),
@@ -463,7 +483,7 @@ mod tests {
         let err = generate(
             "nope",
             &dir.path().join("x"),
-            &project_vars("x", "A"),
+            &project_vars("x", "A", "2021"),
             false,
         )
         .unwrap_err();
@@ -476,7 +496,7 @@ mod tests {
         let dest = dir.path().join("demo");
         std::fs::create_dir(&dest).unwrap();
         assert!(matches!(
-            generate("hello-world", &dest, &project_vars("demo", "A"), false),
+            generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false),
             Err(ForgeError::AlreadyExists(_))
         ));
     }
@@ -488,7 +508,7 @@ mod tests {
         generate(
             "hello-world",
             &dest,
-            &project_vars("demo", "Ada <ada@example.com>"),
+            &project_vars("demo", "Ada <ada@example.com>", "2021"),
             false,
         )
         .unwrap();
@@ -527,7 +547,7 @@ mod tests {
         for template in available_templates() {
             let dir = tempfile::tempdir().unwrap();
             let dest = dir.path().join("proj");
-            generate(template, &dest, &project_vars("proj", "A"), false).unwrap();
+            generate(template, &dest, &project_vars("proj", "A", "2021"), false).unwrap();
             assert!(dest.join("Cargo.toml").is_file(), "template {template}");
             for entry in walk(&dest) {
                 assert!(
@@ -544,7 +564,7 @@ mod tests {
         for template in available_templates() {
             let dir = tempfile::tempdir().unwrap();
             let dest = dir.path().join("my-contract");
-            generate(template, &dest, &project_vars("my-contract", "A"), false).unwrap();
+            generate(template, &dest, &project_vars("my-contract", "A", "2021"), false).unwrap();
             let readme_path = dest.join("README.md");
             assert!(readme_path.is_file(), "README.md missing for template {template}");
             let contents = std::fs::read_to_string(&readme_path).unwrap();
@@ -569,7 +589,7 @@ mod tests {
     fn writes_pre_commit_config() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("demo");
-        generate("hello-world", &dest, &project_vars("demo", "A"), false).unwrap();
+        generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false).unwrap();
         write_pre_commit_config(&dest, false).unwrap();
 
         let path = dest.join(".pre-commit-config.yaml");
@@ -586,7 +606,7 @@ mod tests {
     fn refuses_to_overwrite_pre_commit_without_force() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("demo");
-        generate("hello-world", &dest, &project_vars("demo", "A"), false).unwrap();
+        generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false).unwrap();
         write_pre_commit_config(&dest, false).unwrap();
         assert!(matches!(
             write_pre_commit_config(&dest, false),
@@ -599,7 +619,7 @@ mod tests {
     fn pre_commit_not_written_without_flag() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("demo");
-        generate("hello-world", &dest, &project_vars("demo", "A"), false).unwrap();
+        generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false).unwrap();
         assert!(!dest.join(".pre-commit-config.yaml").exists());
     }
 

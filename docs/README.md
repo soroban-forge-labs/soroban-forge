@@ -3,6 +3,7 @@
 - **[Tutorial: zero to deployed testnet contract](tutorial-zero-to-testnet.md)** —
   the full walkthrough for newcomers, no prior Soroban knowledge required.
 - **[Architecture](architecture.md)** — how the five modules fit together.
+- **[SDK Upgrade & Migration Guide](upgrade-guide.md)** — how to migrate generated projects across SDK major versions.
 - **[Troubleshooting / FAQ](troubleshooting.md)** — fixes for common setup
   and build failures.
 - **[Exit codes](exit-codes.md)** — the stable exit-code contract for CI/scripts.

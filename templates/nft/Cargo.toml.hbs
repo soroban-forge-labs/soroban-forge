@@ -14,10 +14,6 @@ soroban-sdk = "{{sdk_version}}"
 
 [dev-dependencies]
 soroban-sdk = { version = "{{sdk_version}}", features = ["testutils"] }
-# soroban-env-host 26.x declares `ed25519-dalek >=2.0.0`, and dalek 3.0 broke
-# its testutils; constrain to 2.x until upstream pins it. TODO(verify): remove
-# once soroban-env-host releases a fix.
-ed25519-dalek = { version = ">=2.0, <3" }
 
 [profile.release]
 opt-level = "z"

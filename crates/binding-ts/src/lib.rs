@@ -210,13 +210,21 @@ fn run_ts(matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
 
     let wasm_path = generate_bindings(&dir, wasm_override.as_deref(), &output, matches.get_flag("force"))?;
 
-    println!("generated TypeScript bindings from {}", wasm_path.display());
-    println!("  -> {}", output.display());
-    println!();
-    println!("next steps:");
-    println!("  cd {}", output.display());
-    println!("  npm install");
-    println!("  npm run build");
+    if ctx.json {
+        let report = serde_json::json!({
+            "wasm_path": wasm_path.display().to_string(),
+            "output_dir": output.display().to_string()
+        });
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!("generated TypeScript bindings from {}", wasm_path.display());
+        println!("  -> {}", output.display());
+        println!();
+        println!("next steps:");
+        println!("  cd {}", output.display());
+        println!("  npm install");
+        println!("  npm run build");
+    }
     Ok(())
 }
 

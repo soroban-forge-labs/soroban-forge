@@ -88,32 +88,52 @@ impl ForgeError {
     }
 }
 
-new (appended at end of file):
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn user_errors_map_to_exit_code_1() {
-        assert_eq!(ForgeError::InvalidArgument("x".into()).exit_code(), ExitCode::UserError);
-        assert_eq!(ForgeError::AlreadyExists(PathBuf::from("x")).exit_code(), ExitCode::UserError);
-        assert_eq!(ForgeError::Template("x".into()).exit_code(), ExitCode::UserError);
         assert_eq!(
-            ForgeError::Config { path: PathBuf::from("forge.toml"), message: "bad".into() }.exit_code(),
+            ForgeError::InvalidArgument("x".into()).exit_code(),
+            ExitCode::UserError
+        );
+        assert_eq!(
+            ForgeError::AlreadyExists(PathBuf::from("x")).exit_code(),
+            ExitCode::UserError
+        );
+        assert_eq!(
+            ForgeError::Template("x".into()).exit_code(),
+            ExitCode::UserError
+        );
+        assert_eq!(
+            ForgeError::Config {
+                path: PathBuf::from("forge.toml"),
+                message: "bad".into()
+            }
+            .exit_code(),
             ExitCode::UserError
         );
     }
 
     #[test]
     fn missing_tool_errors_map_to_exit_code_2() {
-        assert_eq!(ForgeError::Doctor("2 failed".into()).exit_code(), ExitCode::ToolMissing);
-        assert_eq!(ForgeError::ToolMissing("stellar".into()).exit_code(), ExitCode::ToolMissing);
+        assert_eq!(
+            ForgeError::Doctor("2 failed".into()).exit_code(),
+            ExitCode::ToolMissing
+        );
+        assert_eq!(
+            ForgeError::ToolMissing("stellar".into()).exit_code(),
+            ExitCode::ToolMissing
+        );
     }
 
     #[test]
     fn unclassified_errors_map_to_exit_code_3() {
-        assert_eq!(ForgeError::Other("oops".into()).exit_code(), ExitCode::InternalError);
+        assert_eq!(
+            ForgeError::Other("oops".into()).exit_code(),
+            ExitCode::InternalError
+        );
         assert_eq!(
             ForgeError::Io {
                 context: "reading x".into(),

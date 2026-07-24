@@ -8,15 +8,23 @@
 //! - the `wasm32v1-none` compilation target
 //! - the official `stellar` CLI
 //! - `git` (recommended, not required)
+//! - when run inside a contract project: the project's `soroban-sdk`
+//!   version, compared against the version pinned into new projects
+//!   (`soroban_forge_scaffold::SOROBAN_SDK_VERSION`)
 
-use clap::{ArgMatches, Command};
+use std::path::Path;
+
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use serde::{Deserialize, Serialize};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
+use soroban_forge_scaffold::SOROBAN_SDK_VERSION;
 
 /// Minimum Rust version able to target `wasm32v1-none`.
 pub const MIN_RUST: (u32, u32) = (1, 84); // minimum major.minor
 
 /// Outcome of a single environment check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Status {
     /// Requirement met.
     Pass,
@@ -27,7 +35,7 @@ pub enum Status {
 }
 
 /// One line of the doctor report.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
     pub name: &'static str,
     pub status: Status,
@@ -66,6 +74,115 @@ pub fn version_at_least(version_line: &str, min: (u32, u32)) -> bool {
         })
         .map(|version| version >= min)
         .unwrap_or(false)
+}
+
+/// Leniently parse a cargo version requirement (e.g. `26.1.0`, `^26.1`,
+/// `=26.1.0`, `>=26, <27`) into `(major, minor, patch)`. Missing components
+/// default to zero. Returns `None` for wildcards or anything else that does
+/// not start with a numeric major version.
+pub fn parse_semverish(version: &str) -> Option<(u32, u32, u32)> {
+    let first = version
+        .split(',')
+        .next()?
+        .trim()
+        .trim_start_matches(['^', '~', '=', '>', '<', 'v', ' ']);
+    let mut parts = first.split('.');
+    let major: u32 = parts.next()?.trim().parse().ok()?;
+    let minor: u32 = parts
+        .next()
+        .unwrap_or("0")
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    let patch: u32 = parts
+        .next()
+        .unwrap_or("0")
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// Extract the declared `soroban-sdk` version from a parsed manifest.
+///
+/// Outer `Option`: whether the manifest declares a `soroban-sdk` dependency
+/// at all. Inner `Option`: the version requirement, `None` when the
+/// dependency has no `version` key (e.g. a git or path dependency).
+fn manifest_sdk_version(manifest: &toml::Value) -> Option<Option<String>> {
+    for table in ["dependencies", "dev-dependencies"] {
+        if let Some(dep) = manifest.get(table).and_then(|t| t.get("soroban-sdk")) {
+            return Some(dep_version(dep));
+        }
+    }
+    manifest
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(|t| t.get("soroban-sdk"))
+        .map(dep_version)
+}
+
+/// The version requirement of a single dependency entry, covering both the
+/// string form (`soroban-sdk = "26.1.0"`) and the table form
+/// (`soroban-sdk = { version = "26.1.0", ... }`).
+fn dep_version(dep: &toml::Value) -> Option<String> {
+    match dep {
+        toml::Value::String(s) => Some(s.clone()),
+        other => other
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    }
+}
+
+/// Check the project's `soroban-sdk` version against the version pinned into
+/// freshly scaffolded projects.
+///
+/// Returns `None` (no report line at all) when `project_dir` does not look
+/// like a contract project: no readable/parseable `Cargo.toml`, or a
+/// manifest without a `soroban-sdk` dependency. Otherwise:
+///
+/// - `Pass` when the declared version is at or above the pinned one
+/// - `Warn` when it is behind, unversioned, or unparseable
+pub fn sdk_version_check(project_dir: &Path) -> Option<Check> {
+    let contents = std::fs::read_to_string(project_dir.join("Cargo.toml")).ok()?;
+    let manifest: toml::Value = toml::from_str(&contents).ok()?;
+    let declared = manifest_sdk_version(&manifest)?;
+    let pinned = parse_semverish(SOROBAN_SDK_VERSION)?;
+
+    Some(match declared {
+        None => Check {
+            name: "soroban-sdk",
+            status: Status::Warn,
+            detail: format!("no version specified (latest pinned: {SOROBAN_SDK_VERSION})"),
+            fix: Some("pin a soroban-sdk version in Cargo.toml"),
+        },
+        Some(raw) => match parse_semverish(&raw) {
+            Some(found) if found >= pinned => Check {
+                name: "soroban-sdk",
+                status: Status::Pass,
+                detail: format!("soroban-sdk {raw}"),
+                fix: None,
+            },
+            Some(_) => Check {
+                name: "soroban-sdk",
+                status: Status::Warn,
+                detail: format!("soroban-sdk {raw} (latest pinned: {SOROBAN_SDK_VERSION})"),
+                fix: Some("update the soroban-sdk version in Cargo.toml"),
+            },
+            None => Check {
+                name: "soroban-sdk",
+                status: Status::Warn,
+                detail: format!(
+                    "could not parse version `{raw}` (latest pinned: {SOROBAN_SDK_VERSION})"
+                ),
+                fix: Some("pin a concrete soroban-sdk version in Cargo.toml"),
+            },
+        },
+    })
 }
 
 /// Run all environment checks.
@@ -202,6 +319,11 @@ pub fn format_report(checks: &[Check]) -> String {
     out
 }
 
+/// Render the report as JSON.
+pub fn format_json_report(checks: &[Check]) -> String {
+    serde_json::to_string_pretty(checks).unwrap_or_else(|_| "[]".to_string())
+}
+
 /// Count required checks that failed.
 pub fn failure_count(checks: &[Check]) -> usize {
     checks
@@ -220,12 +342,28 @@ impl ForgePlugin for DoctorPlugin {
 
     fn command(&self) -> Command {
         Command::new("doctor")
-            .about("Check that Rust, the wasm32v1-none target and stellar-cli are installed")
+            .about(
+                "Check that Rust, the wasm32v1-none target and stellar-cli are installed, \
+                 and that the project's soroban-sdk is up to date",
+            )
+            .arg(
+                Arg::new("json")
+                    .long("json")
+                    .action(ArgAction::SetTrue)
+                    .help("Output check results as JSON"),
+            )
     }
 
-    fn run(&self, _matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
-        let checks = run_checks();
-        if !ctx.quiet {
+    fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
+        let mut checks = run_checks();
+        // Project-local check: only reports when run inside a contract project.
+        if let Some(check) = sdk_version_check(&ctx.cwd) {
+            checks.push(check);
+        }
+        let use_json = ctx.json || matches.get_flag("json");
+        if use_json {
+            println!("{}", format_json_report(&checks));
+        } else if !ctx.quiet {
             print!("{}", format_report(&checks));
         }
         let failures = failure_count(&checks);
@@ -320,5 +458,129 @@ mod tests {
             fix: None,
         }];
         assert_eq!(failure_count(&checks), 0);
+    }
+
+    // ---- soroban-sdk version check ----
+
+    fn project_with_manifest(manifest: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), manifest).unwrap();
+        dir
+    }
+
+    #[test]
+    fn parses_common_version_requirements() {
+        assert_eq!(parse_semverish("26.1.0"), Some((26, 1, 0)));
+        assert_eq!(parse_semverish("^26.1"), Some((26, 1, 0)));
+        assert_eq!(parse_semverish("=25.0.3"), Some((25, 0, 3)));
+        assert_eq!(parse_semverish(">=26, <27"), Some((26, 0, 0)));
+        assert_eq!(parse_semverish("26"), Some((26, 0, 0)));
+        assert_eq!(parse_semverish("1.2.3-rc.1"), Some((1, 2, 3)));
+        assert_eq!(parse_semverish("*"), None);
+        assert_eq!(parse_semverish("garbage"), None);
+    }
+
+    #[test]
+    fn pinned_sdk_version_is_parseable() {
+        assert!(
+            parse_semverish(SOROBAN_SDK_VERSION).is_some(),
+            "scaffold::SOROBAN_SDK_VERSION must be a parseable semver"
+        );
+    }
+
+    #[test]
+    fn no_op_without_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(sdk_version_check(dir.path()).is_none());
+    }
+
+    #[test]
+    fn no_op_without_soroban_sdk_dependency() {
+        let dir = project_with_manifest(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\n",
+        );
+        assert!(sdk_version_check(dir.path()).is_none());
+    }
+
+    #[test]
+    fn warns_when_project_sdk_is_behind() {
+        let dir = project_with_manifest(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\nsoroban-sdk = \"25.0.0\"\n",
+        );
+        let check = sdk_version_check(dir.path()).unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("25.0.0"));
+        assert!(check.detail.contains(SOROBAN_SDK_VERSION));
+        assert!(check.fix.is_some());
+    }
+
+    #[test]
+    fn passes_when_project_sdk_is_current() {
+        let dir = project_with_manifest(&format!(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\nsoroban-sdk = \"{SOROBAN_SDK_VERSION}\"\n",
+        ));
+        let check = sdk_version_check(dir.path()).unwrap();
+        assert_eq!(check.status, Status::Pass);
+        assert!(check.fix.is_none());
+    }
+
+    #[test]
+    fn passes_when_project_sdk_is_ahead() {
+        let dir = project_with_manifest(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\nsoroban-sdk = \"99.0.0\"\n",
+        );
+        assert_eq!(sdk_version_check(dir.path()).unwrap().status, Status::Pass);
+    }
+
+    #[test]
+    fn reads_table_form_and_dev_dependencies() {
+        let table = project_with_manifest(
+            "[dependencies]\nsoroban-sdk = { version = \"25.1.2\", features = [\"testutils\"] }\n",
+        );
+        let check = sdk_version_check(table.path()).unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("25.1.2"));
+
+        let dev = project_with_manifest(&format!(
+            "[dev-dependencies]\nsoroban-sdk = \"{SOROBAN_SDK_VERSION}\"\n"
+        ));
+        assert_eq!(sdk_version_check(dev.path()).unwrap().status, Status::Pass);
+    }
+
+    #[test]
+    fn warns_on_versionless_dependency() {
+        let dir = project_with_manifest(
+            "[dependencies]\nsoroban-sdk = { git = \"https://example.com/sdk\" }\n",
+        );
+        let check = sdk_version_check(dir.path()).unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("no version specified"));
+    }
+    #[test]
+    fn json_report_formatting() {
+        let checks = vec![
+            Check {
+                name: "rustc",
+                status: Status::Pass,
+                detail: "rustc 1.90.0".into(),
+                fix: None,
+            },
+            Check {
+                name: "stellar-cli",
+                status: Status::Fail,
+                detail: "not found".into(),
+                fix: Some("install: brew install stellar-cli"),
+            },
+        ];
+        let json_str = format_json_report(&checks);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(parsed.is_array());
+        assert_eq!(parsed[0]["name"], "rustc");
+        assert_eq!(parsed[0]["status"], "pass");
+        assert_eq!(parsed[0]["detail"], "rustc 1.90.0");
+        assert!(parsed[0]["fix"].is_null());
+        assert_eq!(parsed[1]["name"], "stellar-cli");
+        assert_eq!(parsed[1]["status"], "fail");
+        assert_eq!(parsed[1]["fix"], "install: brew install stellar-cli");
     }
 }

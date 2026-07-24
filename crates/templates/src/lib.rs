@@ -62,7 +62,9 @@ impl ForgePlugin for TemplatesPlugin {
     fn run(&self, _matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         let catalog = soroban_forge_scaffold::template_catalog();
         log::debug!("listing {} bundled templates", catalog.len());
-        if !ctx.quiet {
+        if ctx.json {
+            println!("{}", serde_json::to_string_pretty(&catalog).unwrap());
+        } else if !ctx.quiet {
             print!("{}", format_template_listing(&catalog));
         }
         Ok(())
@@ -98,11 +100,13 @@ mod tests {
         let catalog = make_catalog(&[
             ("crowdfund", "escrow/deadline crowdfunding contract"),
             ("hello-world", "minimal greeter contract (recommended starting point)"),
+            ("nft", "NFT (non-fungible token) with per-token metadata"),
             ("token", "SEP-41 fungible token"),
         ]);
         let output = format_template_listing(&catalog);
         assert!(output.contains("crowdfund"));
         assert!(output.contains("hello-world"));
+        assert!(output.contains("nft"));
         assert!(output.contains("token"));
     }
 
@@ -111,11 +115,13 @@ mod tests {
         let catalog = make_catalog(&[
             ("crowdfund", "escrow/deadline crowdfunding contract"),
             ("hello-world", "minimal greeter contract (recommended starting point)"),
+            ("nft", "NFT (non-fungible token) with per-token metadata"),
             ("token", "SEP-41 fungible token"),
         ]);
         let output = format_template_listing(&catalog);
         assert!(output.contains("escrow/deadline crowdfunding contract"));
         assert!(output.contains("minimal greeter contract"));
+        assert!(output.contains("NFT (non-fungible token)"));
         assert!(output.contains("SEP-41 fungible token"));
     }
 
