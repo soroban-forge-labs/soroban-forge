@@ -1,0 +1,6 @@
+description = "minimal greeter contract (recommended starting point)"
+
+[post_generate]
+hints = [
+  "this is the smallest template — a good starting point before copying in real contract logic",
+]

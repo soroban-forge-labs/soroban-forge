@@ -1,0 +1,7 @@
+description = "escrow/deadline crowdfunding contract"
+
+[post_generate]
+hints = [
+  "deploy args: --owner <ADDRESS> --token <ADDRESS> --target <AMOUNT> --deadline <UNIX_TIMESTAMP>",
+  "the deadline is a unix timestamp — pick one in the future before testing claim()/refund()",
+]

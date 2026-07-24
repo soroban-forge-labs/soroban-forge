@@ -28,5 +28,5 @@ stellar contract deploy \
   --wasm target/wasm32v1-none/release/{{crate_name}}.wasm \
   --source-account <your-identity> \
   --network testnet \
-  -- --admin <ADMIN_ADDRESS> --decimals 7 --name "My Token" --symbol MYT
+  -- --admin <ADMIN_ADDRESS> --decimals {{token_decimals}} --name "{{token_name}}" --symbol {{token_symbol}}
 ```

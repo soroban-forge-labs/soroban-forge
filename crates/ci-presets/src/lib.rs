@@ -7,6 +7,9 @@
 //! - `contract-size.yml`: fails PRs when the built wasm exceeds a limit
 //! - `testnet-deploy.yml` (with `--deploy`): manual testnet deploy wrapping
 //!   the official stellar-cli; references GitHub secrets, never stores keys.
+//! - `release.yml` (with `--release`): tag-triggered (`v*.*.*`) build that
+//!   attaches the contract wasm and a SHA256 checksum to a GitHub Release,
+//!   after verifying the build is reproducible (same source, same hash).
 //!
 //! Presets live in the repository's top-level `presets/<provider>/` directory
 //! and are embedded at compile time. `{{project_name}}` / `{{crate_name}}`
@@ -27,6 +30,8 @@ static PRESETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../presets");
 const BASE_WORKFLOWS: &[&str] = &["build-test.yml", "contract-size.yml"]; // base workflows
 /// Workflow written only with `--deploy`.
 const DEPLOY_WORKFLOW: &str = "testnet-deploy.yml";
+/// Workflow written only with `--release`.
+const RELEASE_WORKFLOW: &str = "release.yml";
 
 /// Providers with a preset directory, sorted.
 pub fn available_providers() -> Vec<&'static str> {
@@ -80,6 +85,7 @@ pub fn generate(
     provider: &str,
     project_name: &str,
     deploy: bool,
+    release: bool,
     force: bool,
 ) -> Result<Vec<String>> {
     let provider_dir = PRESETS.get_dir(provider).ok_or_else(|| {
@@ -101,6 +107,9 @@ pub fn generate(
     let mut selected: Vec<&str> = BASE_WORKFLOWS.to_vec();
     if deploy {
         selected.push(DEPLOY_WORKFLOW);
+    }
+    if release {
+        selected.push(RELEASE_WORKFLOW);
     }
 
     let mut written = Vec::new();
@@ -131,6 +140,7 @@ pub fn format_report(
     name: &str,
     written: &[impl AsRef<str>],
     deploy: bool,
+    release: bool,
 ) -> String {
     let mut out = format!("wrote {provider} workflows for `{name}`:\n");
     for path in written {
@@ -140,6 +150,13 @@ pub fn format_report(
         out.push_str("\nthe deploy workflow needs a GitHub secret named STELLAR_DEPLOYER_SECRET\n");
         out.push_str("(a funded testnet account's secret key). Add it under:\n");
         out.push_str("  repo → Settings → Secrets and variables → Actions\n");
+    }
+    if release {
+        out.push_str("\npush a tag matching `v*.*.*` (e.g. `v0.1.0`) to build the wasm,\n");
+        out.push_str("verify the build is reproducible, and publish it to a GitHub Release\n");
+        out.push_str(
+            "with a SHA256 checksum. Uses the default GITHUB_TOKEN — no secrets needed.\n",
+        );
     }
     out
 }
@@ -154,7 +171,7 @@ impl ForgePlugin for CiPresetsPlugin {
 
     fn command(&self) -> Command {
         Command::new("ci-init")
-            .about("Write CI/CD workflows (build+test, contract-size, optional testnet deploy)")
+            .about("Write CI/CD workflows (build+test, contract-size, optional deploy/release)")
             .arg(
                 Arg::new("provider")
                     .long("provider")
@@ -166,6 +183,12 @@ impl ForgePlugin for CiPresetsPlugin {
                     .long("deploy")
                     .action(ArgAction::SetTrue)
                     .help("Also write the manual testnet-deploy workflow"),
+            )
+            .arg(
+                Arg::new("release")
+                    .long("release")
+                    .action(ArgAction::SetTrue)
+                    .help("Also write a tag-triggered (v*.*.*) release workflow: builds the wasm, verifies it's reproducible, and attaches it (with a checksum) to a GitHub Release"),
             )
             .arg(
                 Arg::new("path")
@@ -188,11 +211,22 @@ impl ForgePlugin for CiPresetsPlugin {
             .unwrap_or_else(|| ctx.cwd.clone());
         let name = project_name(&dir, ctx);
         let deploy = matches.get_flag("deploy");
+        let release = matches.get_flag("release");
 
-        let written = generate(&dir, provider, &name, deploy, matches.get_flag("force"))?;
+        let written = generate(
+            &dir,
+            provider,
+            &name,
+            deploy,
+            release,
+            matches.get_flag("force"),
+        )?;
 
         if !ctx.quiet {
-            print!("{}", format_report(provider, &name, &written, deploy));
+            print!(
+                "{}",
+                format_report(provider, &name, &written, deploy, release)
+            );
         }
         Ok(())
     }
@@ -209,7 +243,7 @@ mod tests {
 
     #[test]
     fn report_lists_provider_project_and_files() {
-        let report = format_report("github", "demo", &["a.yml", "b.yml"], false);
+        let report = format_report("github", "demo", &["a.yml", "b.yml"], false, false);
         assert_eq!(
             report,
             "wrote github workflows for `demo`:\n  a.yml\n  b.yml\n"
@@ -218,28 +252,42 @@ mod tests {
 
     #[test]
     fn deploy_report_explains_required_secret() {
-        let report = format_report("github", "demo", &["deploy.yml"], true);
+        let report = format_report("github", "demo", &["deploy.yml"], true, false);
         assert!(report.contains("STELLAR_DEPLOYER_SECRET"));
         assert!(report.contains("Settings → Secrets and variables → Actions"));
     }
 
     #[test]
     fn base_report_omits_deploy_guidance() {
-        let report = format_report("github", "demo", &["build.yml"], false);
+        let report = format_report("github", "demo", &["build.yml"], false, false);
         assert!(!report.contains("STELLAR_DEPLOYER_SECRET"));
+    }
+
+    #[test]
+    fn release_report_explains_tag_trigger() {
+        let report = format_report("github", "demo", &["release.yml"], false, true);
+        assert!(report.contains("v*.*.*"));
+        assert!(report.contains("GitHub Release"));
+        assert!(!report.contains("STELLAR_DEPLOYER_SECRET"));
+    }
+
+    #[test]
+    fn base_report_omits_release_guidance() {
+        let report = format_report("github", "demo", &["build.yml"], false, false);
+        assert!(!report.contains("v*.*.*"));
     }
 
     #[test]
     fn unknown_provider_error_lists_available() {
         let dir = tempfile::tempdir().unwrap();
-        let err = generate(dir.path(), "gitlab", "demo", false, false).unwrap_err();
+        let err = generate(dir.path(), "gitlab", "demo", false, false, false).unwrap_err();
         assert!(err.to_string().contains("github"));
     }
 
     #[test]
     fn writes_base_workflows() {
         let dir = tempfile::tempdir().unwrap();
-        let written = generate(dir.path(), "github", "demo", false, false).unwrap();
+        let written = generate(dir.path(), "github", "demo", false, false, false).unwrap();
         assert_eq!(
             written,
             vec![
@@ -255,12 +303,13 @@ mod tests {
             .path()
             .join(".github/workflows/testnet-deploy.yml")
             .exists());
+        assert!(!dir.path().join(".github/workflows/release.yml").exists());
     }
 
     #[test]
     fn deploy_workflow_references_secrets_only() {
         let dir = tempfile::tempdir().unwrap();
-        generate(dir.path(), "github", "my-project", true, false).unwrap();
+        generate(dir.path(), "github", "my-project", true, false, false).unwrap();
         let deploy =
             std::fs::read_to_string(dir.path().join(".github/workflows/testnet-deploy.yml"))
                 .unwrap();
@@ -274,13 +323,47 @@ mod tests {
     }
 
     #[test]
+    fn release_workflow_is_tag_triggered_and_grants_write_permission() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = generate(dir.path(), "github", "my-project", false, true, false).unwrap();
+        assert!(written.contains(&".github/workflows/release.yml".to_string()));
+
+        let release =
+            std::fs::read_to_string(dir.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(release.contains("tags:"));
+        assert!(release.contains("v*.*.*"));
+        assert!(release.contains("contents: write"));
+        assert!(release.contains("sha256sum"));
+        assert!(release.contains("my_project.wasm"));
+        assert!(!release.contains("{{project_name}}"));
+        assert!(!release.contains("{{crate_name}}"));
+    }
+
+    #[test]
+    fn release_workflow_verifies_reproducibility() {
+        let dir = tempfile::tempdir().unwrap();
+        generate(dir.path(), "github", "demo", false, true, false).unwrap();
+        let release =
+            std::fs::read_to_string(dir.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(release.contains("cargo clean"));
+        assert!(release.contains("cmp -s"));
+    }
+
+    #[test]
+    fn release_not_written_without_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        generate(dir.path(), "github", "demo", false, false, false).unwrap();
+        assert!(!dir.path().join(".github/workflows/release.yml").exists());
+    }
+
+    #[test]
     fn refuses_overwrite_without_force() {
         let dir = tempfile::tempdir().unwrap();
-        generate(dir.path(), "github", "demo", false, false).unwrap();
+        generate(dir.path(), "github", "demo", false, false, false).unwrap();
         assert!(matches!(
-            generate(dir.path(), "github", "demo", false, false),
+            generate(dir.path(), "github", "demo", false, false, false),
             Err(ForgeError::AlreadyExists(_))
         ));
-        generate(dir.path(), "github", "demo", false, true).unwrap();
+        generate(dir.path(), "github", "demo", false, false, true).unwrap();
     }
 }
