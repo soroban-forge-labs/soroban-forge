@@ -79,9 +79,9 @@ pub fn load_manifest(name: &str) -> Result<TemplateManifest> {
     })?;
     match template_dir.get_file(format!("{name}/{MANIFEST_FILE_NAME}")) {
         Some(file) => {
-            let raw = file
-                .contents_utf8()
-                .ok_or_else(|| ForgeError::Template(format!("{MANIFEST_FILE_NAME} is not UTF-8")))?;
+            let raw = file.contents_utf8().ok_or_else(|| {
+                ForgeError::Template(format!("{MANIFEST_FILE_NAME} is not UTF-8"))
+            })?;
             TemplateManifest::parse(raw, name)
         }
         None => Ok(TemplateManifest::default()),
@@ -157,9 +157,7 @@ pub fn parse_var_overrides(pairs: &[String]) -> Result<BTreeMap<String, String>>
     let mut out = BTreeMap::new();
     for pair in pairs {
         let (name, value) = pair.split_once('=').ok_or_else(|| {
-            ForgeError::InvalidArgument(format!(
-                "`--var {pair}` is not in `name=value` form"
-            ))
+            ForgeError::InvalidArgument(format!("`--var {pair}` is not in `name=value` form"))
         })?;
         out.insert(name.to_string(), value.to_string());
     }
@@ -300,7 +298,9 @@ pub fn init_git(dest: &Path) -> Result<()> {
         .status();
     match status {
         Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(ForgeError::Other(format!("`git init` exited with status {s}"))),
+        Ok(s) => Err(ForgeError::Other(format!(
+            "`git init` exited with status {s}"
+        ))),
         Err(e) => Err(ForgeError::io("executing `git init`")(e)),
     }
 }
@@ -506,11 +506,19 @@ mod tests {
 
     #[test]
     fn parses_var_overrides() {
-        let overrides =
-            parse_var_overrides(&["token_symbol=XYZ".to_string(), "token_decimals=2".to_string()])
-                .unwrap();
-        assert_eq!(overrides.get("token_symbol").map(String::as_str), Some("XYZ"));
-        assert_eq!(overrides.get("token_decimals").map(String::as_str), Some("2"));
+        let overrides = parse_var_overrides(&[
+            "token_symbol=XYZ".to_string(),
+            "token_decimals=2".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            overrides.get("token_symbol").map(String::as_str),
+            Some("XYZ")
+        );
+        assert_eq!(
+            overrides.get("token_decimals").map(String::as_str),
+            Some("2")
+        );
     }
 
     #[test]
@@ -736,13 +744,31 @@ default = "MYT"
             let dest = dir.path().join("my-contract");
             generate(template, &dest, &project_vars("my-contract", "A"), false).unwrap();
             let readme_path = dest.join("README.md");
-            assert!(readme_path.is_file(), "README.md missing for template {template}");
+            assert!(
+                readme_path.is_file(),
+                "README.md missing for template {template}"
+            );
             let contents = std::fs::read_to_string(&readme_path).unwrap();
-            assert!(contents.contains("# my-contract"), "template {template} title substitution");
-            assert!(contents.contains("cargo test"), "template {template} test step");
-            assert!(contents.contains("stellar contract build"), "template {template} build step");
-            assert!(contents.contains("stellar contract deploy"), "template {template} deploy step");
-            assert!(contents.contains("my_contract.wasm"), "template {template} crate name substitution");
+            assert!(
+                contents.contains("# my-contract"),
+                "template {template} title substitution"
+            );
+            assert!(
+                contents.contains("cargo test"),
+                "template {template} test step"
+            );
+            assert!(
+                contents.contains("stellar contract build"),
+                "template {template} build step"
+            );
+            assert!(
+                contents.contains("stellar contract deploy"),
+                "template {template} deploy step"
+            );
+            assert!(
+                contents.contains("my_contract.wasm"),
+                "template {template} crate name substitution"
+            );
         }
     }
 

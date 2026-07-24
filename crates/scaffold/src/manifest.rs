@@ -57,11 +57,9 @@ impl TemplateManifest {
     /// represented by the caller as `TemplateManifest::default()`, not by
     /// calling this with empty input.
     pub fn parse(raw: &str, template_name: &str) -> Result<Self> {
-        toml::from_str(raw).map_err(|e| {
-            ForgeError::Config {
-                path: format!("templates/{template_name}/template.toml").into(),
-                message: e.to_string(),
-            }
+        toml::from_str(raw).map_err(|e| ForgeError::Config {
+            path: format!("templates/{template_name}/template.toml").into(),
+            message: e.to_string(),
         })
     }
 
@@ -108,7 +106,10 @@ hints = ["deploy with --decimals 7", "run cargo test first"]
         assert_eq!(m.variables[0].default, "MYT");
         assert_eq!(
             m.hints(),
-            &["deploy with --decimals 7".to_string(), "run cargo test first".to_string()]
+            &[
+                "deploy with --decimals 7".to_string(),
+                "run cargo test first".to_string()
+            ]
         );
     }
 
