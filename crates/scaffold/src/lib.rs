@@ -118,12 +118,13 @@ pub fn validate_project_name(name: &str) -> Result<()> {
 }
 
 /// Build the variable map for a project.
-pub fn project_vars(project_name: &str, author: &str) -> Vars {
+pub fn project_vars(project_name: &str, author: &str, edition: &str) -> Vars {
     let mut vars = BTreeMap::new();
     vars.insert("project_name".into(), project_name.to_string());
     vars.insert("crate_name".into(), project_name.replace('-', "_"));
     vars.insert("author".into(), author.to_string());
     vars.insert("sdk_version".into(), SOROBAN_SDK_VERSION.to_string());
+    vars.insert("edition".into(), edition.to_string());
     vars
 }
 
@@ -292,6 +293,12 @@ impl ForgePlugin for ScaffoldPlugin {
                     .help("Add a .pre-commit-config.yaml with rustfmt and clippy hooks"),
             )
             .arg(
+                Arg::new("edition")
+                    .long("edition")
+                    .help("Rust edition for the generated Cargo.toml [default: 2021]")
+                    .value_parser(["2021", "2024"]),
+            )
+            .arg(
                 Arg::new("no-git")
                     .long("no-git")
                     .action(ArgAction::SetTrue)
@@ -339,6 +346,11 @@ impl ForgePlugin for ScaffoldPlugin {
             .cloned()
             .unwrap_or_else(|| default_author(ctx));
 
+        let edition = matches
+            .get_one::<String>("edition")
+            .cloned()
+            .unwrap_or_else(|| "2021".to_string());
+
         let parent = matches
             .get_one::<String>("output")
             .map(|o| ctx.cwd.join(o))
@@ -351,7 +363,7 @@ impl ForgePlugin for ScaffoldPlugin {
             "scaffolding `{name}` from template `{template}` into {}",
             dest.display()
         );
-        generate(&template, &dest, &project_vars(name, &author), force)?;
+        generate(&template, &dest, &project_vars(name, &author, &edition), force)?;
 
         if !matches.get_flag("no-git") {
             if let Err(err) = init_git(&dest) {
@@ -471,7 +483,7 @@ mod tests {
         let err = generate(
             "nope",
             &dir.path().join("x"),
-            &project_vars("x", "A"),
+            &project_vars("x", "A", "2021"),
             false,
         )
         .unwrap_err();
@@ -484,7 +496,7 @@ mod tests {
         let dest = dir.path().join("demo");
         std::fs::create_dir(&dest).unwrap();
         assert!(matches!(
-            generate("hello-world", &dest, &project_vars("demo", "A"), false),
+            generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false),
             Err(ForgeError::AlreadyExists(_))
         ));
     }
@@ -496,7 +508,7 @@ mod tests {
         generate(
             "hello-world",
             &dest,
-            &project_vars("demo", "Ada <ada@example.com>"),
+            &project_vars("demo", "Ada <ada@example.com>", "2021"),
             false,
         )
         .unwrap();
@@ -535,7 +547,7 @@ mod tests {
         for template in available_templates() {
             let dir = tempfile::tempdir().unwrap();
             let dest = dir.path().join("proj");
-            generate(template, &dest, &project_vars("proj", "A"), false).unwrap();
+            generate(template, &dest, &project_vars("proj", "A", "2021"), false).unwrap();
             assert!(dest.join("Cargo.toml").is_file(), "template {template}");
             for entry in walk(&dest) {
                 assert!(
@@ -552,7 +564,7 @@ mod tests {
         for template in available_templates() {
             let dir = tempfile::tempdir().unwrap();
             let dest = dir.path().join("my-contract");
-            generate(template, &dest, &project_vars("my-contract", "A"), false).unwrap();
+            generate(template, &dest, &project_vars("my-contract", "A", "2021"), false).unwrap();
             let readme_path = dest.join("README.md");
             assert!(readme_path.is_file(), "README.md missing for template {template}");
             let contents = std::fs::read_to_string(&readme_path).unwrap();
@@ -577,7 +589,7 @@ mod tests {
     fn writes_pre_commit_config() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("demo");
-        generate("hello-world", &dest, &project_vars("demo", "A"), false).unwrap();
+        generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false).unwrap();
         write_pre_commit_config(&dest, false).unwrap();
 
         let path = dest.join(".pre-commit-config.yaml");
@@ -594,7 +606,7 @@ mod tests {
     fn refuses_to_overwrite_pre_commit_without_force() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("demo");
-        generate("hello-world", &dest, &project_vars("demo", "A"), false).unwrap();
+        generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false).unwrap();
         write_pre_commit_config(&dest, false).unwrap();
         assert!(matches!(
             write_pre_commit_config(&dest, false),
@@ -607,7 +619,7 @@ mod tests {
     fn pre_commit_not_written_without_flag() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("demo");
-        generate("hello-world", &dest, &project_vars("demo", "A"), false).unwrap();
+        generate("hello-world", &dest, &project_vars("demo", "A", "2021"), false).unwrap();
         assert!(!dest.join(".pre-commit-config.yaml").exists());
     }
 
