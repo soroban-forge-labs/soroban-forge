@@ -66,6 +66,7 @@ pub fn template_description(name: &str) -> Option<&'static str> {
     match name {
         "crowdfund" => Some("escrow/deadline crowdfunding contract"),
         "hello-world" => Some("minimal greeter contract (recommended starting point)"),
+        "nft" => Some("NFT (non-fungible token) with per-token metadata and minting"),
         "token" => Some("SEP-41 fungible token (soroban_sdk::token::TokenInterface)"),
         _ => None,
     }
@@ -199,16 +200,14 @@ fn write_pre_commit_config(dest: &Path, force: bool) -> Result<()> {
 
 /// Initialize a git repository in `dest`.
 pub fn init_git(dest: &Path) -> Result<()> {
-    let status = std::process::Command::new("git")
+    let output = std::process::Command::new("git")
         .arg("init")
+        .arg("-q")
         .arg(dest)
         .output();
-    match status {
+    match output {
         Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(ForgeError::Other(format!(
-            "`git init` exited with status {}",
-            o.status
-        ))),
+        Ok(o) => Err(ForgeError::Other(format!("`git init` exited with status {}", o.status))),
         Err(e) => Err(ForgeError::io("executing `git init`")(e)),
     }
 }
@@ -364,21 +363,20 @@ impl ForgePlugin for ScaffoldPlugin {
             write_pre_commit_config(&dest, force)?;
         }
 
-        if ctx.json {
-            let report = serde_json::json!({
-                "project_name": name,
-                "template": template,
-                "destination": dest.display().to_string(),
-                "git_initialized": !matches.get_flag("no-git"),
-                "pre_commit_written": matches.get_flag("pre-commit"),
-            });
-            println!("{}", serde_json::to_string_pretty(&report).unwrap());
-        } else if !ctx.quiet {
+        if !ctx.quiet {
+            println!(
+                "created `{name}` from template `{template}` at {}",
+                dest.display()
+            );
+            println!();
+            println!("next steps:");
+            println!("  cd {name}");
+            println!("  cargo test                      # run the template's unit tests");
+            println!("  stellar contract build          # build the deployable wasm");
+            println!("  soroban-forge test-init         # add a generated test harness");
+            println!("  soroban-forge ci-init           # add GitHub Actions workflows");
             if matches.get_flag("pre-commit") {
                 println!("  pre-commit install              # enable the git hooks");
-            }
-            if !ctx.quiet {
-                print!("{}", format_created_report(name, &template, &dest));
             }
         }
         Ok(())
@@ -390,17 +388,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lists_all_three_templates() {
+    fn lists_all_bundled_templates() {
         assert_eq!(
             available_templates(),
-            vec!["crowdfund", "hello-world", "token"]
+            vec!["crowdfund", "hello-world", "nft", "token"]
         );
     }
 
     #[test]
     fn template_list_report_has_heading_and_items() {
-        let report = format_template_list(&["hello-world", "token"]);
-        assert_eq!(report, "available templates:\n  hello-world\n  token\n");
+        let report = format_template_list(&["hello-world", "nft", "token"]);
+        assert_eq!(report, "available templates:\n  hello-world\n  nft\n  token\n");
     }
 
     #[test]
@@ -422,7 +420,7 @@ mod tests {
     fn catalog_returns_all_templates_with_descriptions() {
         let catalog = template_catalog();
         let names: Vec<&str> = catalog.iter().map(|t| t.name).collect();
-        assert_eq!(names, vec!["crowdfund", "hello-world", "token"]);
+        assert_eq!(names, vec!["crowdfund", "hello-world", "nft", "token"]);
         for entry in &catalog {
             assert!(
                 !entry.description.is_empty(),
@@ -556,31 +554,13 @@ mod tests {
             let dest = dir.path().join("my-contract");
             generate(template, &dest, &project_vars("my-contract", "A"), false).unwrap();
             let readme_path = dest.join("README.md");
-            assert!(
-                readme_path.is_file(),
-                "README.md missing for template {template}"
-            );
+            assert!(readme_path.is_file(), "README.md missing for template {template}");
             let contents = std::fs::read_to_string(&readme_path).unwrap();
-            assert!(
-                contents.contains("# my-contract"),
-                "template {template} title substitution"
-            );
-            assert!(
-                contents.contains("cargo test"),
-                "template {template} test step"
-            );
-            assert!(
-                contents.contains("stellar contract build"),
-                "template {template} build step"
-            );
-            assert!(
-                contents.contains("stellar contract deploy"),
-                "template {template} deploy step"
-            );
-            assert!(
-                contents.contains("my_contract.wasm"),
-                "template {template} crate name substitution"
-            );
+            assert!(contents.contains("# my-contract"), "template {template} title substitution");
+            assert!(contents.contains("cargo test"), "template {template} test step");
+            assert!(contents.contains("stellar contract build"), "template {template} build step");
+            assert!(contents.contains("stellar contract deploy"), "template {template} deploy step");
+            assert!(contents.contains("my_contract.wasm"), "template {template} crate name substitution");
         }
     }
 

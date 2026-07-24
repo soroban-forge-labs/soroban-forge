@@ -100,11 +100,13 @@ mod tests {
         let catalog = make_catalog(&[
             ("crowdfund", "escrow/deadline crowdfunding contract"),
             ("hello-world", "minimal greeter contract (recommended starting point)"),
+            ("nft", "NFT (non-fungible token) with per-token metadata"),
             ("token", "SEP-41 fungible token"),
         ]);
         let output = format_template_listing(&catalog);
         assert!(output.contains("crowdfund"));
         assert!(output.contains("hello-world"));
+        assert!(output.contains("nft"));
         assert!(output.contains("token"));
     }
 
@@ -113,11 +115,13 @@ mod tests {
         let catalog = make_catalog(&[
             ("crowdfund", "escrow/deadline crowdfunding contract"),
             ("hello-world", "minimal greeter contract (recommended starting point)"),
+            ("nft", "NFT (non-fungible token) with per-token metadata"),
             ("token", "SEP-41 fungible token"),
         ]);
         let output = format_template_listing(&catalog);
         assert!(output.contains("escrow/deadline crowdfunding contract"));
         assert!(output.contains("minimal greeter contract"));
+        assert!(output.contains("NFT (non-fungible token)"));
         assert!(output.contains("SEP-41 fungible token"));
     }
 

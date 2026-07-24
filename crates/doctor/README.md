@@ -16,10 +16,29 @@ Implements `soroban-forge doctor`, which verifies:
 Exits non-zero when any required check fails, so it can gate CI or setup
 scripts.
 
+Use `soroban-forge doctor --json` to emit machine-readable JSON:
+
+```json
+[
+  {
+    "name": "rustc",
+    "status": "pass",
+    "detail": "rustc 1.84.0 (abc 2025-01-01)",
+    "fix": null
+  },
+  {
+    "name": "stellar-cli",
+    "status": "fail",
+    "detail": "not found",
+    "fix": "install: brew install stellar-cli  (or: cargo install --locked stellar-cli)"
+  }
+]
+```
+
 The global `--quiet` flag suppresses the health report, but failed required
 checks still produce a non-zero exit and the top-level error message.
 
-The check logic (`version_at_least`, `format_report`) is pure and unit-tested;
+The check logic (`version_at_least`, `format_report`, `format_json_report`) is pure and unit-tested;
 only the thin `capture()` helper touches the system.
 
 ## Tests

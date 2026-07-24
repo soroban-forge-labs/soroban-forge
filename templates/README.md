@@ -5,6 +5,7 @@ Owned by Module 2 (scaffolding) — see [`crates/scaffold`](../crates/scaffold)
 for the template format and how to add a new one.
 
 - `hello-world` — minimal greeter contract
+- `nft` — non-fungible token with metadata, minting and burning
 - `token` — SEP-41 fungible token (`soroban_sdk::token::TokenInterface`)
 - `crowdfund` — escrow/deadline crowdfunding example
 

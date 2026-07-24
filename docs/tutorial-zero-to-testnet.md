@@ -1,5 +1,7 @@
 # Tutorial: zero to a deployed testnet contract
 
+[![asciinema cast](https://asciinema.org/a/soroban-forge-zero-to-testnet.svg)](https://asciinema.org/a/soroban-forge-zero-to-testnet)
+
 This walkthrough takes you from an empty machine to a Soroban smart contract
 deployed on the Stellar **testnet**, using `soroban-forge`. No prior Soroban
 knowledge needed. (~20 minutes)
