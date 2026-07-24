@@ -22,6 +22,8 @@ pub struct ContractInfo {
     pub has_testutils: bool,
     /// Parsed constructor arguments mapped to default/sensible values.
     pub constructor_args: String,
+    /// Whether dev-dependencies include `proptest`.
+    pub has_proptest: bool,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +82,7 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
         has_constructor,
         has_testutils: manifest_has_testutils(&manifest.dev_dependencies),
         constructor_args,
+        has_proptest: manifest_has_proptest(&manifest.dev_dependencies),
     })
 }
 
@@ -257,6 +260,10 @@ fn manifest_has_testutils(dev_dependencies: &toml::Table) -> bool {
         },
         _ => false,
     }
+}
+
+fn manifest_has_proptest(dev_dependencies: &toml::Table) -> bool {
+    dev_dependencies.contains_key("proptest")
 }
 
 #[cfg(test)]
