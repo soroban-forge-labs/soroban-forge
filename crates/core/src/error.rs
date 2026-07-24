@@ -88,8 +88,6 @@ impl ForgeError {
     }
 }
 
-new (appended at end of file):
-
 #[cfg(test)]
 mod tests {
     use super::*;

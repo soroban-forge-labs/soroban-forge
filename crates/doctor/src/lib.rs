@@ -9,14 +9,15 @@
 //! - the official `stellar` CLI
 //! - `git` (recommended, not required)
 
-use clap::{ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use serde::{Deserialize, Serialize};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 
 /// Minimum Rust version able to target `wasm32v1-none`.
 pub const MIN_RUST: (u32, u32) = (1, 84); // minimum major.minor
 
 /// Outcome of a single environment check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     /// Requirement met.
@@ -28,7 +29,7 @@ pub enum Status {
 }
 
 /// One line of the doctor report.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
     pub name: &'static str,
     pub status: Status,
@@ -203,6 +204,11 @@ pub fn format_report(checks: &[Check]) -> String {
     out
 }
 
+/// Render the report as JSON.
+pub fn format_json_report(checks: &[Check]) -> String {
+    serde_json::to_string_pretty(checks).unwrap_or_else(|_| "[]".to_string())
+}
+
 /// Count required checks that failed.
 pub fn failure_count(checks: &[Check]) -> usize {
     checks
@@ -222,19 +228,19 @@ impl ForgePlugin for DoctorPlugin {
     fn command(&self) -> Command {
         Command::new("doctor")
             .about("Check that Rust, the wasm32v1-none target and stellar-cli are installed")
+            .arg(
+                Arg::new("json")
+                    .long("json")
+                    .action(ArgAction::SetTrue)
+                    .help("Output check results as JSON"),
+            )
     }
 
-    fn run(&self, _matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
+    fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         let checks = run_checks();
-        if ctx.json {
-            let failures = checks.iter().filter(|c| c.status == Status::Fail).count();
-            let warnings = checks.iter().filter(|c| c.status == Status::Warn).count();
-            let report = serde_json::json!({
-                "checks": checks,
-                "failures": failures,
-                "warnings": warnings,
-            });
-            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        let use_json = ctx.json || matches.get_flag("json");
+        if use_json {
+            println!("{}", format_json_report(&checks));
         } else if !ctx.quiet {
             print!("{}", format_report(&checks));
         }
@@ -330,5 +336,33 @@ mod tests {
             fix: None,
         }];
         assert_eq!(failure_count(&checks), 0);
+    }
+
+    #[test]
+    fn json_report_formatting() {
+        let checks = vec![
+            Check {
+                name: "rustc",
+                status: Status::Pass,
+                detail: "rustc 1.90.0".into(),
+                fix: None,
+            },
+            Check {
+                name: "stellar-cli",
+                status: Status::Fail,
+                detail: "not found".into(),
+                fix: Some("install: brew install stellar-cli"),
+            },
+        ];
+        let json_str = format_json_report(&checks);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(parsed.is_array());
+        assert_eq!(parsed[0]["name"], "rustc");
+        assert_eq!(parsed[0]["status"], "pass");
+        assert_eq!(parsed[0]["detail"], "rustc 1.90.0");
+        assert!(parsed[0]["fix"].is_null());
+        assert_eq!(parsed[1]["name"], "stellar-cli");
+        assert_eq!(parsed[1]["status"], "fail");
+        assert_eq!(parsed[1]["fix"], "install: brew install stellar-cli");
     }
 }
