@@ -9,6 +9,8 @@ Soroban contract project and it generates
 |------------------------|----------------------------------------------------------------------|
 | `tests/common/mod.rs`  | fixtures: mocked-auth `Env`, account generator, ledger-time control, token (SAC) setup + funding, snapshot assertion helper |
 | `tests/forge_smoke.rs` | smoke test registering the detected `#[contract]` type and constructing its client |
+| `fuzz/Cargo.toml`      | (with `--fuzz`) cargo-fuzz workspace manifest |
+| `fuzz/fuzz_targets/fuzz_target_1.rs` | (with `--fuzz`) property-based fuzzer feeding arbitrary values into detected contract methods |
 
 The global `--quiet` flag suppresses the generated-file report and follow-up
 notes without changing which harness files are written.
@@ -21,7 +23,9 @@ notes without changing which harness files are written.
   `testutils` feature (warns if not).
 - `src/lib.rs` → the struct annotated with exactly `#[contract]`, and whether
   a `__constructor` exists. Contracts with constructors get an `#[ignore]`d
-  smoke test with a TODO, since constructor arguments can't be guessed.
+  smoke test with a TODO, since constructor arguments can't be guessed. Also 
+  detects method names and their parameters (ignoring `env: Env`) to construct
+  `FuzzInput` enums when generating the fuzzer.
 
 ## Snapshot helper
 
@@ -32,7 +36,7 @@ fail on change; `FORGE_UPDATE_SNAPSHOTS=1 cargo test` accepts changes.
 ## Public surface
 
 ```rust
-testgen::generate(dir, force) -> Result<(ContractInfo, Vec<&str>)>;
+testgen::generate(dir, force, fuzz) -> Result<(ContractInfo, Vec<&str>)>;
 testgen::inspect(dir) -> Result<ContractInfo>;
 ```
 
