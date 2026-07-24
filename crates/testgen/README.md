@@ -5,12 +5,13 @@ Test harness generator. **Owner: Person C.**
 Implements the `soroban-forge test-init` subcommand: point it at an existing
 Soroban contract project and it generates
 
-| file                   | contents                                                             |
-|------------------------|----------------------------------------------------------------------|
-| `tests/common/mod.rs`  | fixtures: mocked-auth `Env`, account generator, ledger-time control, token (SAC) setup + funding, snapshot assertion helper |
-| `tests/forge_smoke.rs` | smoke test registering the detected `#[contract]` type and constructing its client |
+| file                       | contents                                                             |
+|----------------------------|----------------------------------------------------------------------|
+| `tests/common/mod.rs`      | fixtures: mocked-auth `Env`, account generator, ledger-time control, token (SAC) setup + funding, snapshot assertion helper |
+| `tests/forge_smoke.rs`     | smoke test registering the detected `#[contract]` type and constructing its client |
+| `tests/forge_invariant.rs` | proptest-based invariant testing harness asserting state properties across random call sequences |
 
-The global `--quiet` flag suppresses the generated-file report and follow-up
+Pass `--prop` (or `--invariant`/`--property`) to `test-init` for property-based harness options. The global `--quiet` flag suppresses the generated-file report and follow-up
 notes without changing which harness files are written.
 
 ## How detection works
