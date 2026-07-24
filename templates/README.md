@@ -11,3 +11,8 @@ for the template format and how to add a new one.
 Manifests are shipped as `Cargo.toml.hbs` so cargo doesn't treat these
 directories as packages; the `.hbs` suffix is stripped when a project is
 generated.
+
+Each template also carries a `template.toml` (description, any extra
+prompted variables, post-generate hints) — see
+[`crates/scaffold`](../crates/scaffold) for the format. It is metadata only
+and is never copied into the generated project.
