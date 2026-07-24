@@ -118,7 +118,10 @@ pub fn generate(dir: &Path, force: bool) -> Result<(ContractInfo, Vec<&'static s
 
     let mut vars = Vars::new();
     vars.insert("crate_name".into(), info.crate_name.clone());
-    vars.insert("contract_type".into(), info.contract_types.first().cloned().unwrap_or_default());
+    vars.insert(
+        "contract_type".into(),
+        info.contract_types.first().cloned().unwrap_or_default(),
+    );
     vars.insert("contract_args".into(), info.constructor_args.clone());
 
     let files: [(&'static str, String); 2] = [
@@ -384,7 +387,9 @@ mod tests {
     #[test]
     fn report_uses_singular_for_single_contract() {
         let report = format_report(&contract_info(false, true), &["tests/a.rs"]);
-        assert!(report.contains("generated test harness for contract `DemoContract` (crate `demo`)"));
+        assert!(
+            report.contains("generated test harness for contract `DemoContract` (crate `demo`)")
+        );
     }
 
     #[test]

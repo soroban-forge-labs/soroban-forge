@@ -205,7 +205,10 @@ pub fn init_git(dest: &Path) -> Result<()> {
         .output();
     match status {
         Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(ForgeError::Other(format!("`git init` exited with status {}", o.status))),
+        Ok(o) => Err(ForgeError::Other(format!(
+            "`git init` exited with status {}",
+            o.status
+        ))),
         Err(e) => Err(ForgeError::io("executing `git init`")(e)),
     }
 }
@@ -553,13 +556,31 @@ mod tests {
             let dest = dir.path().join("my-contract");
             generate(template, &dest, &project_vars("my-contract", "A"), false).unwrap();
             let readme_path = dest.join("README.md");
-            assert!(readme_path.is_file(), "README.md missing for template {template}");
+            assert!(
+                readme_path.is_file(),
+                "README.md missing for template {template}"
+            );
             let contents = std::fs::read_to_string(&readme_path).unwrap();
-            assert!(contents.contains("# my-contract"), "template {template} title substitution");
-            assert!(contents.contains("cargo test"), "template {template} test step");
-            assert!(contents.contains("stellar contract build"), "template {template} build step");
-            assert!(contents.contains("stellar contract deploy"), "template {template} deploy step");
-            assert!(contents.contains("my_contract.wasm"), "template {template} crate name substitution");
+            assert!(
+                contents.contains("# my-contract"),
+                "template {template} title substitution"
+            );
+            assert!(
+                contents.contains("cargo test"),
+                "template {template} test step"
+            );
+            assert!(
+                contents.contains("stellar contract build"),
+                "template {template} build step"
+            );
+            assert!(
+                contents.contains("stellar contract deploy"),
+                "template {template} deploy step"
+            );
+            assert!(
+                contents.contains("my_contract.wasm"),
+                "template {template} crate name substitution"
+            );
         }
     }
 

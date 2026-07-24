@@ -87,10 +87,10 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
 pub fn parse_constructor_args(source: &str) -> Option<String> {
     let idx = source.find("fn __constructor")?;
     let after = &source[idx + "fn __constructor".len()..];
-    
+
     let start_paren = after.find('(')?;
     let content_after = &after[start_paren + 1..];
-    
+
     let mut depth = 1;
     let mut end_paren = None;
     let chars: Vec<char> = content_after.chars().collect();
@@ -105,15 +105,15 @@ pub fn parse_constructor_args(source: &str) -> Option<String> {
             }
         }
     }
-    
+
     let end_idx = end_paren?;
     let params_str: String = chars[..end_idx].iter().collect();
-    
+
     let mut params = Vec::new();
     let mut current = String::new();
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
-    
+
     for c in params_str.chars() {
         match c {
             '<' => bracket_depth += 1,
@@ -132,16 +132,16 @@ pub fn parse_constructor_args(source: &str) -> Option<String> {
     if !current.trim().is_empty() {
         params.push(current.trim().to_string());
     }
-    
+
     if params.is_empty() {
         return Some("()".to_string());
     }
-    
+
     let has_env = params[0].to_lowercase().contains("env");
     let start_idx = if has_env { 1 } else { 0 };
-    
+
     let mut generated_args = Vec::new();
-    
+
     for param in &params[start_idx..] {
         if param.is_empty() {
             continue;
@@ -153,7 +153,7 @@ pub fn parse_constructor_args(source: &str) -> Option<String> {
             generated_args.push(format!("        {val}, // {name}"));
         }
     }
-    
+
     if generated_args.is_empty() {
         Some("()".to_string())
     } else {
@@ -163,12 +163,13 @@ pub fn parse_constructor_args(source: &str) -> Option<String> {
 }
 
 fn map_type_to_default(ty: &str) -> String {
-    let ty_clean = ty.replace('&', "")
-                    .replace("'a", "")
-                    .replace("mut ", "")
-                    .trim()
-                    .to_string();
-                    
+    let ty_clean = ty
+        .replace('&', "")
+        .replace("'a", "")
+        .replace("mut ", "")
+        .trim()
+        .to_string();
+
     if ty_clean.contains("Address") {
         "common::new_account(&env)".to_string()
     } else if ty_clean == "i128" {
