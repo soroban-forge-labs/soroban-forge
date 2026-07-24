@@ -505,6 +505,9 @@ dependencies = [
  "serde",
  "serde_json",
  "soroban-forge-core",
+ "soroban-forge-scaffold",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
