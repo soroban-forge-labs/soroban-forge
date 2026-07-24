@@ -22,7 +22,7 @@ cd soroban-forge && cargo install --path .
 # 2. check your environment
 soroban-forge doctor
 
-# 3. create a project (templates: hello-world, token, crowdfund)
+# 3. create a project (templates: hello-world, nft, token, crowdfund)
 soroban-forge new my-token --template token
 cd my-token
 

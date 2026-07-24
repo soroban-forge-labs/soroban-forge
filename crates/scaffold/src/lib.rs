@@ -66,6 +66,7 @@ pub fn template_description(name: &str) -> Option<&'static str> {
     match name {
         "crowdfund" => Some("escrow/deadline crowdfunding contract"),
         "hello-world" => Some("minimal greeter contract (recommended starting point)"),
+        "nft" => Some("NFT (non-fungible token) with per-token metadata and minting"),
         "token" => Some("SEP-41 fungible token (soroban_sdk::token::TokenInterface)"),
         _ => None,
     }
@@ -362,16 +363,7 @@ impl ForgePlugin for ScaffoldPlugin {
             write_pre_commit_config(&dest, force)?;
         }
 
-        if ctx.json {
-            let report = serde_json::json!({
-                "project_name": name,
-                "template": template,
-                "destination": dest.display().to_string(),
-                "git_initialized": !matches.get_flag("no-git"),
-                "pre_commit_written": matches.get_flag("pre-commit"),
-            });
-            println!("{}", serde_json::to_string_pretty(&report).unwrap());
-        } else if !ctx.quiet {
+        if !ctx.quiet {
             println!(
                 "created `{name}` from template `{template}` at {}",
                 dest.display()
@@ -396,17 +388,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lists_all_three_templates() {
+    fn lists_all_bundled_templates() {
         assert_eq!(
             available_templates(),
-            vec!["crowdfund", "hello-world", "token"]
+            vec!["crowdfund", "hello-world", "nft", "token"]
         );
     }
 
     #[test]
     fn template_list_report_has_heading_and_items() {
-        let report = format_template_list(&["hello-world", "token"]);
-        assert_eq!(report, "available templates:\n  hello-world\n  token\n");
+        let report = format_template_list(&["hello-world", "nft", "token"]);
+        assert_eq!(report, "available templates:\n  hello-world\n  nft\n  token\n");
     }
 
     #[test]
@@ -428,7 +420,7 @@ mod tests {
     fn catalog_returns_all_templates_with_descriptions() {
         let catalog = template_catalog();
         let names: Vec<&str> = catalog.iter().map(|t| t.name).collect();
-        assert_eq!(names, vec!["crowdfund", "hello-world", "token"]);
+        assert_eq!(names, vec!["crowdfund", "hello-world", "nft", "token"]);
         for entry in &catalog {
             assert!(
                 !entry.description.is_empty(),
