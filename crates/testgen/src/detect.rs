@@ -20,8 +20,16 @@ pub struct ContractInfo {
     pub has_constructor: bool,
     /// Whether dev-dependencies enable soroban-sdk's `testutils` feature.
     pub has_testutils: bool,
-    /// Parsed constructor arguments mapped to default/sensible values.
-    pub constructor_args: String,
+    /// Methods exported by the contract (found in #[contractimpl] blocks)
+    pub methods: Vec<MethodInfo>,
+    /// Constructor arguments (if a __constructor exists)
+    pub constructor_args: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodInfo {
+    pub name: String,
+    pub args: Vec<(String, String)>,
 }
 
 #[derive(Deserialize)]
@@ -63,15 +71,10 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
         return Err(ForgeError::Other(format!(
             "no #[contract] struct found in {} (inspected)",
             lib_path.display()
-        )));
-    }
+        ))
+    })?;
 
-    let has_constructor = source.contains("fn __constructor");
-    let constructor_args = if has_constructor {
-        parse_constructor_args(&source).unwrap_or_else(|| "()".to_string())
-    } else {
-        "()".to_string()
-    };
+    let (methods, constructor_args) = find_methods(&source);
 
     Ok(ContractInfo {
         crate_name: manifest.package.name.replace('-', "_"),
@@ -79,6 +82,7 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
         contract_types,
         has_constructor,
         has_testutils: manifest_has_testutils(&manifest.dev_dependencies),
+        methods,
         constructor_args,
     })
 }
@@ -259,6 +263,113 @@ fn manifest_has_testutils(dev_dependencies: &toml::Table) -> bool {
     }
 }
 
+pub fn find_methods(source: &str) -> (Vec<MethodInfo>, Option<Vec<(String, String)>>) {
+    let mut methods = Vec::new();
+    let mut constructor_args = None;
+    let mut tokens = Vec::new();
+    let mut current_word = String::new();
+    for c in source.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            current_word.push(c);
+        } else {
+            if !current_word.is_empty() {
+                tokens.push(current_word.clone());
+                current_word.clear();
+            }
+            if !c.is_whitespace() {
+                tokens.push(c.to_string());
+            }
+        }
+    }
+    if !current_word.is_empty() {
+        tokens.push(current_word);
+    }
+    
+    let mut i = 0;
+    let mut in_contract_impl = false;
+    let mut brace_depth = 0;
+    
+    while i < tokens.len() {
+        if tokens[i] == "#" && i + 3 < tokens.len() && tokens[i+1] == "[" && tokens[i+2] == "contractimpl" && tokens[i+3] == "]" {
+            in_contract_impl = true;
+            i += 4;
+            continue;
+        }
+        
+        if in_contract_impl && tokens[i] == "{" {
+            brace_depth += 1;
+        }
+        
+        if in_contract_impl && tokens[i] == "}" {
+            brace_depth -= 1;
+            if brace_depth == 0 {
+                in_contract_impl = false;
+            }
+        }
+        
+        if in_contract_impl && brace_depth == 1 && tokens[i] == "fn" && i + 2 < tokens.len() {
+            let name = tokens[i+1].clone();
+            if tokens[i+2] == "(" {
+                let mut args = Vec::new();
+                let mut j = i + 3;
+                let mut arg_name = String::new();
+                let mut expecting_type = false;
+                let mut current_type = String::new();
+                let mut type_angle_depth = 0;
+                
+                while j < tokens.len() && tokens[j] != ")" {
+                    let tok = &tokens[j];
+                    if !expecting_type {
+                        if tok != "," {
+                            if tok == ":" {
+                                expecting_type = true;
+                            } else {
+                                arg_name = tok.clone();
+                            }
+                        }
+                    } else {
+                        if tok == "<" {
+                            type_angle_depth += 1;
+                            current_type.push_str(tok);
+                        } else if tok == ">" {
+                            type_angle_depth -= 1;
+                            current_type.push_str(tok);
+                        } else if tok == "," && type_angle_depth == 0 {
+                            if arg_name != "env" && arg_name != "Env" && !arg_name.is_empty() {
+                                args.push((arg_name.clone(), current_type.trim().to_string()));
+                            }
+                            arg_name.clear();
+                            current_type.clear();
+                            expecting_type = false;
+                        } else {
+                            current_type.push_str(tok);
+                        }
+                    }
+                    j += 1;
+                }
+                
+                if expecting_type {
+                    if arg_name != "env" && arg_name != "Env" && !arg_name.is_empty() {
+                        args.push((arg_name.clone(), current_type.trim().to_string()));
+                    }
+                }
+                
+                if name == "__constructor" {
+                    constructor_args = Some(args);
+                } else {
+                    methods.push(MethodInfo { name, args });
+                }
+                
+                i = j;
+            }
+        }
+        
+        i += 1;
+    }
+    
+    (methods, constructor_args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,25 +439,33 @@ soroban-sdk = { version = "1", features = ["testutils"] }
         assert_eq!(info.contract_types, vec!["DemoContract"]);
         assert!(info.has_constructor);
         assert!(info.has_testutils);
-        assert_eq!(info.constructor_args, "()");
+        assert!(info.methods.is_empty());
     }
 
     #[test]
-    fn parses_constructor_arguments_with_types() {
+    fn extracts_methods_from_contractimpl() {
         let src = r#"
-            pub fn __constructor(
-                env: Env,
-                owner: Address,
-                decimals: u32,
-                symbol: Symbol,
-                metadata: Option<String>
-            ) {
-            }
+#[contractimpl]
+impl TokenContract {
+    pub fn __constructor(env: Env, admin: Address, decimals: u32) { }
+    pub fn mint(env: Env, to: Address, amount: i128) { }
+    pub fn admin(env: Env) -> Address { }
+}
+#[contractimpl]
+impl TokenInterface for TokenContract {
+    fn allowance(env: Env, from: Address, spender: Address) -> i128 { }
+}
         "#;
-        let parsed = parse_constructor_args(src).unwrap();
-        assert!(parsed.contains("common::new_account(&env), // owner"));
-        assert!(parsed.contains("0_u32, // decimals"));
-        assert!(parsed.contains("soroban_sdk::Symbol::new(&env, \"demo\"), // symbol"));
-        assert!(parsed.contains("None, // metadata"));
+        let (methods, constructor_args) = find_methods(src);
+        assert_eq!(constructor_args.unwrap(), vec![("admin".to_string(), "Address".to_string()), ("decimals".to_string(), "u32".to_string())]);
+        assert_eq!(methods.len(), 3);
+        assert_eq!(methods[0].name, "mint");
+        assert_eq!(methods[0].args, vec![("to".to_string(), "Address".to_string()), ("amount".to_string(), "i128".to_string())]);
+        
+        assert_eq!(methods[1].name, "admin");
+        assert_eq!(methods[1].args.len(), 0);
+
+        assert_eq!(methods[2].name, "allowance");
+        assert_eq!(methods[2].args, vec![("from".to_string(), "Address".to_string()), ("spender".to_string(), "Address".to_string())]);
     }
 }
