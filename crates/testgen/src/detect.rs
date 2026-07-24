@@ -13,8 +13,8 @@ pub struct ContractInfo {
     pub package_name: String,
     /// Rust crate name (snake_case), e.g. `my_project`.
     pub crate_name: String,
-    /// The `#[contract]` struct, e.g. `HelloContract`.
-    pub contract_type: String,
+    /// All `#[contract]` structs found in `src/lib.rs`, e.g. `["HelloContract"]`.
+    pub contract_types: Vec<String>,
     /// Whether the contract defines a `__constructor` (its registration then
     /// needs constructor arguments the generator cannot guess).
     pub has_constructor: bool,
@@ -58,12 +58,13 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
     let source = std::fs::read_to_string(&lib_path)
         .map_err(ForgeError::io(format!("reading {}", lib_path.display())))?;
 
-    let contract_type = find_contract_type(&source).ok_or_else(|| {
-        ForgeError::Other(format!(
+    let contract_types = find_contract_types(&source);
+    if contract_types.is_empty() {
+        return Err(ForgeError::Other(format!(
             "no #[contract] struct found in {} (inspected)",
             lib_path.display()
-        ))
-    })?;
+        )));
+    }
 
     let has_constructor = source.contains("fn __constructor");
     let constructor_args = if has_constructor {
@@ -228,15 +229,21 @@ pub fn find_contract_type(source: &str) -> Option<String> {
             }
             let rest = line
                 .strip_prefix("pub struct ")
-                .or_else(|| line.strip_prefix("struct "))?;
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            return if name.is_empty() { None } else { Some(name) };
+                .or_else(|| line.strip_prefix("struct "));
+            if let Some(rest) = rest {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    results.push(name);
+                }
+            }
+            // Reset so we can find the next #[contract] struct.
+            saw_contract_attr = false;
         }
     }
-    None
+    results
 }
 
 fn manifest_has_testutils(dev_dependencies: &toml::Table) -> bool {
@@ -258,25 +265,37 @@ mod tests {
     #[test]
     fn finds_plain_contract_struct() {
         let src = "#![no_std]\n#[contract]\npub struct HelloContract;\n";
-        assert_eq!(find_contract_type(src).as_deref(), Some("HelloContract"));
+        assert_eq!(find_contract_types(src), vec!["HelloContract"]);
     }
 
     #[test]
     fn skips_derives_between_attr_and_struct() {
         let src = "#[contract]\n#[derive(Clone)]\npub struct Foo {\n}";
-        assert_eq!(find_contract_type(src).as_deref(), Some("Foo"));
+        assert_eq!(find_contract_types(src), vec!["Foo"]);
     }
 
     #[test]
     fn does_not_match_contractimpl_or_contracttype() {
         let src = "#[contractimpl]\nimpl Foo {}\n#[contracttype]\npub enum DataKey { A }\n";
-        assert_eq!(find_contract_type(src), None);
+        assert_eq!(find_contract_types(src), Vec::<String>::new());
     }
 
     #[test]
     fn non_pub_struct_is_found() {
         let src = "#[contract]\nstruct Hidden;\n";
-        assert_eq!(find_contract_type(src).as_deref(), Some("Hidden"));
+        assert_eq!(find_contract_types(src), vec!["Hidden"]);
+    }
+
+    #[test]
+    fn finds_multiple_contract_structs() {
+        let src = "#[contract]\npub struct Foo;\n\n#[contract]\npub struct Bar;\n";
+        assert_eq!(find_contract_types(src), vec!["Foo", "Bar"]);
+    }
+
+    #[test]
+    fn finds_multiple_with_derives() {
+        let src = "#[contract]\n#[derive(Clone)]\npub struct First {\n}\n\n#[contract]\npub struct Second;\n";
+        assert_eq!(find_contract_types(src), vec!["First", "Second"]);
     }
 
     #[test]
@@ -305,7 +324,7 @@ soroban-sdk = { version = "1", features = ["testutils"] }
         let info = inspect(dir.path()).unwrap();
         assert_eq!(info.package_name, "my-demo");
         assert_eq!(info.crate_name, "my_demo");
-        assert_eq!(info.contract_type, "DemoContract");
+        assert_eq!(info.contract_types, vec!["DemoContract"]);
         assert!(info.has_constructor);
         assert!(info.has_testutils);
         assert_eq!(info.constructor_args, "()");
