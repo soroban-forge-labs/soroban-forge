@@ -202,10 +202,10 @@ pub fn init_git(dest: &Path) -> Result<()> {
     let status = std::process::Command::new("git")
         .arg("init")
         .arg(dest)
-        .status();
+        .output();
     match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(ForgeError::Other(format!("`git init` exited with status {s}"))),
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(ForgeError::Other(format!("`git init` exited with status {}", o.status))),
         Err(e) => Err(ForgeError::io("executing `git init`")(e)),
     }
 }
@@ -370,18 +370,7 @@ impl ForgePlugin for ScaffoldPlugin {
                 "pre_commit_written": matches.get_flag("pre-commit"),
             });
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
-        } else {
-            println!(
-                "created `{name}` from template `{template}` at {}",
-                dest.display()
-            );
-            println!();
-            println!("next steps:");
-            println!("  cd {name}");
-            println!("  cargo test                      # run the template's unit tests");
-            println!("  stellar contract build          # build the deployable wasm");
-            println!("  soroban-forge test-init         # add a generated test harness");
-            println!("  soroban-forge ci-init           # add GitHub Actions workflows");
+        } else if !ctx.quiet {
             if matches.get_flag("pre-commit") {
                 println!("  pre-commit install              # enable the git hooks");
             }
