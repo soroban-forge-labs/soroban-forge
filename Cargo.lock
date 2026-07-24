@@ -444,6 +444,7 @@ dependencies = [
 name = "soroban-forge"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "soroban-forge-bindings-ts",
  "soroban-forge-ci-presets",
  "soroban-forge-core",

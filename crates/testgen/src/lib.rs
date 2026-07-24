@@ -111,19 +111,59 @@ fn {{fn_name}}_registers_and_client_constructs() {
 }
 "#;
 
+/// Convert `CamelCase` struct names to `snake_case` test function names.
+pub fn to_snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Render the `tests/forge_smoke.rs` content for all `#[contract]` structs found.
+pub fn build_smoke_test(info: &ContractInfo) -> String {
+    let mut out = String::from(SMOKE_TEST_RS);
+
+    let mut use_parts: Vec<String> = Vec::new();
+    for ct in &info.contract_types {
+        use_parts.push(ct.clone());
+        use_parts.push(format!("{ct}Client"));
+    }
+    out.push_str(&format!(
+        "use {}::{{ {} }};\n",
+        info.crate_name,
+        use_parts.join(", ")
+    ));
+
+    for ct in &info.contract_types {
+        let mut vars = Vars::new();
+        vars.insert("contract_type".into(), ct.clone());
+        vars.insert("fn_name".into(), to_snake_case(ct));
+        vars.insert("contract_args".into(), info.constructor_args.clone());
+
+        out.push_str(&render_str(SMOKE_TEST_FN, &vars));
+    }
+
+    out
+}
+
 /// Generate the harness into `dir`. Public API behind `test-init`.
 /// Returns the list of files written (relative to `dir`).
 pub fn generate(dir: &Path, force: bool) -> Result<(ContractInfo, Vec<&'static str>)> {
     let info = detect::inspect(dir)?;
 
-    let mut vars = Vars::new();
-    vars.insert("crate_name".into(), info.crate_name.clone());
-    vars.insert("contract_type".into(), info.contract_type.clone());
-    vars.insert("contract_args".into(), info.constructor_args.clone());
+    let smoke = build_smoke_test(&info);
 
     let files: [(&'static str, String); 2] = [
         ("tests/common/mod.rs", FIXTURES_RS.to_string()),
-        ("tests/forge_smoke.rs", render_str(SMOKE_TEST_RS, &vars)),
+        ("tests/forge_smoke.rs", smoke),
     ];
 
     let mut written = Vec::new();
@@ -169,7 +209,7 @@ pub fn format_report(info: &ContractInfo, written: &[&str]) -> String {
     if info.has_constructor {
         out.push_str(&format!(
             "\nnote: `{}` has a __constructor; real arguments were generated in the smoke test. Review and adjust them as needed.\n",
-            info.contract_type
+            info.contract_types.join(", ")
         ));
     }
     out.push_str("\nrun them with: cargo test\n");
@@ -210,7 +250,7 @@ impl ForgePlugin for TestgenPlugin {
 
         if ctx.json {
             let report = serde_json::json!({
-                "contract_type": info.contract_type,
+                "contract_types": info.contract_types,
                 "crate_name": info.crate_name,
                 "package_name": info.package_name,
                 "has_constructor": info.has_constructor,
@@ -247,6 +287,7 @@ mod tests {
             contract_types: vec!["DemoContract".into()],
             has_constructor,
             has_testutils,
+            constructor_args: "()".to_string(),
         }
     }
 
@@ -367,12 +408,10 @@ mod tests {
     }
 
     #[test]
-    fn build_smoke_test_with_constructor_ignores_all() {
+    fn build_smoke_test_with_constructor_generates_default_arguments() {
         let info = multi_contract_info(true, true);
         let smoke = build_smoke_test(&info);
-        // Every test gets #[ignore].
-        let ignores: Vec<_> = smoke.match_indices("#[ignore").collect();
-        assert_eq!(ignores.len(), 2);
+        assert!(!smoke.contains("#[ignore]"));
     }
 
     #[test]
