@@ -11,11 +11,12 @@ Successful creation messages and template listings honor the global
 
 Templates are plain directory trees under the repository's top-level
 [`templates/`](../../templates) directory, embedded into the binary at compile
-time with `include_dir`. Three ship with v0.1:
+time with `include_dir`. Four ship with v0.1:
 
 | template      | contents                                                        |
 |---------------|-----------------------------------------------------------------|
 | `hello-world` | Minimal greeter contract with a unit test                       |
+| `nft`         | Non-fungible token with metadata, minting, transfers and burn  |
 | `token`       | Fungible token implementing `soroban_sdk::token::TokenInterface` (SEP-41) |
 | `crowdfund`   | Escrow/deadline crowdfunding example with success & refund paths |
 
