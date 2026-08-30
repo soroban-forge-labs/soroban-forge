@@ -1164,6 +1164,12 @@ impl ForgePlugin for ScaffoldPlugin {
                     .action(ArgAction::SetTrue)
                     .help("Add a .devcontainer/ with Rust, wasm32v1-none and stellar-cli preinstalled"),
             )
+            .arg(
+                Arg::new("no-tests")
+                    .long("no-tests")
+                    .action(ArgAction::SetTrue)
+                    .help("Skip generating tests/ directory (for users bringing their own test harness)"),
+            )
     }
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
