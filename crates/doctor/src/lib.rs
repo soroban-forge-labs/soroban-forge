@@ -326,6 +326,104 @@ pub fn toolchain_check(project_dir: &Path) -> Check {
     classify_toolchain(rustup_line.as_deref(), rustc_line.as_deref())
 }
 
+fn installed_targets_for_toolchain(toolchain: &str) -> Option<Vec<String>> {
+    let output = std::process::Command::new("rustup")
+        .args(["target", "list", "--installed", "--toolchain", toolchain])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Some(
+        stdout
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+fn active_toolchain(project_dir: &Path) -> Option<String> {
+    capture_in("rustup", &["show", "active-toolchain"], project_dir)
+        .or_else(|| capture("rustup", &["show", "active-toolchain"]))
+        .and_then(|line| line.split_whitespace().next().map(str::to_owned))
+}
+
+fn wasm32_target_check(project_dir: &Path) -> Check {
+    let active = active_toolchain(project_dir);
+    let active_toolchain_name = active.as_deref().unwrap_or("stable");
+
+    match capture("rustup", &["toolchain", "list"]) {
+        Some(toolchains) => {
+            let other_toolchains = toolchains
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| line.split_whitespace().next())
+                .filter(|toolchain| Some(*toolchain) != active.as_deref())
+                .collect::<Vec<_>>();
+
+            if let Some(targets) = active.as_deref().and_then(installed_targets_for_toolchain) {
+                if targets.iter().any(|t| t == "wasm32v1-none") {
+                    return Check {
+                        name: "wasm32v1-none target",
+                        status: Status::Pass,
+                        detail: format!("installed for {active_toolchain_name}"),
+                        fix: None,
+                    };
+                }
+            }
+
+            if let Some(other) = other_toolchains.iter().find(|toolchain| {
+                installed_targets_for_toolchain(toolchain)
+                    .map(|targets| targets.iter().any(|t| t == "wasm32v1-none"))
+                    .unwrap_or(false)
+            }) {
+                let fix =
+                    format!("rustup target add --toolchain {active_toolchain_name} wasm32v1-none");
+                return Check {
+                    name: "wasm32v1-none target",
+                    status: Status::Fail,
+                    detail: format!(
+                        "installed for {other}, active toolchain is {active_toolchain_name}; exact fix: {fix}"
+                    ),
+                    fix: Some("rustup target add wasm32v1-none"),
+                };
+            }
+
+            if active.is_some() {
+                let fix =
+                    format!("rustup target add --toolchain {active_toolchain_name} wasm32v1-none");
+                return Check {
+                    name: "wasm32v1-none target",
+                    status: Status::Fail,
+                    detail: format!("not installed for {active_toolchain_name}; exact fix: {fix}"),
+                    fix: Some("rustup target add wasm32v1-none"),
+                };
+            }
+        }
+        None => {
+            return Check {
+                name: "wasm32v1-none target",
+                status: Status::Warn,
+                detail: "rustup not found — could not verify".into(),
+                fix: Some(
+                    "install rustup (https://rustup.rs), then: rustup target add wasm32v1-none",
+                ),
+            };
+        }
+    }
+
+    Check {
+        name: "wasm32v1-none target",
+        status: Status::Fail,
+        detail: "not installed".into(),
+        fix: Some("rustup target add wasm32v1-none"),
+    }
+}
+
 /// Classify a git identity probe into a report line (issue #71).
 ///
 /// `new` initializes a git repo, and the first commit fails confusingly when
@@ -382,7 +480,17 @@ pub fn rpc_connectivity_check(url: &str) -> Check {
     // -s silent, -o /dev/null discard body, -w write status code,
     // --max-time 5 abort after 5 s, -L follow redirects.
     let output = std::process::Command::new("curl")
-        .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", "-L", url])
+        .args([
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "--max-time",
+            "5",
+            "-L",
+            url,
+        ])
         .output();
     let elapsed_ms = start.elapsed().as_millis();
     match output {
@@ -401,7 +509,9 @@ pub fn rpc_connectivity_check(url: &str) -> Check {
                     name: "testnet RPC",
                     status: Status::Warn,
                     detail: format!("{url} — HTTP {code} ({elapsed_ms} ms)"),
-                    fix: Some("check your network connection or configure a different RPC endpoint"),
+                    fix: Some(
+                        "check your network connection or configure a different RPC endpoint",
+                    ),
                 }
             }
         }
@@ -428,10 +538,7 @@ pub fn release_profile_checks(project_dir: &Path) -> Vec<Check> {
         Ok(v) => v,
         Err(_) => return vec![],
     };
-    let profile_release = match manifest
-        .get("profile")
-        .and_then(|p| p.get("release"))
-    {
+    let profile_release = match manifest.get("profile").and_then(|p| p.get("release")) {
         Some(t) => t,
         None => {
             // No [profile.release] at all — warn for all three settings.
@@ -596,34 +703,6 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
         },
     });
 
-    // wasm32v1-none target.
-    let installed_targets = std::process::Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-    checks.push(match installed_targets {
-        Some(targets) if targets.lines().any(|t| t.trim() == "wasm32v1-none") => Check {
-            name: "wasm32v1-none target",
-            status: Status::Pass,
-            detail: "installed".into(),
-            fix: None,
-        },
-        Some(_) => Check {
-            name: "wasm32v1-none target",
-            status: Status::Fail,
-            detail: "not installed".into(),
-            fix: Some("rustup target add wasm32v1-none"),
-        },
-        None => Check {
-            name: "wasm32v1-none target",
-            status: Status::Warn,
-            detail: "rustup not found — could not verify".into(),
-            fix: Some("install rustup (https://rustup.rs), then: rustup target add wasm32v1-none"),
-        },
-    });
-
     // wasm32-unknown-unknown target (issue #45).
     //
     // Some toolchains and projects still require the older `wasm32-unknown-unknown`
@@ -672,10 +751,7 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
         Some(line) => Check {
             name: "stellar-cli",
             status: Status::Warn,
-            detail: format!(
-                "{line} (need >= {}.{}.0)",
-                MIN_STELLAR.0, MIN_STELLAR.1
-            ),
+            detail: format!("{line} (need >= {}.{}.0)", MIN_STELLAR.0, MIN_STELLAR.1),
             fix: Some(
                 "upgrade: cargo install --locked stellar-cli  (or: brew upgrade stellar-cli)",
             ),
@@ -776,7 +852,7 @@ pub struct Remedy {
     /// The program to invoke, e.g. `rustup` or `cargo`.
     pub program: &'static str,
     /// Arguments passed to `program`.
-    pub args: &'static [&'static str],
+    pub args: Vec<String>,
 }
 
 impl Remedy {
@@ -802,15 +878,29 @@ pub fn remedy(check: &Check) -> Option<Remedy> {
         return None;
     }
     match check.name {
-        "wasm32v1-none target" => Some(Remedy {
-            check: check.name,
-            program: "rustup",
-            args: &["target", "add", "wasm32v1-none"],
-        }),
+        "wasm32v1-none target" => {
+            let args = check
+                .detail
+                .split("exact fix: ")
+                .last()
+                .filter(|cmd| cmd.starts_with("rustup "))
+                .map(|cmd| {
+                    cmd.split_whitespace()
+                        .skip(1)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec!["target".into(), "add".into(), "wasm32v1-none".into()]);
+            Some(Remedy {
+                check: check.name,
+                program: "rustup",
+                args,
+            })
+        }
         "stellar-cli" => Some(Remedy {
             check: check.name,
             program: "cargo",
-            args: &["install", "--locked", "stellar-cli"],
+            args: vec!["install".into(), "--locked".into(), "stellar-cli".into()],
         }),
         _ => None,
     }
@@ -866,7 +956,7 @@ pub fn format_fix_summary(outcomes: &[FixOutcome]) -> String {
 fn run_remedy(remedy: &Remedy) -> FixOutcome {
     let command = remedy.command_line();
     let status = std::process::Command::new(remedy.program)
-        .args(remedy.args)
+        .args(remedy.args.iter().map(String::as_str))
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -931,6 +1021,7 @@ impl DoctorPlugin {
     fn gather_checks(&self, ctx: &ForgeContext, do_build: bool) -> Vec<Check> {
         let mut checks = run_checks_with_network(!ctx.offline);
         checks.push(toolchain_check(&ctx.cwd)); // issue #109
+        checks.push(wasm32_target_check(&ctx.cwd)); // issue #251
         if ctx.offline {
             checks.push(Check {
                 name: "testnet RPC",
@@ -1003,15 +1094,10 @@ impl ForgePlugin for DoctorPlugin {
                     .action(ArgAction::SetTrue)
                     .help("Output check results as JSON"),
             )
-            .arg(
-                Arg::new("fix")
-                    .long("fix")
-                    .action(ArgAction::SetTrue)
-                    .help(
-                        "Attempt to install missing toolchain components \
+            .arg(Arg::new("fix").long("fix").action(ArgAction::SetTrue).help(
+                "Attempt to install missing toolchain components \
                          (rustup target add, cargo install), then re-check",
-                    ),
-            )
+            ))
             .arg(
                 Arg::new("yes")
                     .long("yes")
@@ -1047,8 +1133,7 @@ impl ForgePlugin for DoctorPlugin {
 
         if do_fix {
             let remedies = fixable_remedies(&checks);
-            if !remedies.is_empty()
-                && self.confirm_fix(&remedies, use_json, assume_yes, ctx.quiet)
+            if !remedies.is_empty() && self.confirm_fix(&remedies, use_json, assume_yes, ctx.quiet)
             {
                 let outcomes = apply_remedies(&remedies);
                 if !use_json && !ctx.quiet {
@@ -1260,6 +1345,7 @@ mod tests {
         assert_eq!(check.status, Status::Warn);
         assert!(check.detail.contains("no version specified"));
     }
+
     #[test]
     fn json_report_formatting() {
         let checks = vec![
@@ -1319,10 +1405,7 @@ mod tests {
 
     #[test]
     fn toolchain_reports_stable_channel() {
-        let check = classify_toolchain(
-            Some("stable-x86_64-unknown-linux-gnu (default)"),
-            None,
-        );
+        let check = classify_toolchain(Some("stable-x86_64-unknown-linux-gnu (default)"), None);
         assert_eq!(check.status, Status::Pass);
         assert!(check.detail.contains("stable-x86_64-unknown-linux-gnu"));
         assert!(check.detail.contains("channel: stable"));
