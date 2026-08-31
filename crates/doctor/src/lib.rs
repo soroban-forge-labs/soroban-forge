@@ -656,6 +656,42 @@ pub fn wasm_build_check(project_dir: &Path) -> Option<Check> {
     })
 }
 
+/// Warn when `Cargo.toml` has been changed since the lockfile was updated.
+///
+/// A missing lockfile is checked separately: the project is not stale, it just
+/// doesn't have a lockfile to compare yet. This keeps the warning focused and
+/// avoids double-reporting the same issue.
+pub fn cargo_lock_check(project_dir: &Path) -> Option<Check> {
+    let cargo_toml = project_dir.join("Cargo.toml");
+    if !cargo_toml.is_file() {
+        return None;
+    }
+
+    let cargo_lock = project_dir.join("Cargo.lock");
+    if !cargo_lock.is_file() {
+        return Some(Check {
+            name: "Cargo.lock",
+            status: Status::Warn,
+            detail: "missing; run cargo check to generate it".into(),
+            fix: Some("run cargo check to generate Cargo.lock"),
+        });
+    }
+
+    let toml_mtime = std::fs::metadata(cargo_toml).ok()?.modified().ok()?;
+    let lock_mtime = std::fs::metadata(cargo_lock).ok()?.modified().ok()?;
+    if toml_mtime > lock_mtime {
+        Some(Check {
+            name: "Cargo.lock",
+            status: Status::Warn,
+            detail: "Cargo.toml is newer than Cargo.lock; run cargo update -w or cargo check"
+                .into(),
+            fix: Some("run cargo update -w (or cargo check) to refresh Cargo.lock"),
+        })
+    } else {
+        None
+    }
+}
+
 /// Run all environment checks.
 pub fn run_checks() -> Vec<Check> {
     run_checks_with_network(true)
@@ -1031,6 +1067,9 @@ impl DoctorPlugin {
             });
         }
         if let Some(check) = sdk_version_check(&ctx.cwd) {
+            checks.push(check);
+        }
+        if let Some(check) = cargo_lock_check(&ctx.cwd) {
             checks.push(check);
         }
         // Release profile size-optimisation checks (issue #48).
