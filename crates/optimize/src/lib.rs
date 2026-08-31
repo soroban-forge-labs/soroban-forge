@@ -23,6 +23,18 @@ struct Package {
     name: String,
 }
 
+/// Budget for `--check` from `forge.toml`.
+#[derive(Deserialize)]
+struct ForgeConfig {
+    optimize: Option<OptimizeConfig>,
+}
+
+#[derive(Deserialize)]
+struct OptimizeConfig {
+    #[serde(rename = "max-size", alias = "max_size")]
+    max_size: Option<u64>,
+}
+
 /// Read `[package].name` from `dir/Cargo.toml` and return it as a crate name
 /// (snake_case), which is what the build output is named after.
 ///
@@ -45,6 +57,21 @@ pub fn read_crate_name(dir: &Path) -> Result<String> {
         message: e.to_string(),
     })?;
     Ok(manifest.package.name.replace('-', "_"))
+}
+
+/// Read `max-size` from `[optimize]` in `dir/forge.toml`, if present.
+fn forge_config_budget(dir: &Path) -> Result<Option<u64>> {
+    let config_path = dir.join("forge.toml");
+    if !config_path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&config_path)
+        .map_err(ForgeError::io(format!("reading {}", config_path.display())))?;
+    let config: ForgeConfig = toml::from_str(&raw).map_err(|e| ForgeError::Config {
+        path: config_path.clone(),
+        message: e.to_string(),
+    })?;
+    Ok(config.optimize.and_then(|optimize| optimize.max_size))
 }
 
 /// Default location `stellar contract build` writes its release wasm to.
@@ -186,6 +213,19 @@ pub fn json_report(report: &OptimizeReport) -> String {
     serde_json::to_string_pretty(report).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
 }
 
+/// Fail if the optimized size exceeds the configured budget.
+pub fn check_budget(report: &OptimizeReport, max_size: Option<u64>) -> Result<()> {
+    if let Some(limit) = max_size {
+        if report.after_bytes > limit {
+            return Err(ForgeError::Other(format!(
+                "optimized wasm size {} bytes exceeds budget of {} bytes",
+                report.after_bytes, limit
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The `optimize` subcommand.
 pub struct OptimizePlugin;
 
@@ -211,6 +251,19 @@ impl ForgePlugin for OptimizePlugin {
                     .long("wasm")
                     .help("Path to the local .wasm to optimize [default: target/wasm32v1-none/release/<crate>.wasm]"),
             )
+            .arg(
+                Arg::new("check")
+                    .long("check")
+                    .help("Fail if the optimized wasm exceeds --max-size or the forge.toml budget")
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("max_size")
+                    .long("max-size")
+                    .value_name("BYTES")
+                    .value_parser(clap::value_parser!(u64))
+                    .help("Maximum allowed size in bytes after optimization"),
+            )
     }
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
@@ -221,7 +274,27 @@ impl ForgePlugin for OptimizePlugin {
         let wasm_override = matches.get_one::<String>("wasm").map(|p| ctx.cwd.join(p));
 
         let wasm_path = resolve_local_wasm(&dir, wasm_override.as_deref())?;
+
+        let check = matches.get_flag("check");
+        let max_size = if check {
+            if let Some(cli) = matches.get_one::<u64>("max_size").copied() {
+                Some(cli)
+            } else {
+                match forge_config_budget(&dir)? {
+                    Some(config) => Some(config),
+                    None => {
+                        return Err(ForgeError::Other(
+                            "--check requires --max-size or a forge.toml [optimize] max-size".into(),
+                        ));
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
         let report = optimize(&wasm_path)?;
+        check_budget(&report, max_size)?;
 
         if ctx.json {
             println!("{}", json_report(&report));
