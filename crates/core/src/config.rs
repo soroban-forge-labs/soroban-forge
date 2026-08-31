@@ -46,6 +46,8 @@ pub struct ScaffoldConfig {
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 pub struct DefaultsConfig {
     pub timeout_secs: Option<u64>,
+    /// Maximum size in bytes for `optimize --check`.
+    pub max_size: Option<u64>,
 }
 
 impl ForgeConfig {
@@ -181,7 +183,7 @@ pub fn unknown_keys(raw: &str) -> std::result::Result<Vec<String>, toml::de::Err
             "scaffold" => {
                 collect_strays(value, &["default_template"], "scaffold", &mut strays)
             }
-            "defaults" => collect_strays(value, &["timeout_secs"], "defaults", &mut strays),
+            "defaults" => collect_strays(value, &["timeout_secs", "max_size"], "defaults", &mut strays),
             _ => strays.push(key.clone()),
         }
     }
@@ -239,6 +241,10 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
     match config.defaults.timeout_secs {
         Some(timeout_secs) => out.push_str(&format!("timeout_secs = {timeout_secs}\n")),
         None => out.push_str("# timeout_secs = (unset)\n"),
+    }
+    match config.defaults.max_size {
+        Some(max_size) => out.push_str(&format!("max_size = {max_size}\n")),
+        None => out.push_str("# max_size = (unset)\n"),
     }
     out
 }
