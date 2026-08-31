@@ -431,4 +431,17 @@ mod tests {
         assert!(contents.contains("softprops/action-gh-release@v2"));
         assert!(contents.contains("v*.*.*"));
     }
+
+    #[test]
+    fn ci_init_path_flag_is_honored() {
+        let matches = CiPresetsPlugin
+            .command()
+            .try_get_matches_from(["ci-init", "--path", "../contracts/demo"])
+            .unwrap();
+        let dir = matches
+            .get_one::<String>("path")
+            .map(|path| std::path::PathBuf::from(path))
+            .unwrap();
+        assert_eq!(dir, std::path::PathBuf::from("../contracts/demo"));
+    }
 }
