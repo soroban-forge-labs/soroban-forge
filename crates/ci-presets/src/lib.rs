@@ -1,4 +1,4 @@
-﻿//! # soroban-forge-ci-presets
+//! # soroban-forge-ci-presets
 //!
 //! `soroban-forge ci-init --provider github` — writes CI/CD workflows for a
 //! Soroban contract project.
@@ -20,6 +20,7 @@ const SECURITY_SCAN_WORKFLOW: &str = "security-scan.yml";
 const COVERAGE_WORKFLOW: &str = "coverage.yml";
 const DENY_TOML: &str = "deny.toml";
 const HEALTHCHECK_WORKFLOW: &str = "testnet-healthcheck.yml";
+const STALE_WORKFLOW: &str = "stale.yml";
 pub const DEFAULT_MSRV: &str = "1.84";
 const DEPENDABOT_CONFIG: &str = "dependabot.yml";
 
@@ -73,6 +74,7 @@ pub struct GenerateOptions {
     pub coverage: bool,
     pub healthcheck: bool,
     pub matrix: bool,
+    pub stale: bool,
     pub msrv: Option<String>,
     pub dependabot: bool,
 }
@@ -98,7 +100,9 @@ pub fn generate(
     vars.insert("crate_name".into(), project_name.replace('-', "_"));
     vars.insert(
         "msrv".into(),
-        opts.msrv.clone().unwrap_or_else(|| DEFAULT_MSRV.to_string()),
+        opts.msrv
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MSRV.to_string()),
     );
 
     let out_rel = output_dir(provider);
@@ -122,6 +126,9 @@ pub fn generate(
             }
             if opts.healthcheck {
                 list.push((HEALTHCHECK_WORKFLOW, None));
+            }
+            if opts.stale {
+                list.push((STALE_WORKFLOW, None));
             }
             if release {
                 list.push((RELEASE_WORKFLOW, None));
@@ -231,6 +238,12 @@ pub fn format_report(
              Edit testnet-healthcheck.yml to invoke your contract's real health method.\n",
         );
     }
+    if opts.stale {
+        out.push_str(
+            "\nstale: marks inactive issues and PRs stale, and closes them after the configured grace period.\n\
+             The workflow inputs can be adjusted from GitHub Actions -> stale -> Run workflow.\n",
+        );
+    }
     if opts.matrix {
         let msrv = opts.msrv.as_deref().unwrap_or(DEFAULT_MSRV);
         out.push_str(&format!(
@@ -243,7 +256,7 @@ pub fn format_report(
         out.push_str("\npush a tag matching `v*.*.*` (e.g. `v0.1.0`) to build the wasm,\n");
         out.push_str("verify the build is reproducible, and publish it to a GitHub Release\n");
         out.push_str(
-            "with a SHA256 checksum. Uses the default GITHUB_TOKEN — no secrets needed.\n",
+            "with a SHA256 checksum and detached signatures. Uses the default GITHUB_TOKEN — no secrets needed.\n",
         );
     }
     out
@@ -270,6 +283,7 @@ impl ForgePlugin for CiPresetsPlugin {
             .arg(Arg::new("coverage").long("coverage").action(ArgAction::SetTrue))
             .arg(Arg::new("healthcheck").long("healthcheck").action(ArgAction::SetTrue))
             .arg(Arg::new("matrix").long("matrix").action(ArgAction::SetTrue))
+            .arg(Arg::new("stale").long("stale").action(ArgAction::SetTrue))
             .arg(Arg::new("msrv").long("msrv").value_name("VERSION"))
             .arg(Arg::new("dependabot").long("dependabot").action(ArgAction::SetTrue))
             .arg(Arg::new("release").long("release").action(ArgAction::SetTrue))
@@ -290,6 +304,7 @@ impl ForgePlugin for CiPresetsPlugin {
             coverage: matches.get_flag("coverage"),
             healthcheck: matches.get_flag("healthcheck"),
             matrix: matches.get_flag("matrix"),
+            stale: matches.get_flag("stale"),
             msrv: matches.get_one::<String>("msrv").cloned(),
             dependabot: matches.get_flag("dependabot"),
         };
@@ -312,7 +327,16 @@ impl ForgePlugin for CiPresetsPlugin {
             });
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
         } else if !ctx.quiet {
-            print!("{}", format_report(provider, &name, &written, matches.get_flag("release"), &opts));
+            print!(
+                "{}",
+                format_report(
+                    provider,
+                    &name,
+                    &written,
+                    matches.get_flag("release"),
+                    &opts
+                )
+            );
         }
         Ok(())
     }
@@ -328,7 +352,10 @@ mod tests {
 
     #[allow(dead_code)]
     fn deploy_opts() -> GenerateOptions {
-        GenerateOptions { deploy: true, ..Default::default() }
+        GenerateOptions {
+            deploy: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -358,8 +385,17 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(default_written, vec![".github/workflows/build-test.yml", ".github/workflows/contract-size.yml"]);
-        assert!(!default_dir.path().join(".github/workflows/coverage.yml").exists());
+        assert_eq!(
+            default_written,
+            vec![
+                ".github/workflows/build-test.yml",
+                ".github/workflows/contract-size.yml"
+            ]
+        );
+        assert!(!default_dir
+            .path()
+            .join(".github/workflows/coverage.yml")
+            .exists());
 
         let coverage_dir = tempfile::tempdir().unwrap();
         let coverage_written = generate(
@@ -368,14 +404,30 @@ mod tests {
             "my-contract",
             false,
             false,
-            &GenerateOptions { coverage: true, ..Default::default() },
+            &GenerateOptions {
+                coverage: true,
+                ..Default::default()
+            },
             false,
         )
         .unwrap();
-        assert!(coverage_written.iter().any(|p| p == ".github/workflows/coverage.yml"));
-        let contents = std::fs::read_to_string(coverage_dir.path().join(".github/workflows/coverage.yml")).unwrap();
+        assert!(coverage_written
+            .iter()
+            .any(|p| p == ".github/workflows/coverage.yml"));
+        let contents =
+            std::fs::read_to_string(coverage_dir.path().join(".github/workflows/coverage.yml"))
+                .unwrap();
         assert!(contents.contains("codecov/codecov-action@v4"));
         assert!(contents.contains("cargo llvm-cov"));
+    }
+
+    #[test]
+    fn stale_flag_is_parsed() {
+        let matches = CiPresetsPlugin
+            .command()
+            .try_get_matches_from(["ci-init", "--stale"])
+            .unwrap();
+        assert!(matches.get_flag("stale"));
     }
 
     #[test]
@@ -392,7 +444,16 @@ mod tests {
     #[test]
     fn writes_azure_preset() {
         let dir = tempfile::tempdir().unwrap();
-        let written = generate(dir.path(), "azure", "my-contract", false, false, &base_opts(), false).unwrap();
+        let written = generate(
+            dir.path(),
+            "azure",
+            "my-contract",
+            false,
+            false,
+            &base_opts(),
+            false,
+        )
+        .unwrap();
         assert_eq!(written, vec!["azure-pipelines.yml"]);
         let contents = std::fs::read_to_string(dir.path().join("azure-pipelines.yml")).unwrap();
         assert!(contents.contains("CI/CD configuration for my-contract"));
@@ -404,14 +465,32 @@ mod tests {
     #[test]
     fn writes_bitbucket_preset() {
         let dir = tempfile::tempdir().unwrap();
-        let written = generate(dir.path(), "bitbucket", "my-contract", false, false, &base_opts(), false).unwrap();
+        let written = generate(
+            dir.path(),
+            "bitbucket",
+            "my-contract",
+            false,
+            false,
+            &base_opts(),
+            false,
+        )
+        .unwrap();
         assert_eq!(written, vec!["bitbucket-pipelines.yml"]);
     }
 
     #[test]
     fn writes_woodpecker_preset() {
         let dir = tempfile::tempdir().unwrap();
-        let written = generate(dir.path(), "woodpecker", "my-contract", false, false, &base_opts(), false).unwrap();
+        let written = generate(
+            dir.path(),
+            "woodpecker",
+            "my-contract",
+            false,
+            false,
+            &base_opts(),
+            false,
+        )
+        .unwrap();
         assert_eq!(written, vec![".woodpecker.yml"]);
         let contents = std::fs::read_to_string(dir.path().join(".woodpecker.yml")).unwrap();
         assert!(contents.contains("my-contract"));
