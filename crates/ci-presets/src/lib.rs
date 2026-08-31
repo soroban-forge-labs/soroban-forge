@@ -420,4 +420,15 @@ mod tests {
         assert!(contents.contains("cargo clippy --all-targets -- -D warnings"));
         assert!(!contents.contains("{{project_name}}"));
     }
+
+    #[test]
+    fn github_release_preset_is_emitted_when_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = generate(dir.path(), "github", "my-contract", false, true, &base_opts(), false).unwrap();
+        assert!(written.iter().any(|path| path == ".github/workflows/release.yml"));
+        let contents = std::fs::read_to_string(dir.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(contents.contains("cargo build --target wasm32v1-none --release --locked"));
+        assert!(contents.contains("softprops/action-gh-release@v2"));
+        assert!(contents.contains("v*.*.*"));
+    }
 }
