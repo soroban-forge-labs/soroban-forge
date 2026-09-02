@@ -130,7 +130,24 @@ pub fn build_command(plugins: &[Box<dyn ForgePlugin>]) -> Command {
                 .help("Load defaults from PATH instead of discovering forge.toml"),
         );
     for plugin in plugins {
-        cmd = cmd.subcommand(plugin.command());
+        let mut subcmd = plugin.command();
+        if plugin.name() == "optimize" {
+            subcmd = subcmd
+                .arg(
+                    Arg::new("check")
+                        .long("check")
+                        .action(ArgAction::SetTrue)
+                        .help("Fail if the optimized wasm exceeds --max-size"),
+                )
+                .arg(
+                    Arg::new("max-size")
+                        .long("max-size")
+                        .value_name("BYTES")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Maximum size in bytes for the optimized wasm"),
+                );
+        }
+        cmd = cmd.subcommand(subcmd);
     }
     cmd = cmd.subcommand(
         Command::new("completions")

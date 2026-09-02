@@ -18,10 +18,16 @@ GitHub Actions workflows into the target project:
 | `testnet-deploy.yml` | manual (`--deploy`)    | wraps official `stellar contract deploy`                |
 | `release.yml`        | tag `v*.*.*` (`--release`) | builds the wasm, verifies the build is reproducible, attaches it + a SHA256 checksum + detached signatures to a GitHub Release |
 | `stale.yml`          | scheduled + manual      | marks inactive issues/PRs stale and closes them after the configured grace period |
+| `release.yml`        | tag `v*.*.*` (`--release`) | builds the wasm, verifies the build is reproducible in a pinned container, attaches it + a SHA256 checksum to a GitHub Release |
+| `testnet-healthcheck.yml` | scheduled or manual (`--healthcheck`) | builds the project and runs `soroban-forge verify <contract-id>` against a configured network |
 
 `--dependabot` additionally writes `.github/dependabot.yml` (weekly `cargo`
 and `github-actions` updates). It is a config file, not a workflow, so it
 lands in `.github/` rather than `.github/workflows/`.
+
+`--path <dir>` writes the generated files to a different root directory while
+keeping the contract project itself in its existing location. This is useful for
+monorepos where workflows live at the repository root.
 
 The global `--quiet` flag suppresses the workflow summary and deploy-secret
 reminder without changing the generated workflows. `--actionlint` adds a
