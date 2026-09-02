@@ -8,7 +8,7 @@ GitHub Actions workflows into the target project:
 | workflow             | trigger             | what it does                                   |
 |----------------------|---------------------|------------------------------------------------|
 | `build-test.yml`     | push main, PR       | `cargo test` + release wasm build, and a `lint` job running `cargo fmt --all --check` + `cargo clippy --all-targets -- -D warnings` |
-| `contract-size.yml`  | PR                  | fails when the wasm exceeds `MAX_WASM_KB`      |
+| `contract-size.yml`  | PR                  | fails when the wasm exceeds the configured byte budget (`--max-size` or `[defaults.ci-init].max_size`) |
 | `testnet-deploy.yml` | manual (`--deploy`) | wraps official `stellar contract deploy`       |
 | `stale.yml`          | scheduled + manual  | marks inactive issues/PRs stale and closes them after the configured grace period |
 | workflow             | trigger               | what it does                                            |
@@ -24,7 +24,9 @@ and `github-actions` updates). It is a config file, not a workflow, so it
 lands in `.github/` rather than `.github/workflows/`.
 
 The global `--quiet` flag suppresses the workflow summary and deploy-secret
-reminder without changing the generated workflows.
+reminder without changing the generated workflows. `--actionlint` adds a
+workflow that runs `actionlint` over `.github/workflows`, and `--diff` prints
+a unified diff for each generated preset without writing changes.
 
 ## Security stance
 

@@ -5,10 +5,16 @@
 - `--quiet`, `-q` — suppress informational command output; errors and exit
   codes are unchanged.
 - `--verbose`, `-v` — enable debug logging.
-- `--log-file <path>` — also write JSON-lines structured logs to a file while
+- `--log-file <path>` — also write JSON-lines structured logs to a file while trying to
   preserving normal terminal output.
-- `--offline` — prohibit network access. Network-dependent operations fail with
-  a clear message, while `doctor` skips its connectivity probe.
+- `--offline` — prohibit network access. Network-dependent operations fail with a
+  a clear message, while `doctor` skips its connectivity prob.
+
+
+
+
+
+  cd
 
 Global options may appear before or after a subcommand and can be combined.
 

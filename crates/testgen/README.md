@@ -17,6 +17,7 @@ Soroban contract project and it generates
 | `benches/forge_bench.rs` | (with `--bench`) criterion benchmarks, one per entrypoint, for tracking cost over time |
 | `fuzz/Cargo.toml`      | (with `--fuzz`) cargo-fuzz workspace manifest |
 | `fuzz/fuzz_targets/fuzz_target_1.rs` | (with `--fuzz`) property-based fuzzer feeding arbitrary values into detected contract methods |
+| `tests/forge_storage_isolation.rs` | (when 2+ of instance/persistent/temporary storage are used) asserts the same key written to each storage type stays independent |
 
 Pass `--prop` (or `--invariant`/`--property`) to `test-init` to generate the
 property-based invariant harness, and `--fuzz` to emit a cargo-fuzz target.
@@ -57,6 +58,33 @@ calls the entrypoint, then asserts `try_<entrypoint>` returns `Err` on a second
 call. A failure means the contract has no re-initialization guard — a real
 finding, not a flaky test.
 
+`tests/forge_storage_isolation.rs` needs no flag either. It is written when
+the contract uses 2 or more of instance/persistent/temporary storage, and
+writes the same key to each, asserting a value read back from one storage
+type never leaks in from another — a common source of subtle bugs.
+
+`--actors <N>` (default `3`) controls the size of the multi-user fixture
+generated in `tests/common/mod.rs`: a `pub struct Actors` with one named
+`Address` field per identity (`admin`, `alice`, `bob`, ... — see
+`ACTOR_NAMES`; past the pool, identities are named `actor_N`) and a
+`pub fn actors(env: &Env) -> Actors` that generates them. Like the rest of
+`tests/common/mod.rs`, it's written once and reusable across every generated
+test file.
+
+`--fail-on-uncovered` turns the coverage summary (printed after every run)
+into a non-zero exit when any contract entrypoint has no generated test
+touching it. Without the flag, the summary is informational only — it never
+fails the run. The summary — covered/uncovered entrypoint names — is also
+available under `entrypoint_coverage` in `--json` output.
+
+`--update-snapshots` runs the generated snapshot tests
+(`cargo test --test forge_snapshots`) with `FORGE_UPDATE_SNAPSHOTS=1`, so any
+changed or missing golden file under `tests/snapshots/` is (re)written, then
+reports which files changed — the sanctioned way to accept a snapshot change
+instead of hand-editing the `.snap` files. Without it, a snapshot mismatch
+still fails `cargo test` as usual. Changed files are also available under
+`updated_snapshots` in `--json` output.
+
 The global `--quiet` flag suppresses the generated-file report and follow-up
 notes without changing which harness files are written.
 
@@ -76,7 +104,9 @@ notes without changing which harness files are written.
 
 `assert_snapshot(name, &value)` compares `value`'s `Debug` output against
 `tests/snapshots/<name>.snap`. First run writes the snapshot; subsequent runs
-fail on change; `FORGE_UPDATE_SNAPSHOTS=1 cargo test` accepts changes.
+fail on change; `FORGE_UPDATE_SNAPSHOTS=1 cargo test` accepts changes, or run
+`soroban-forge test-init --update-snapshots` to do the same and see a report
+of what changed without setting the env var by hand.
 
 ## Public surface
 
@@ -96,10 +126,15 @@ testgen::containers::find_container_args(&methods) -> Vec<ContainerArg>;
 testgen::candidates(root, &members) -> Vec<Candidate>;
 testgen::resolve(requested, &candidates) -> Result<Selection>;
 testgen::detect::detect_init_method(&methods) -> Option<MethodInfo>;
+testgen::build_actors_fixture(count) -> String;
+testgen::build_storage_isolation_test(&info) -> String;
+testgen::entrypoint_coverage(&info, dir, &written) -> (Vec<String>, Vec<String>);
+testgen::update_snapshots(dir) -> Result<Vec<String>>;
 ```
 
-`GenerateOptions` carries `force`, `fuzz`, `budget` and `budget_entrypoint`;
-`generate` is the two-flag shorthand for it.
+`GenerateOptions` carries `force`, `fuzz`, `budget`, `budget_entrypoint`,
+`actor_count` and `fail_on_uncovered`; `generate` is the two-flag shorthand
+for it.
 
 ## Tests
 

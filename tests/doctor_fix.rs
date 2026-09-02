@@ -35,3 +35,23 @@ fn doctor_json_fix_without_yes_still_emits_json_array() {
         .expect("doctor --json --fix must emit a JSON array on stdout");
     assert!(parsed.is_array(), "{stdout}");
 }
+
+#[test]
+fn doctor_list_checks_and_check_selection_work() {
+    let list = Command::new(env!("CARGO_BIN_EXE_soroban-forge"))
+        .args(["doctor", "--list-checks"])
+        .output()
+        .unwrap();
+    let list_stdout = String::from_utf8(list.stdout).unwrap();
+    assert!(list_stdout.contains("stellar-cli"), "{list_stdout}");
+
+    let selected = Command::new(env!("CARGO_BIN_EXE_soroban-forge"))
+        .args(["doctor", "--check", "stellar-cli", "--json"])
+        .output()
+        .unwrap();
+    let selected_stdout = String::from_utf8(selected.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&selected_stdout)
+        .expect("doctor --check must emit a JSON array on stdout");
+    assert!(parsed.is_array(), "{selected_stdout}");
+    assert_eq!(parsed[0]["name"], "stellar-cli");
+}

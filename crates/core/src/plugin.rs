@@ -46,7 +46,6 @@ impl ForgeContext {
         json: bool,
         yes: bool,
     ) -> Result<Self> {
-        Self::with_options(cwd, verbose, quiet, json, yes, false, None, None)
         Self::with_options(cwd, verbose, quiet, json, yes, false, None, None, None)
     }
 

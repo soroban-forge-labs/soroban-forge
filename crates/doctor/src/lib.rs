@@ -132,6 +132,22 @@ pub fn parse_semverish(version: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
+fn stellar_cli_version(line: &str) -> Option<(u32, u32, u32)> {
+    line.split_whitespace()
+        .find_map(|word| parse_semverish(word))
+}
+
+fn known_broken_stellar_cli_replacement(line: &str) -> Option<&'static str> {
+    let version = stellar_cli_version(line)?;
+    match version {
+        (27, 0, 0) => Some("27.0.1"),
+        (27, 0, 1) => Some("27.1.0"),
+        (28, 0, 0) => Some("28.0.1"),
+        (29, 0, 0) => Some("29.0.1"),
+        _ => None,
+    }
+}
+
 /// Extract the declared `soroban-sdk` version from a parsed manifest.
 ///
 /// Outer `Option`: whether the manifest declares a `soroban-sdk` dependency
@@ -776,14 +792,27 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
         });
     }
 
-    // stellar-cli — presence and minimum version (issue #47).
+    // stellar-cli — presence, minimum version and known-bad releases.
     checks.push(match capture("stellar", &["--version"]) {
-        Some(line) if version_at_least(&line, MIN_STELLAR) => Check {
-            name: "stellar-cli",
-            status: Status::Pass,
-            detail: line,
-            fix: None,
-        },
+        Some(line) if version_at_least(&line, MIN_STELLAR) => {
+            if let Some(recommended) = known_broken_stellar_cli_replacement(&line) {
+                Check {
+                    name: "stellar-cli",
+                    status: Status::Warn,
+                    detail: format!("{line} (known-broken release; upgrade to {recommended})"),
+                    fix: Some(
+                        "upgrade: cargo install --locked stellar-cli  (or: brew upgrade stellar-cli)",
+                    ),
+                }
+            } else {
+                Check {
+                    name: "stellar-cli",
+                    status: Status::Pass,
+                    detail: line,
+                    fix: None,
+                }
+            }
+        }
         Some(line) => Check {
             name: "stellar-cli",
             status: Status::Warn,
@@ -1044,6 +1073,45 @@ fn confirm(prompt: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+fn config_network_url(config: Option<&soroban_forge_core::config::ForgeConfig>) -> Option<String> {
+    let config = config?;
+    if let Some(url) = config.network.rpc_url.as_deref() {
+        return Some(url.to_owned());
+    }
+    let name = config.network.name.as_deref()?;
+    match name {
+        "testnet" => Some(TESTNET_RPC_URL.to_string()),
+        "futurenet" => Some("https://rpc-futurenet.stellar.org".to_string()),
+        "localnet" => Some("http://localhost:8000/soroban/rpc".to_string()),
+        _ => Some(name.to_string()),
+    }
+}
+
+fn normalize_check_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+        .replace(" ", "-")
+        .replace("_", "-")
+}
+
+fn list_check_names() -> Vec<&'static str> {
+    vec![
+        "rustc",
+        "cargo",
+        "wasm32v1-none-target",
+        "wasm32-unknown-unknown",
+        "stellar-cli",
+        "testnet-rpc",
+        "git",
+        "git-identity",
+        "docker",
+        "toolchain",
+        "soroban-sdk",
+        "release-opt-level",
+        "release-lto",
+        "release-codegen-units",
+    ]
+}
+
 /// The `doctor` subcommand.
 pub struct DoctorPlugin;
 
@@ -1065,7 +1133,14 @@ impl DoctorPlugin {
                 detail: "skipped (--offline)".into(),
                 fix: None,
             });
+        let mut checks = Vec::new();
+        if !ctx.offline {
+            let url = config_network_url(ctx.config.as_ref())
+                .unwrap_or_else(|| TESTNET_RPC_URL.to_string());
+            checks.push(rpc_connectivity_check(&url));
         }
+        checks.extend(run_checks_with_network(false));
+        checks.push(toolchain_check(&ctx.cwd)); // issue #109
         if let Some(check) = sdk_version_check(&ctx.cwd) {
             checks.push(check);
         }
@@ -1153,6 +1228,18 @@ impl ForgePlugin for DoctorPlugin {
                          of the current project and report success/failure with timing",
                     ),
             )
+            .arg(
+                Arg::new("check")
+                    .long("check")
+                    .value_name("NAME")
+                    .help("Run only the named check (use --list-checks to see valid choices)"),
+            )
+            .arg(
+                Arg::new("list-checks")
+                    .long("list-checks")
+                    .action(ArgAction::SetTrue)
+                    .help("Print the available check names and exit"),
+            )
     }
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
@@ -1160,6 +1247,23 @@ impl ForgePlugin for DoctorPlugin {
         let do_fix = matches.get_flag("fix");
         let do_build = matches.get_flag("build");
         let assume_yes = ctx.yes || matches.get_flag("yes");
+        let selected_check = matches.get_one::<String>("check").map(String::as_str);
+        let list_checks = matches.get_flag("list-checks");
+
+        if list_checks {
+            println!("{}", list_check_names().join("\n"));
+            return Ok(());
+        }
+
+        if let Some(selected) = selected_check {
+            let normalized = normalize_check_name(selected);
+            if !list_check_names().iter().any(|n| normalize_check_name(n) == normalized) {
+                return Err(ForgeError::InvalidArgument(format!(
+                    "unknown doctor check `{selected}` (valid: {})",
+                    list_check_names().join(", ")
+                )));
+            }
+        }
 
         if ctx.offline && do_fix {
             return Err(ForgeError::InvalidArgument(
@@ -1169,6 +1273,12 @@ impl ForgePlugin for DoctorPlugin {
         }
 
         let mut checks = self.gather_checks(ctx, do_build);
+        if let Some(selected) = selected_check {
+            checks = checks
+                .into_iter()
+                .filter(|check| normalize_check_name(check.name) == normalize_check_name(selected))
+                .collect();
+        }
 
         if do_fix {
             let remedies = fixable_remedies(&checks);
@@ -1181,6 +1291,12 @@ impl ForgePlugin for DoctorPlugin {
                 // Re-check so the final report reflects the fixes; any
                 // non-fixable issues (and any remedy that failed) remain.
                 checks = self.gather_checks(ctx, do_build);
+                if let Some(selected) = selected_check {
+                    checks = checks
+                        .into_iter()
+                        .filter(|check| normalize_check_name(check.name) == normalize_check_name(selected))
+                        .collect();
+                }
             }
         }
 
@@ -1306,6 +1422,13 @@ mod tests {
         assert_eq!(parse_semverish("1.2.3-rc.1"), Some((1, 2, 3)));
         assert_eq!(parse_semverish("*"), None);
         assert_eq!(parse_semverish("garbage"), None);
+    }
+
+    #[test]
+    fn known_bad_stellar_cli_versions_warn_with_recommendation() {
+        assert_eq!(known_broken_stellar_cli_replacement("stellar-cli 27.0.0"), Some("27.0.1"));
+        assert_eq!(known_broken_stellar_cli_replacement("stellar-cli 28.0.0"), Some("28.0.1"));
+        assert_eq!(known_broken_stellar_cli_replacement("stellar-cli 26.1.0"), None);
     }
 
     #[test]
@@ -1458,6 +1581,68 @@ mod tests {
             None,
         );
         assert!(check.detail.contains("channel: nightly"));
+    }
+
+    #[test]
+    fn fixable_remedies_skip_already_fixed_checks() {
+        let checks = vec![
+            Check {
+                name: "wasm32v1-none target",
+                status: Status::Pass,
+                detail: "installed".into(),
+                fix: None,
+            },
+            Check {
+                name: "stellar-cli",
+                status: Status::Fail,
+                detail: "not found".into(),
+                fix: Some("install: brew install stellar-cli"),
+            },
+        ];
+
+        let remedies = fixable_remedies(&checks);
+        assert_eq!(remedies.len(), 1);
+        assert_eq!(remedies[0].check, "stellar-cli");
+    }
+
+    #[test]
+    fn partial_fix_keeps_remaining_failures_for_re_run() {
+        let checks = vec![
+            Check {
+                name: "wasm32v1-none target",
+                status: Status::Fail,
+                detail: "not installed".into(),
+                fix: Some("rustup target add wasm32v1-none"),
+            },
+            Check {
+                name: "stellar-cli",
+                status: Status::Fail,
+                detail: "not found".into(),
+                fix: Some("install: brew install stellar-cli"),
+            },
+        ];
+
+        let first = fixable_remedies(&checks);
+        assert_eq!(first.len(), 2);
+
+        let next = vec![
+            Check {
+                name: "wasm32v1-none target",
+                status: Status::Pass,
+                detail: "installed".into(),
+                fix: None,
+            },
+            Check {
+                name: "stellar-cli",
+                status: Status::Fail,
+                detail: "not found".into(),
+                fix: Some("install: brew install stellar-cli"),
+            },
+        ];
+
+        let remaining = fixable_remedies(&next);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].check, "stellar-cli");
     }
 
     #[test]

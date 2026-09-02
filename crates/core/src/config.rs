@@ -28,6 +28,8 @@ pub struct ForgeConfig {
     pub scaffold: ScaffoldConfig,
     #[serde(default)]
     pub defaults: DefaultsConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
@@ -46,6 +48,19 @@ pub struct ScaffoldConfig {
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 pub struct DefaultsConfig {
     pub timeout_secs: Option<u64>,
+    #[serde(default, rename = "ci-init", alias = "ci_init")]
+    pub ci_init: CiInitDefaults,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+pub struct CiInitDefaults {
+    pub max_size: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+pub struct NetworkConfig {
+    pub name: Option<String>,
+    pub rpc_url: Option<String>,
 }
 
 impl ForgeConfig {
@@ -116,6 +131,9 @@ authors = ["Ada <ada@example.com>"]
 
 [scaffold]
 default_template = "token"
+
+[defaults.ci-init]
+max_size = 65536
 "#,
         )
         .unwrap();
@@ -124,6 +142,7 @@ default_template = "token"
         assert_eq!(config.project.name.as_deref(), Some("demo"));
         assert_eq!(config.author(), Some("Ada <ada@example.com>"));
         assert_eq!(config.scaffold.default_template.as_deref(), Some("token"));
+        assert_eq!(config.defaults.ci_init.max_size, Some(65_536));
     }
 
     #[test]
@@ -182,6 +201,15 @@ pub fn unknown_keys(raw: &str) -> std::result::Result<Vec<String>, toml::de::Err
                 collect_strays(value, &["default_template"], "scaffold", &mut strays)
             }
             "defaults" => collect_strays(value, &["timeout_secs"], "defaults", &mut strays),
+            "network" => collect_strays(value, &["name", "rpc_url"], "network", &mut strays),
+            "defaults" => {
+                collect_strays(value, &["timeout_secs", "ci-init", "ci_init"], "defaults", &mut strays)
+                if let toml::Value::Table(table) = value {
+                    if let Some(ci_init) = table.get("ci-init").or_else(|| table.get("ci_init")) {
+                        collect_strays(ci_init, &["max_size"], "defaults.ci-init", &mut strays);
+                    }
+                }
+            }
             _ => strays.push(key.clone()),
         }
     }
@@ -240,6 +268,20 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
         Some(timeout_secs) => out.push_str(&format!("timeout_secs = {timeout_secs}\n")),
         None => out.push_str("# timeout_secs = (unset)\n"),
     }
+
+    out.push_str("\n[network]\n");
+    match &config.network.name {
+        Some(name) => out.push_str(&format!("name = \"{name}\"\n")),
+        None => out.push_str("# name = (unset)\n"),
+    }
+    match &config.network.rpc_url {
+        Some(url) => out.push_str(&format!("rpc_url = \"{url}\"\n")),
+        None => out.push_str("# rpc_url = (unset)\n"),
+    out.push_str("\n[defaults.ci-init]\n");
+    match config.defaults.ci_init.max_size {
+        Some(max_size) => out.push_str(&format!("max_size = {max_size}\n")),
+        None => out.push_str("# max_size = (unset)\n"),
+    }
     out
 }
 
@@ -254,6 +296,8 @@ mod resolved_tests {
         assert!(report.contains("# name = (unset)"));
         assert!(report.contains("authors = []"));
         assert!(report.contains("default_template = \"hello-world\""));
+        assert!(report.contains("[defaults.ci-init]"));
+        assert!(report.contains("# max_size = (unset)"));
     }
 
     #[test]

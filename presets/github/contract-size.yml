@@ -10,8 +10,12 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  MAX_WASM_KB: 64
+  MAX_WASM_BYTES: {{max_size}}
 
 jobs:
   contract-size:
@@ -52,10 +56,10 @@ jobs:
           for wasm in target/wasm32v1-none/release/*.wasm; do
             [ -e "$wasm" ] || continue
             found=1
-            size_kb=$(( $(wc -c < "$wasm") / 1024 ))
-            echo "$wasm: ${size_kb} KB (limit: ${MAX_WASM_KB} KB)"
-            if [ "$size_kb" -gt "$MAX_WASM_KB" ]; then
-              echo "::error file=$wasm::contract exceeds ${MAX_WASM_KB} KB"
+            size_bytes=$(wc -c < "$wasm")
+            echo "$wasm: ${size_bytes} bytes (limit: ${MAX_WASM_BYTES} bytes)"
+            if [ "$size_bytes" -gt "$MAX_WASM_BYTES" ]; then
+              echo "::error file=$wasm::contract exceeds ${MAX_WASM_BYTES} bytes (actual: ${size_bytes} bytes)"
               status=1
             fi
           done
