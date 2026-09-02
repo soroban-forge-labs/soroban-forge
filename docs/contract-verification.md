@@ -50,6 +50,45 @@ A mismatch names both hashes:
 | `--network`, `-n <name>`   | configured network to query [default: `testnet`]            |
 | `--rpc-url <url>`          | query this RPC endpoint instead of a configured network      |
 | `--network-passphrase <p>` | passphrase for `--rpc-url`                                   |
+| `--reproducible`           | build inside the pinned image before hashing                 |
+
+`--wasm` and `--reproducible` are mutually exclusive — the former skips
+the local build entirely (useful for verifying a downloaded release
+artifact), the latter rebuilds from source inside the pinned container
+so the result does not depend on the local toolchain.
+
+When the network is not given on the command line it falls back to
+`[network]` in `forge.toml`:
+
+```toml
+[network]
+name = "testnet"
+rpc_url = "https://soroban-testnet.stellar.org"
+passphrase = "Test SDF Network ; September 2015"
+```
+
+CLI flags override the file values; `--network` and `--rpc-url` may be
+combined to point a named network at a non-default RPC endpoint.
+
+### Reproducible builds
+
+`--reproducible` runs `stellar contract build` inside the image pinned at
+[`REPRODUCIBLE_IMAGE`] in `crates/verify/src/lib.rs` and hashes the
+result. The image is pinned by digest (`@sha256:…`), so the bytes
+produced for a given source tree do not depend on the host toolchain —
+useful when verifying a release against the original sources.
+
+A missing Docker daemon is reported as exit `2` (missing tool) so CI can
+distinguish it from a real mismatch:
+
+```
+$ soroban-forge verify --reproducible CDLZ…
+error: docker not found on PATH (run `soroban-forge doctor` for install instructions)
+```
+
+To refresh the pin, update the `REPRODUCIBLE_IMAGE` constant to the new
+digest and rebuild; the comparison only succeeds with the exact image
+that produced the bytes in the first place.
 
 ### Exit codes
 

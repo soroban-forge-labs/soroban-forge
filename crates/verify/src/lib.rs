@@ -23,13 +23,21 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 
 /// Network used when neither `--network` nor `--rpc-url` is given.
 pub const DEFAULT_NETWORK: &str = "testnet";
+
+/// Pinned image (by digest) used by `verify --reproducible` to build the
+/// contract before hashing it. Pinned by digest so the hash we compare
+/// against is independent of the local toolchain — same image produces the
+/// same bytes for the same source. See `docs/reproducible-builds.md` for how
+/// to refresh the pin.
+pub const REPRODUCIBLE_IMAGE: &str =
+    "ghcr.io/stellar/soroban-build@sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Length of a strkey-encoded contract ID (`C` + 55 base32 characters).
 pub const CONTRACT_ID_LEN: usize = 56;
@@ -159,20 +167,32 @@ pub struct NetworkArgs {
     pub network_passphrase: Option<String>,
 }
 
+/// Subset of `forge.toml`'s `[network]` table relevant to `verify`.
+pub type ConfigNetwork = soroban_forge_core::config::NetworkConfig;
+
 impl NetworkArgs {
-    /// Apply the default: with no network *and* no RPC URL we target
+    /// Apply the defaults: with no network *and* no RPC URL we target
     /// [`DEFAULT_NETWORK`]. An explicit `--rpc-url` alone is left alone, so
     /// the endpoint the user asked for is the one we talk to.
+    ///
+    /// `from_config`, when given, supplies defaults from `forge.toml`'s
+    /// `[network]` table; CLI flags override file values.
     pub fn resolve(
         network: Option<String>,
         rpc_url: Option<String>,
         network_passphrase: Option<String>,
+        from_config: Option<&ConfigNetwork>,
     ) -> Self {
-        let network = match (network, rpc_url.as_ref()) {
-            (Some(name), _) => Some(name),
-            (None, None) => Some(DEFAULT_NETWORK.to_string()),
-            (None, Some(_)) => None,
+        let cfg = from_config.cloned().unwrap_or_default();
+        let cli_network = network;
+        let cli_rpc = rpc_url;
+        let network = match (cli_network.as_ref(), cli_rpc.as_ref()) {
+            (Some(name), _) => Some(name.clone()),
+            (None, None) => Some(cfg.name.clone().unwrap_or_else(|| DEFAULT_NETWORK.to_string())),
+            (None, Some(_)) => cfg.name.clone(),
         };
+        let rpc_url = cli_rpc.or(cfg.rpc_url);
+        let network_passphrase = network_passphrase.or(cfg.passphrase);
         Self {
             network,
             rpc_url,
@@ -332,16 +352,23 @@ fn path_str(path: &Path) -> Result<&str> {
 /// Hash the local build and the deployed wasm and report whether they agree.
 ///
 /// The local side is resolved first, so a missing build or a malformed
-/// contract ID fails before any network call.
+/// contract ID fails before any network call. When `reproducible` is set,
+/// `contract_dir` is built inside the pinned image before being hashed —
+/// there is no way the local toolchain can leak into the result.
 pub fn verify(
     contract_id: &str,
     contract_dir: &Path,
     wasm_override: Option<&Path>,
     network: &NetworkArgs,
+    reproducible: bool,
 ) -> Result<VerifyReport> {
     validate_contract_id(contract_id)?;
 
-    let local_wasm = resolve_local_wasm(contract_dir, wasm_override)?;
+    let local_wasm = if reproducible {
+        build_reproducible(contract_dir)?
+    } else {
+        resolve_local_wasm(contract_dir, wasm_override)?
+    };
     let local_hash = hash_wasm_file(&local_wasm)?;
 
     let scratch = tempfile::tempdir().map_err(ForgeError::io("creating a temporary directory"))?;
@@ -356,6 +383,60 @@ pub fn verify(
         local_hash,
         onchain_hash,
     ))
+}
+
+/// Run the official soroban build inside the pinned image and return the
+/// resulting wasm path. `stellar contract build` runs inside the container
+/// with `contract_dir` mounted at `/src`; the wasm ends up at
+/// `/src/target/wasm32v1-none/release/<crate>.wasm`.
+fn build_reproducible(contract_dir: &Path) -> Result<PathBuf> {
+    if !contract_dir.is_dir() {
+        return Err(ForgeError::InvalidArgument(format!(
+            "{} is not a directory — --reproducible needs the contract source tree",
+            contract_dir.display()
+        )));
+    }
+    let dir_str = path_str(contract_dir)?;
+    let crate_name = read_crate_name(contract_dir)?;
+    let host_wasm = locate_wasm(contract_dir, &crate_name);
+
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args([
+        "run",
+        "--rm",
+        "-v",
+        // Mount the source read-only so the container cannot mutate the host tree.
+        &format!("{dir_str}:/src:ro"),
+        "-w",
+        "/src",
+        REPRODUCIBLE_IMAGE,
+        "stellar",
+        "contract",
+        "build",
+    ]);
+    log::debug!("building reproducible wasm in {REPRODUCIBLE_IMAGE}");
+
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            if !host_wasm.is_file() {
+                return Err(ForgeError::Other(format!(
+                    "docker build exited 0 but {} was not produced — check the build image",
+                    host_wasm.display()
+                )));
+            }
+            Ok(host_wasm)
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err(ForgeError::Other(format!(
+                "reproducible build failed (image {REPRODUCIBLE_IMAGE}):\n{stderr}"
+            )))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(ForgeError::ToolMissing("docker".into()))
+        }
+        Err(e) => Err(ForgeError::io("running docker")(e)),
+    }
 }
 
 /// The `verify` subcommand.
@@ -390,6 +471,7 @@ impl ForgePlugin for VerifyPlugin {
             .arg(
                 Arg::new("wasm")
                     .long("wasm")
+                    .conflicts_with("reproducible")
                     .help("Path to the local .wasm to compare [default: target/wasm32v1-none/release/<crate>.wasm]"),
             )
             .arg(
@@ -407,6 +489,12 @@ impl ForgePlugin for VerifyPlugin {
                 Arg::new("network-passphrase")
                     .long("network-passphrase")
                     .help("Network passphrase for --rpc-url"),
+            )
+            .arg(
+                Arg::new("reproducible")
+                    .long("reproducible")
+                    .action(ArgAction::SetTrue)
+                    .help("Build the contract inside the pinned reproducible-build container before hashing"),
             )
     }
 
@@ -431,9 +519,11 @@ impl ForgePlugin for VerifyPlugin {
             matches.get_one::<String>("network").cloned(),
             matches.get_one::<String>("rpc-url").cloned(),
             matches.get_one::<String>("network-passphrase").cloned(),
+            ctx.config.as_ref().map(|c| &c.network),
         );
 
-        let report = verify(contract_id, &dir, wasm_override.as_deref(), &network)?;
+        let reproducible = matches.get_flag("reproducible");
+        let report = verify(contract_id, &dir, wasm_override.as_deref(), &network, reproducible)?;
 
         if ctx.json {
             println!("{}", json_report(&report));
@@ -578,7 +668,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // No Cargo.toml, no wasm, no `stellar` on PATH — the ID check still
         // decides the outcome, so nothing here shells out.
-        let err = verify("nope", tmp.path(), None, &NetworkArgs::default()).unwrap_err();
+        let err = verify("nope", tmp.path(), None, &NetworkArgs::default(), false).unwrap_err();
         assert!(err.to_string().contains("not a valid contract ID"), "{err}");
     }
 
@@ -591,20 +681,20 @@ mod tests {
         )
         .unwrap();
 
-        let err = verify(VALID_ID, tmp.path(), None, &NetworkArgs::default()).unwrap_err();
+        let err = verify(VALID_ID, tmp.path(), None, &NetworkArgs::default(), false).unwrap_err();
         assert!(err.to_string().contains("stellar contract build"), "{err}");
     }
 
     #[test]
     fn defaults_to_testnet() {
-        let network = NetworkArgs::resolve(None, None, None);
+        let network = NetworkArgs::resolve(None, None, None, None);
         assert_eq!(network.label(), "testnet");
         assert_eq!(network.cli_args(), vec!["--network", "testnet"]);
     }
 
     #[test]
     fn an_explicit_network_is_passed_through() {
-        let network = NetworkArgs::resolve(Some("mainnet".into()), None, None);
+        let network = NetworkArgs::resolve(Some("mainnet".into()), None, None, None);
         assert_eq!(network.cli_args(), vec!["--network", "mainnet"]);
     }
 
@@ -614,6 +704,7 @@ mod tests {
             None,
             Some("http://localhost:8000/soroban/rpc".into()),
             Some("Standalone Network ; February 2017".into()),
+            None,
         );
         assert_eq!(network.network, None);
         assert_eq!(
@@ -685,5 +776,43 @@ mod tests {
         assert!(help.contains("CONTRACT_ID"), "{help}");
         assert!(help.contains("--network"), "{help}");
         assert!(help.contains("--wasm"), "{help}");
+        assert!(help.contains("--reproducible"), "{help}");
+    }
+
+    #[test]
+    fn network_args_pull_defaults_from_config() {
+        let cfg = ConfigNetwork {
+            name: Some("futurenet".into()),
+            rpc_url: None,
+            passphrase: None,
+        };
+        let network = NetworkArgs::resolve(None, None, None, Some(&cfg));
+        assert_eq!(network.cli_args(), vec!["--network", "futurenet"]);
+    }
+
+    #[test]
+    fn network_args_cli_overrides_config() {
+        let cfg = ConfigNetwork {
+            name: Some("futurenet".into()),
+            rpc_url: Some("http://cfg".into()),
+            passphrase: Some("cfg-pass".into()),
+        };
+        let network = NetworkArgs::resolve(
+            Some("mainnet".into()),
+            Some("http://cli".into()),
+            Some("cli-pass".into()),
+            Some(&cfg),
+        );
+        assert_eq!(
+            network.cli_args(),
+            vec![
+                "--network",
+                "mainnet",
+                "--rpc-url",
+                "http://cli",
+                "--network-passphrase",
+                "cli-pass",
+            ]
+        );
     }
 }
