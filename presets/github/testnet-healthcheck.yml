@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Pin the Stellar CLI version for reproducible deploys.
   STELLAR_CLI_VERSION: "21.5.0"

@@ -8,7 +8,9 @@ use include_dir::{include_dir, Dir};
 use serde::Deserialize;
 use soroban_forge_core::render::{render_str, Vars};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
+use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 
 static PRESETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../presets");
 
@@ -18,9 +20,11 @@ const DEPLOY_WORKFLOW: &str = "testnet-deploy.yml";
 const RELEASE_WORKFLOW: &str = "release.yml";
 const SECURITY_SCAN_WORKFLOW: &str = "security-scan.yml";
 const COVERAGE_WORKFLOW: &str = "coverage.yml";
+const ACTIONLINT_WORKFLOW: &str = "actionlint.yml";
 const DENY_TOML: &str = "deny.toml";
 const HEALTHCHECK_WORKFLOW: &str = "testnet-healthcheck.yml";
 pub const DEFAULT_MSRV: &str = "1.84";
+pub const DEFAULT_MAX_SIZE: u64 = 65_536;
 const DEPENDABOT_CONFIG: &str = "dependabot.yml";
 
 pub fn available_providers() -> Vec<&'static str> {
@@ -71,10 +75,12 @@ pub struct GenerateOptions {
     pub deploy: bool,
     pub security_scan: bool,
     pub coverage: bool,
+    pub actionlint: bool,
     pub healthcheck: bool,
     pub matrix: bool,
     pub msrv: Option<String>,
     pub dependabot: bool,
+    pub max_size: Option<u64>,
 }
 
 pub fn generate(
@@ -94,12 +100,14 @@ pub fn generate(
     })?;
 
     let mut vars = Vars::new();
+    let max_size = opts.max_size.unwrap_or(DEFAULT_MAX_SIZE);
     vars.insert("project_name".into(), project_name.to_string());
     vars.insert("crate_name".into(), project_name.replace('-', "_"));
     vars.insert(
         "msrv".into(),
         opts.msrv.clone().unwrap_or_else(|| DEFAULT_MSRV.to_string()),
     );
+    vars.insert("max_size".into(), max_size.to_string());
 
     let out_rel = output_dir(provider);
     let out_dir = dir.join(out_rel);
@@ -119,6 +127,9 @@ pub fn generate(
             }
             if opts.coverage {
                 list.push((COVERAGE_WORKFLOW, None));
+            }
+            if opts.actionlint {
+                list.push((ACTIONLINT_WORKFLOW, None));
             }
             if opts.healthcheck {
                 list.push((HEALTHCHECK_WORKFLOW, None));
@@ -225,6 +236,11 @@ pub fn format_report(
              CODECOV_TOKEN. If that secret is missing, the workflow skips the upload gracefully.\n",
         );
     }
+    if opts.actionlint {
+        out.push_str(
+            "\nactionlint: validate generated GitHub workflows in CI with `actionlint` before they merge.\n",
+        );
+    }
     if opts.healthcheck {
         out.push_str(
             "\ntestnet-healthcheck: the smoke entry point defaults to `version` then `ping`.\n\
@@ -249,6 +265,32 @@ pub fn format_report(
     out
 }
 
+fn print_diff(path: &Path, generated: &str) -> Result<()> {
+    let temp_path = std::env::temp_dir().join(format!(
+        "soroban-forge-ci-init-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let mut temp_file = std::fs::File::create(&temp_path)
+        .map_err(ForgeError::io(format!("creating {}", temp_path.display())))?;
+    temp_file
+        .write_all(generated.as_bytes())
+        .map_err(ForgeError::io(format!("writing {}", temp_path.display())))?;
+
+    let left = if path.exists() { path } else { Path::new("/dev/null") };
+    let mut cmd = Command::new("diff");
+    cmd.arg("-u").arg("--label").arg("generated").arg("--label").arg(path.to_string_lossy().as_ref());
+    cmd.arg(left).arg(&temp_path);
+    let output = cmd.output().map_err(ForgeError::io(format!("running diff for {}", path.display())))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    print!("\n--- {} ---\n{stdout}", path.display());
+    std::fs::remove_file(&temp_path).ok();
+    Ok(())
+}
+
 pub struct CiPresetsPlugin;
 
 impl ForgePlugin for CiPresetsPlugin {
@@ -268,11 +310,14 @@ impl ForgePlugin for CiPresetsPlugin {
             .arg(Arg::new("deploy").long("deploy").action(ArgAction::SetTrue))
             .arg(Arg::new("security-scan").long("security-scan").action(ArgAction::SetTrue))
             .arg(Arg::new("coverage").long("coverage").action(ArgAction::SetTrue))
+            .arg(Arg::new("actionlint").long("actionlint").action(ArgAction::SetTrue))
             .arg(Arg::new("healthcheck").long("healthcheck").action(ArgAction::SetTrue))
             .arg(Arg::new("matrix").long("matrix").action(ArgAction::SetTrue))
             .arg(Arg::new("msrv").long("msrv").value_name("VERSION"))
+            .arg(Arg::new("max-size").long("max-size").value_name("BYTES").value_parser(clap::value_parser!(u64)))
             .arg(Arg::new("dependabot").long("dependabot").action(ArgAction::SetTrue))
             .arg(Arg::new("release").long("release").action(ArgAction::SetTrue))
+            .arg(Arg::new("diff").long("diff").action(ArgAction::SetTrue))
             .arg(Arg::new("path").long("path"))
             .arg(Arg::new("force").long("force").action(ArgAction::SetTrue))
     }
@@ -284,15 +329,92 @@ impl ForgePlugin for CiPresetsPlugin {
             .map(|p| ctx.cwd.join(p))
             .unwrap_or_else(|| ctx.cwd.clone());
         let name = project_name(&dir, ctx);
+        let max_size = matches
+            .get_one::<u64>("max-size")
+            .copied()
+            .or_else(|| {
+                ctx.config.as_ref().and_then(|c| {
+                    c.defaults
+                        .ci_init
+                        .max_size
+                })
+            })
+            .unwrap_or(DEFAULT_MAX_SIZE);
         let opts = GenerateOptions {
             deploy: matches.get_flag("deploy"),
             security_scan: matches.get_flag("security-scan"),
             coverage: matches.get_flag("coverage"),
+            actionlint: matches.get_flag("actionlint"),
             healthcheck: matches.get_flag("healthcheck"),
             matrix: matches.get_flag("matrix"),
             msrv: matches.get_one::<String>("msrv").cloned(),
             dependabot: matches.get_flag("dependabot"),
+            max_size: Some(max_size),
         };
+
+        if matches.get_flag("diff") {
+            let provider_dir = PRESETS.get_dir(provider).ok_or_else(|| {
+                ForgeError::InvalidArgument(format!(
+                    "unknown provider `{provider}` (available: {})",
+                    available_providers().join(", ")
+                ))
+            })?;
+            let mut selected: Vec<(&str, Option<&str>)> = match provider {
+                "github" => {
+                    let mut list: Vec<(&str, Option<&str>)> = BASE_WORKFLOWS.iter().map(|n| (*n, None)).collect();
+                    if opts.deploy { list.push((DEPLOY_WORKFLOW, None)); }
+                    if opts.security_scan { list.push((SECURITY_SCAN_WORKFLOW, None)); list.push((DENY_TOML, Some("."))); }
+                    if opts.coverage { list.push((COVERAGE_WORKFLOW, None)); }
+                    if opts.actionlint { list.push((ACTIONLINT_WORKFLOW, None)); }
+                    if opts.healthcheck { list.push((HEALTHCHECK_WORKFLOW, None)); }
+                    if matches.get_flag("release") { list.push((RELEASE_WORKFLOW, None)); }
+                    if opts.matrix { list.push((MATRIX_WORKFLOW, None)); }
+                    if opts.dependabot { list.push((DEPENDABOT_CONFIG, Some(".github"))); }
+                    list
+                }
+                "gitlab" => vec![(".gitlab-ci.yml", None)],
+                "bitbucket" => vec![("bitbucket-pipelines.yml", None)],
+                "azure" => vec![("azure-pipelines.yml", None)],
+                "circleci" => vec![("config.yml", None)],
+                "woodpecker" => vec![(".woodpecker.yml", None)],
+                _ => return Err(ForgeError::InvalidArgument(format!(
+                    "unknown provider `{provider}` (available: {})",
+                    available_providers().join(", ")
+                ))),
+            };
+
+            for (preset_name, dest_rel_override) in selected.drain(..) {
+                let file = provider_dir
+                    .get_file(format!("{provider}/{preset_name}"))
+                    .ok_or_else(|| ForgeError::Template(format!("missing preset file {provider}/{preset_name}")))?;
+                let contents = file
+                    .contents_utf8()
+                    .ok_or_else(|| ForgeError::Template(format!("preset {preset_name} is not UTF-8")))?;
+                let dest_rel = dest_rel_override.unwrap_or(output_dir(provider));
+                let out_path = dir.join(dest_rel).join(preset_name);
+                let rendered = render_str(contents, &{
+                    let mut vars = Vars::new();
+                    vars.insert("project_name".into(), name.to_string());
+                    vars.insert("crate_name".into(), name.replace('-', "_"));
+                    vars.insert("msrv".into(), opts.msrv.clone().unwrap_or_else(|| DEFAULT_MSRV.to_string()));
+                    vars.insert("max_size".into(), max_size.to_string());
+                    vars
+                });
+                if out_path.exists() {
+                    let existing = std::fs::read_to_string(&out_path)
+                        .map_err(ForgeError::io(format!("reading {}", out_path.display())))?;
+                    if existing == rendered {
+                        continue;
+                    }
+                    print_diff(&out_path, &rendered)?;
+                } else {
+                    let parent = out_path.parent().unwrap_or(&dir);
+                    std::fs::create_dir_all(parent).map_err(ForgeError::io(format!("creating {}", parent.display())))?;
+                    print_diff(&out_path, &rendered)?;
+                }
+            }
+            return Ok(());
+        }
 
         let written = generate(
             &dir,
@@ -343,6 +465,16 @@ mod tests {
             .try_get_matches_from(["ci-init", "--coverage"])
             .unwrap();
         assert!(matches.get_flag("coverage"));
+    }
+
+    #[test]
+    fn actionlint_and_max_size_flags_are_parsed() {
+        let matches = CiPresetsPlugin
+            .command()
+            .try_get_matches_from(["ci-init", "--actionlint", "--max-size", "65536"])
+            .unwrap();
+        assert!(matches.get_flag("actionlint"));
+        assert_eq!(matches.get_one::<u64>("max-size"), Some(&65_536));
     }
 
     #[test]
