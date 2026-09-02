@@ -53,6 +53,24 @@ jobs:
             echo "::error::build is not reproducible: wasm differs between two builds of the same commit"
             exit 1
           fi
+      - name: Verify reproducible build in pinned container
+        env:
+          RUST_IMAGE: "rust:1.84.0@sha256:12b68bb84516779d910706fb80f1705777459c1e5f6c7c0118c2fb4256d9ec3d"
+        run: |
+          HOST_WASM="target/wasm32v1-none/release/{{crate_name}}.wasm"
+          HOST_HASH=$(sha256sum "$HOST_WASM" | awk '{print $1}')
+          echo "host wasm sha256: ${HOST_HASH}"
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            "$RUST_IMAGE" \
+            bash -lc 'rustup target add wasm32v1-none && cargo build --target wasm32v1-none --release --locked'
+          CONTAINER_HASH=$(sha256sum "$HOST_WASM" | awk '{print $1}')
+          echo "container wasm sha256: ${CONTAINER_HASH}"
+          if [ "$HOST_HASH" != "$CONTAINER_HASH" ]; then
+            echo "::error::Docker rebuild hash differs from the host build"
+            exit 1
+          fi
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
