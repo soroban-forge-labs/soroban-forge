@@ -55,6 +55,11 @@ pub enum ForgeError {
     #[error("verification failed: {0}")]
     VerificationFailed(String),
 
+    /// The optimized wasm exceeds the size budget requested via
+    /// `optimize --check --max-size` or `forge.toml`.
+    #[error("optimized wasm size {actual} exceeds budget of {max} bytes")]
+    SizeBudgetExceeded { actual: u64, max: u64 },
+
     /// A required external tool (e.g. `stellar`, `rustc`, `rustup`) was not
     /// found on `PATH`, or failed its minimum-version check. Distinct from
     /// [`ForgeError::Doctor`] so a plugin that shells out to a specific tool
@@ -89,7 +94,8 @@ impl ForgeError {
             | ForgeError::Template(_)
             | ForgeError::AlreadyExists(_)
             | ForgeError::InvalidArgument(_)
-            | ForgeError::VerificationFailed(_) => ExitCode::UserError,
+            | ForgeError::VerificationFailed(_)
+            | ForgeError::SizeBudgetExceeded { .. } => ExitCode::UserError,
             ForgeError::Doctor(_) | ForgeError::ToolMissing(_) => ExitCode::ToolMissing,
             ForgeError::Io { .. } | ForgeError::Other(_) => ExitCode::InternalError,
         }
@@ -128,6 +134,10 @@ mod tests {
         );
         assert_eq!(
             ForgeError::VerificationFailed("hash mismatch".into()).exit_code(),
+            ExitCode::UserError
+        );
+        assert_eq!(
+            ForgeError::SizeBudgetExceeded { actual: 100, max: 64 }.exit_code(),
             ExitCode::UserError
         );
     }
@@ -175,6 +185,7 @@ mod tests {
             ForgeError::InvalidArgument("x".into()),
             ForgeError::Doctor("x".into()),
             ForgeError::VerificationFailed("x".into()),
+            ForgeError::SizeBudgetExceeded { actual: 1, max: 2 },
             ForgeError::ToolMissing("stellar".into()),
             ForgeError::Other("x".into()),
         ];

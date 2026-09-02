@@ -48,6 +48,8 @@ pub struct ScaffoldConfig {
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 pub struct DefaultsConfig {
     pub timeout_secs: Option<u64>,
+    /// Maximum size in bytes for `optimize --check`.
+    pub max_size: Option<u64>,
     #[serde(default, rename = "ci-init", alias = "ci_init")]
     pub ci_init: CiInitDefaults,
 }
@@ -200,6 +202,7 @@ pub fn unknown_keys(raw: &str) -> std::result::Result<Vec<String>, toml::de::Err
             "scaffold" => {
                 collect_strays(value, &["default_template"], "scaffold", &mut strays)
             }
+            "defaults" => collect_strays(value, &["timeout_secs", "max_size"], "defaults", &mut strays),
             "defaults" => collect_strays(value, &["timeout_secs"], "defaults", &mut strays),
             "network" => collect_strays(value, &["name", "rpc_url"], "network", &mut strays),
             "defaults" => {
@@ -268,6 +271,7 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
         Some(timeout_secs) => out.push_str(&format!("timeout_secs = {timeout_secs}\n")),
         None => out.push_str("# timeout_secs = (unset)\n"),
     }
+    match config.defaults.max_size {
 
     out.push_str("\n[network]\n");
     match &config.network.name {
