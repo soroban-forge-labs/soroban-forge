@@ -10,11 +10,14 @@ GitHub Actions workflows into the target project:
 | `build-test.yml`     | push main, PR       | `cargo test` + release wasm build, and a `lint` job running `cargo fmt --all --check` + `cargo clippy --all-targets -- -D warnings` |
 | `contract-size.yml`  | PR                  | fails when the wasm exceeds the configured byte budget (`--max-size` or `[defaults.ci-init].max_size`) |
 | `testnet-deploy.yml` | manual (`--deploy`) | wraps official `stellar contract deploy`       |
+| `stale.yml`          | scheduled + manual  | marks inactive issues/PRs stale and closes them after the configured grace period |
 | workflow             | trigger               | what it does                                            |
 |----------------------|------------------------|---------------------------------------------------------|
 | `build-test.yml`     | push main, PR          | `cargo test` + release wasm build                       |
 | `contract-size.yml`  | PR                     | fails when the wasm exceeds `MAX_WASM_KB`               |
 | `testnet-deploy.yml` | manual (`--deploy`)    | wraps official `stellar contract deploy`                |
+| `release.yml`        | tag `v*.*.*` (`--release`) | builds the wasm, verifies the build is reproducible, attaches it + a SHA256 checksum + detached signatures to a GitHub Release |
+| `stale.yml`          | scheduled + manual      | marks inactive issues/PRs stale and closes them after the configured grace period |
 | `release.yml`        | tag `v*.*.*` (`--release`) | builds the wasm, verifies the build is reproducible in a pinned container, attaches it + a SHA256 checksum to a GitHub Release |
 | `testnet-healthcheck.yml` | scheduled or manual (`--healthcheck`) | builds the project and runs `soroban-forge verify <contract-id>` against a configured network |
 
@@ -55,10 +58,21 @@ Adding a provider = new `presets/<name>/` directory + an arm in
 `--release` writes a workflow triggered by pushing a tag matching `v*.*.*`
 (e.g. `v0.1.0`). It builds the wasm, rebuilds it again from a clean tree to
 confirm the two builds hash identically (catches non-determinism before it
-reaches a release), then publishes both the wasm and a `.sha256` checksum
-file to a GitHub Release via `softprops/action-gh-release`. It needs
-`permissions: contents: write` (the other presets are read-only) and uses
-only the default `GITHUB_TOKEN` — no additional secrets.
+reaches a release), then publishes the wasm, a `.sha256` checksum file, and
+detached `.sig` files for both to a GitHub Release via
+`softprops/action-gh-release`. It needs `permissions: contents: write` (the
+other presets are read-only) and uses only the default `GITHUB_TOKEN` — no
+additional secrets.
+
+Consumers can verify the release assets with the published public key:
+
+```bash
+openssl dgst -sha256 -verify release-signing.pub -signature my_contract.wasm.sig my_contract.wasm
+openssl dgst -sha256 -verify release-signing.pub -signature my_contract.wasm.sha256.sig my_contract.wasm.sha256
+```
+
+The private key is generated at runtime for that release and is never stored in
+the repository.
 
 ## Verification
 

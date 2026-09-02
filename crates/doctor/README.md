@@ -4,12 +4,13 @@ Diagnoses common environmental issues and missing tooling dependencies for Sorob
 
 ## Optional checks
 
-Two checks report on things that are useful but not required, so they warn instead of failing:
+Checks that are useful but not required warn instead of failing:
 
 | check | warns when |
 |---|---|
 | `docker` | Docker is absent, or installed with its daemon down — reproducible WASM builds commonly use it |
 | `git identity` | `git config user.name` or `user.email` is unset — commits in a freshly created project fail confusingly without them |
+| `Cargo.lock` | `Cargo.toml` is newer than `Cargo.lock`, or the lockfile is missing and should be refreshed |
 
 ## Auto-fixing (`--fix`)
 
@@ -17,7 +18,7 @@ Two checks report on things that are useful but not required, so they warn inste
 
 | check | command run |
 |---|---|
-| `wasm32v1-none` target | `rustup target add wasm32v1-none` |
+| `wasm32v1-none` target | `rustup target add --toolchain <active-toolchain> wasm32v1-none` |
 | `stellar` CLI | `cargo install --locked stellar-cli` |
 
 It prints the commands it is about to run and asks for confirmation, then re-checks and reports anything still outstanding. Non-fixable issues (a missing `rustc`/`cargo`, `git`, or an out-of-date `soroban-sdk`) are reported with their manual instructions rather than run automatically.

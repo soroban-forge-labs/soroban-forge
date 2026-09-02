@@ -41,6 +41,13 @@ jobs:
         run: |
           cd target/wasm32v1-none/release
           sha256sum {{crate_name}}.wasm > {{crate_name}}.wasm.sha256
+      - name: Sign release artifacts
+        run: |
+          openssl genrsa -out /tmp/release-signing.key 4096
+          openssl rsa -in /tmp/release-signing.key -pubout -out /tmp/release-signing.pub
+          cd target/wasm32v1-none/release
+          openssl dgst -sha256 -sign /tmp/release-signing.key -out {{crate_name}}.wasm.sig {{crate_name}}.wasm
+          openssl dgst -sha256 -sign /tmp/release-signing.key -out {{crate_name}}.wasm.sha256.sig {{crate_name}}.wasm.sha256
       - name: Verify reproducible build
         # Clean and rebuild from the same commit; the wasm hash must match.
         # Catches non-determinism (timestamps, absolute paths, etc.) before
@@ -75,6 +82,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            /tmp/release-signing.pub
             target/wasm32v1-none/release/{{crate_name}}.wasm
             target/wasm32v1-none/release/{{crate_name}}.wasm.sha256
+            target/wasm32v1-none/release/{{crate_name}}.wasm.sig
+            target/wasm32v1-none/release/{{crate_name}}.wasm.sha256.sig
           generate_release_notes: true
