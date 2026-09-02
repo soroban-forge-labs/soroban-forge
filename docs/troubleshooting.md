@@ -77,6 +77,20 @@ stellar --version
 If it's installed but still not found, check that cargo's bin directory
 (usually `~/.cargo/bin`) is on your `PATH`.
 
+## `doctor` warns about a known-bad `stellar-cli` version
+
+**Symptom:** `soroban-forge doctor` prints a warning that the active
+`stellar-cli` version is a known-bad release and recommends upgrading.
+
+**Fix:** install a safe version from the latest stable release:
+
+```sh
+cargo install --locked stellar-cli
+```
+
+`doctor` keeps the denylist in one place so patching it for a new bad release
+is straightforward; the warning includes the recommended replacement version.
+
 ## Still stuck?
 
 Run `soroban-forge doctor` and include its full output when opening an issue —

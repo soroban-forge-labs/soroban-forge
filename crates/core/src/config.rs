@@ -28,6 +28,8 @@ pub struct ForgeConfig {
     pub scaffold: ScaffoldConfig,
     #[serde(default)]
     pub defaults: DefaultsConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
@@ -53,6 +55,12 @@ pub struct DefaultsConfig {
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 pub struct CiInitDefaults {
     pub max_size: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+pub struct NetworkConfig {
+    pub name: Option<String>,
+    pub rpc_url: Option<String>,
 }
 
 impl ForgeConfig {
@@ -192,6 +200,8 @@ pub fn unknown_keys(raw: &str) -> std::result::Result<Vec<String>, toml::de::Err
             "scaffold" => {
                 collect_strays(value, &["default_template"], "scaffold", &mut strays)
             }
+            "defaults" => collect_strays(value, &["timeout_secs"], "defaults", &mut strays),
+            "network" => collect_strays(value, &["name", "rpc_url"], "network", &mut strays),
             "defaults" => {
                 collect_strays(value, &["timeout_secs", "ci-init", "ci_init"], "defaults", &mut strays)
                 if let toml::Value::Table(table) = value {
@@ -258,6 +268,15 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
         Some(timeout_secs) => out.push_str(&format!("timeout_secs = {timeout_secs}\n")),
         None => out.push_str("# timeout_secs = (unset)\n"),
     }
+
+    out.push_str("\n[network]\n");
+    match &config.network.name {
+        Some(name) => out.push_str(&format!("name = \"{name}\"\n")),
+        None => out.push_str("# name = (unset)\n"),
+    }
+    match &config.network.rpc_url {
+        Some(url) => out.push_str(&format!("rpc_url = \"{url}\"\n")),
+        None => out.push_str("# rpc_url = (unset)\n"),
     out.push_str("\n[defaults.ci-init]\n");
     match config.defaults.ci_init.max_size {
         Some(max_size) => out.push_str(&format!("max_size = {max_size}\n")),
