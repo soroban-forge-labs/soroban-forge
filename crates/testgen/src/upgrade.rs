@@ -414,6 +414,8 @@ mod tests {
             token_param_names: Vec::new(),
             init_method: None,
             has_persistent_storage: false,
+            has_instance_storage: false,
+            has_temporary_storage: false,
         }
     }
 }

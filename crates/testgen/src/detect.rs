@@ -55,6 +55,12 @@ pub struct ContractInfo {
     /// (`env.storage().persistent()`). When `true`, a TTL / rent-extension
     /// test file is generated so rent regressions have a starting point.
     pub has_persistent_storage: bool,
+    /// Whether the contract reads or writes instance storage
+    /// (`env.storage().instance()`).
+    pub has_instance_storage: bool,
+    /// Whether the contract reads or writes temporary storage
+    /// (`env.storage().temporary()`).
+    pub has_temporary_storage: bool,
 }
 
 /// A contract method discovered inside a `#[contractimpl]` block.
@@ -152,6 +158,8 @@ pub fn inspect(dir: &Path) -> Result<ContractInfo> {
         token_param_names,
         init_method,
         has_persistent_storage: detect_persistent_storage(&source),
+        has_instance_storage: detect_instance_storage(&source),
+        has_temporary_storage: detect_temporary_storage(&source),
     })
 }
 
@@ -179,6 +187,18 @@ pub fn detect_init_method(methods: &[MethodInfo]) -> Option<MethodInfo> {
 pub fn detect_persistent_storage(source: &str) -> bool {
     let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
     compact.contains("storage().persistent()")
+}
+
+/// Whether the contract source reads or writes instance storage.
+pub fn detect_instance_storage(source: &str) -> bool {
+    let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("storage().instance()")
+}
+
+/// Whether the contract source reads or writes temporary storage.
+pub fn detect_temporary_storage(source: &str) -> bool {
+    let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("storage().temporary()")
 }
 
 /// Parse `__constructor` arguments from the source code and generate sensible default values.
