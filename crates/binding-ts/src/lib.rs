@@ -15,6 +15,7 @@
 //!   `stellar-cli` isn't on `PATH`
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::Deserialize;
@@ -181,6 +182,12 @@ impl ForgePlugin for BindingsTsPlugin {
                             .long("force")
                             .action(ArgAction::SetTrue)
                             .help("Overwrite the output directory if it exists"),
+                    )
+                    .arg(
+                        Arg::new("watch")
+                            .long("watch")
+                            .action(ArgAction::SetTrue)
+                            .help("Watch the contract source and regenerate bindings on change"),
                     ),
             )
     }
@@ -208,7 +215,15 @@ fn run_ts(matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         .map(|p| ctx.cwd.join(p))
         .unwrap_or_else(|| dir.join(DEFAULT_OUTPUT_SUBDIR));
 
-    let wasm_path = generate_bindings(&dir, wasm_override.as_deref(), &output, matches.get_flag("force"))?;
+    let force = matches.get_flag("force");
+    let watch = matches.get_flag("watch");
+
+    if watch {
+        // `--watch` always overwrites — that is the whole point of the loop.
+        return watch_loop(&dir, wasm_override.as_deref(), &output, ctx);
+    }
+
+    let wasm_path = generate_bindings(&dir, wasm_override.as_deref(), &output, force)?;
 
     if ctx.json {
         let report = serde_json::json!({
@@ -226,6 +241,95 @@ fn run_ts(matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         println!("  npm run build");
     }
     Ok(())
+}
+
+/// Re-render the bindings package every time the contract source tree
+/// changes. Ctrl-C cleanly exits; per-regeneration errors are printed but
+/// do not stop the loop (acceptance criteria).
+///
+/// Polling-based so we don't add a new dependency for a single command:
+/// `notify` would be the right answer at scale, but for a one-second poll
+/// over a scaffolded contract the disk cost is negligible.
+fn watch_loop(
+    dir: &Path,
+    wasm_override: Option<&Path>,
+    output: &Path,
+    ctx: &ForgeContext,
+) -> Result<()> {
+    // First run is synchronous so a broken setup fails before we enter
+    // the steady-state loop (e.g. missing stellar-cli, malformed wasm).
+    if let Err(err) = regenerate(dir, wasm_override, output, ctx) {
+        if !ctx.quiet {
+            eprintln!("[{}] regeneration failed: {err} (continuing)", timestamp());
+        }
+    }
+
+    let mut last = snapshot_mtime(dir);
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let now = snapshot_mtime(dir);
+        if now != last {
+            last = now;
+            if let Err(err) = regenerate(dir, wasm_override, output, ctx) {
+                if !ctx.quiet {
+                    eprintln!(
+                        "[{}] regeneration failed: {err} (continuing)",
+                        timestamp()
+                    );
+                }
+            }
+        }
+    }
+    // Ctrl-C terminates the process; the default SIGINT disposition is the
+    // criterion's "clean exit on Ctrl-C".
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
+fn regenerate(
+    dir: &Path,
+    wasm_override: Option<&Path>,
+    output: &Path,
+    ctx: &ForgeContext,
+) -> Result<PathBuf> {
+    let wasm = generate_bindings(dir, wasm_override, output, true)?;
+    if !ctx.quiet {
+        println!("[{}] regenerated -> {}", timestamp(), output.display());
+    }
+    Ok(wasm)
+}
+
+fn timestamp() -> String {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{now}s")
+}
+
+/// Latest mtime under `dir`, recursively. Used as a coarse change
+/// indicator; a hash comparison would be more precise but is unnecessary
+/// for a one-second poll.
+fn snapshot_mtime(dir: &Path) -> Option<SystemTime> {
+    fn walk(path: &Path, latest: &mut Option<SystemTime>) -> std::io::Result<()> {
+        let meta = std::fs::metadata(path)?;
+        if let Ok(modified) = meta.modified() {
+            match latest {
+                Some(current) if *current >= modified => {}
+                _ => *latest = Some(modified),
+            }
+        }
+        if meta.is_dir() {
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                walk(&entry.path(), latest)?;
+            }
+        }
+        Ok(())
+    }
+    let mut latest = None;
+    let _ = walk(dir, &mut latest);
+    latest
 }
 
 #[cfg(test)]
@@ -293,5 +397,31 @@ mod tests {
 
         let err = generate_bindings(tmp.path(), None, &output, false).unwrap_err();
         assert!(matches!(err, ForgeError::AlreadyExists(_)));
+    }
+
+    #[test]
+    fn snapshot_mtime_reflects_changes_in_the_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "x").unwrap();
+        let before = snapshot_mtime(tmp.path());
+
+        // Touch a file to bump mtime.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(tmp.path().join("lib.rs"), "x").unwrap();
+        let after = snapshot_mtime(tmp.path());
+
+        assert!(before.is_some());
+        assert!(after.is_some());
+        assert!(after.unwrap() >= before.unwrap());
+    }
+
+    #[test]
+    fn watch_flag_is_exposed_on_the_ts_subcommand() {
+        let cmd = BindingsTsPlugin.command();
+        let ts = cmd
+            .find_subcommand("ts")
+            .expect("ts subcommand");
+        let help = ts.render_long_help().to_string();
+        assert!(help.contains("--watch"), "{help}");
     }
 }

@@ -63,6 +63,7 @@ pub struct CiInitDefaults {
 pub struct NetworkConfig {
     pub name: Option<String>,
     pub rpc_url: Option<String>,
+    pub passphrase: Option<String>,
 }
 
 impl ForgeConfig {
@@ -204,7 +205,7 @@ pub fn unknown_keys(raw: &str) -> std::result::Result<Vec<String>, toml::de::Err
             }
             "defaults" => collect_strays(value, &["timeout_secs", "max_size"], "defaults", &mut strays),
             "defaults" => collect_strays(value, &["timeout_secs"], "defaults", &mut strays),
-            "network" => collect_strays(value, &["name", "rpc_url"], "network", &mut strays),
+            "network" => collect_strays(value, &["name", "rpc_url", "passphrase"], "network", &mut strays),
             "defaults" => {
                 collect_strays(value, &["timeout_secs", "ci-init", "ci_init"], "defaults", &mut strays)
                 if let toml::Value::Table(table) = value {
