@@ -46,6 +46,9 @@ scaffolding.
   `--layout inline` writes a single `#[cfg])test] mod forge_tests` in `src/`.
   Contracts that use persistent storage also get `forge_ttl.rs`, which
   exercises `extend_ttl` on a persistent entry.
+  - `--localnet` — also generate the ignored `tests/forge_localnet.rs` target;
+    run it against a local Soroban network with
+    `cargo test --test forge_localnet -- --ignored`.
 - `soroban-forge ci-init --provider <github|gitlab|circleci|bitbucket>` —
   generate CI workflows. `--matrix` adds a build/test workflow that runs across
   a Rust toolchain matrix (stable plus `--msrv`, default 1.84).
@@ -65,13 +68,18 @@ scaffolding.
   - `--format <rust|text|json|md|markdown>` (default `text`) — output format.
     `--format md` emits documentation-ready Markdown tables of entrypoints, arguments, return types, and referenced custom types.
   - `--json` — shortcut for `--format json`.
+  - `diff <old> <new>` — compare JSON spec files, WASM files, or deployed
+    contract IDs. Removed entrypoints and changed signatures are breaking;
+    additions are reported as additive. Exits `1` when breaking changes exist.
   - `--network <name>` / `--rpc-url <url>` — network to fetch the contract from when `<contract-id>` is given (defaults to `testnet`).
   - `--offline` — prohibit network access. When `<contract-id>` is specified, fails cleanly before any network call. Local wasm inspection continues to work offline.
 - `soroban-forge optimize` — optimize a built contract wasm. Use `--check` with
   `--max-size <bytes>` to fail (exit 1) if the optimized size exceeds the
   budget. The budget can also be set as `optimize.max_size` in `forge.toml`; the
-  command-line `--max-size` overrides the config. On failure, the actual
-  and budgeted sizes are printed.
+  command-line `--max-size` overrides the config. The report includes the
+  before and after byte sizes and percentage saved; `--json` includes these as
+  `before_bytes`, `after_bytes`, and `percent_saved`. `--quiet` suppresses the
+  report. On budget failure, the actual and budgeted sizes are printed.
 - `soroban-forge verify <contract-id> [--network <n>]` — compare a deployed
   contract's wasm hash with the local release build; exits `1` on a mismatch.
   See [Contract Verification](contract-verification.md).
