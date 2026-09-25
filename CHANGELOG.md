@@ -7,6 +7,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `soroban-forge bindings ts --react`: emits `src/hooks.ts`, a typed React
+  hook per entrypoint (a query-style hook for reads, a mutation hook for
+  writes), exported at a `./hooks` subpath with `react` as an optional peer
+  dependency. Strictly opt-in — nothing changes without the flag (#268)
 - `soroban-forge spec diff <old> <new>`: compares two interfaces (each a
   wasm file, a `spec --json` file, or a deployed contract ID) and
   classifies the differences — a removed entrypoint or changed signature is

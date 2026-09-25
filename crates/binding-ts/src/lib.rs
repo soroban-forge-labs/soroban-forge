@@ -17,6 +17,10 @@
 //!   as-is: a conditional `exports` map, `types`, `files`, and
 //!   `@stellar/stellar-sdk` as a peer dependency (see
 //!   [`make_publishable`])
+//! - with `--react`, additionally emitting `src/hooks.ts`: one hook per
+//!   entrypoint, typed against the generated client rather than duplicating
+//!   its types (see [`render_hooks_ts`]). Strictly opt-in: without the flag
+//!   nothing changes and no `react` dependency is added anywhere
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -38,6 +42,11 @@ pub const DEFAULT_STELLAR_SDK_RANGE: &str = "^16.0.0";
 
 /// Oldest Node.js the generated package declares support for.
 pub const MIN_NODE: &str = ">=18";
+
+/// Peer range for `react` when `--react` is used. Wide because the hooks
+/// only use `useState`/`useEffect`/`useCallback`/`useRef`, stable since
+/// hooks were introduced.
+pub const REACT_PEER_RANGE: &str = ">=16.8.0";
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -99,12 +108,16 @@ pub fn locate_wasm(dir: &Path, crate_name: &str) -> PathBuf {
 
 /// Generate a TypeScript bindings package for the contract in `contract_dir`
 /// into `output`. `wasm_override`, when given, is used instead of
-/// auto-detecting the built wasm. Returns the wasm path that was used.
+/// auto-detecting the built wasm. When `react` is set, also emits
+/// `output/src/hooks.ts` and marks `react` as a peer dependency; otherwise
+/// nothing react-related is written or declared. Returns the wasm path that
+/// was used.
 pub fn generate_bindings(
     contract_dir: &Path,
     wasm_override: Option<&Path>,
     output: &Path,
     force: bool,
+    react: bool,
 ) -> Result<PathBuf> {
     // With --wasm the project manifest is optional: it only supplies the
     // npm package name and version.
@@ -134,12 +147,20 @@ pub fn generate_bindings(
     }
 
     run_stellar_bindings(&wasm_path, output)?;
-    finalize_package_json(output, info.as_ref())?;
+    finalize_package_json(output, info.as_ref(), react)?;
+    if react {
+        let entrypoints = entrypoint_names(&read_interface_json(&wasm_path)?)?;
+        std::fs::write(output.join("src/hooks.ts"), render_hooks_ts(&entrypoints)).map_err(
+            ForgeError::io(format!("writing {}", output.join("src/hooks.ts").display())),
+        )?;
+        append_react_readme_section(output)?;
+    }
     Ok(wasm_path)
 }
 
-/// Rewrite `output/package.json` in place with [`make_publishable`].
-fn finalize_package_json(output: &Path, info: Option<&PackageInfo>) -> Result<()> {
+/// Rewrite `output/package.json` in place with [`make_publishable`], adding
+/// the `react` peer dependency and `./hooks` export when `react` is set.
+fn finalize_package_json(output: &Path, info: Option<&PackageInfo>, react: bool) -> Result<()> {
     let path = output.join("package.json");
     let raw = std::fs::read_to_string(&path)
         .map_err(ForgeError::io(format!("reading {}", path.display())))?;
@@ -150,9 +171,351 @@ fn finalize_package_json(output: &Path, info: Option<&PackageInfo>) -> Result<()
         ))
     })?;
     make_publishable(&mut pkg, info);
+    if react {
+        add_react_support(&mut pkg);
+    }
     let mut pretty = serde_json::to_string_pretty(&pkg).expect("a JSON value always serialises");
     pretty.push('\n');
     std::fs::write(&path, pretty).map_err(ForgeError::io(format!("writing {}", path.display())))
+}
+
+/// Declare `react` as an optional peer dependency (and a dev dependency, so
+/// `tsc` can type-check `hooks.ts`) and expose it at the `./hooks` subpath.
+/// Called only when `--react` is passed — otherwise `react` never appears in
+/// the generated `package.json` at all.
+fn add_react_support(pkg: &mut serde_json::Value) {
+    use serde_json::json;
+
+    let Some(obj) = pkg.as_object_mut() else {
+        return;
+    };
+    if let Some(exports) = obj
+        .get_mut("exports")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        exports.insert(
+            "./hooks".into(),
+            json!({
+                "types": "./dist/hooks.d.ts",
+                "import": "./dist/hooks.js",
+                "default": "./dist/hooks.js"
+            }),
+        );
+    }
+    for table in ["peerDependencies", "devDependencies"] {
+        if let Some(deps) = obj
+            .entry(table)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+        {
+            deps.insert("react".into(), json!(REACT_PEER_RANGE));
+        }
+    }
+    if let Some(deps) = obj
+        .entry("devDependencies")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+    {
+        deps.insert("@types/react".into(), json!(REACT_PEER_RANGE));
+    }
+    // Consumers that only use the generated client, not `./hooks`, should not
+    // be forced to install react.
+    if let Some(meta) = obj
+        .entry("peerDependenciesMeta")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+    {
+        meta.insert("react".into(), json!({ "optional": true }));
+    }
+}
+
+/// Appended to `output/README.md` when `--react` is used.
+const REACT_README_SECTION: &str = r#"
+## React hooks
+
+Generated by `--react` in `src/hooks.ts`, exported at the `./hooks` subpath.
+One hook per entrypoint: a read entrypoint gets a query-style hook that
+fetches on mount, a write entrypoint gets a mutation hook you trigger
+explicitly.
+
+```tsx
+import { Client } from "my-token";
+import { useBalance, useMintMutation } from "my-token/hooks";
+
+const client = new Client({ contractId: "C...", networkPassphrase: "...", rpcUrl: "..." });
+
+function Balance({ id }: { id: string }) {
+  const { data, loading, error, refetch } = useBalance(client, { id });
+  if (loading) return <p>Loading…</p>;
+  if (error) return <p>{error.message}</p>;
+  return <p>{String(data)} <button onClick={refetch}>Refresh</button></p>;
+}
+
+function MintButton({ to }: { to: string }) {
+  const { mutate, loading } = useMintMutation(client);
+  return <button disabled={loading} onClick={() => mutate({ to, amount: 100n })}>Mint</button>;
+}
+```
+
+Soroban's interface has no read/write annotation, so entrypoints are
+classified by name (`get_`/`is_`/`has_`/`list_`/`view_`/`query_`/`read_`
+prefixes, plus common getters like `balance`, `owner`, `admin`); anything
+else is treated as a write. Rename the entrypoint if a hook has the wrong
+shape.
+"#;
+
+/// Append a short usage section for the generated hooks to `output/README.md`.
+fn append_react_readme_section(output: &Path) -> Result<()> {
+    let path = output.join("README.md");
+    let mut readme = std::fs::read_to_string(&path).unwrap_or_default();
+    if !readme.ends_with('\n') && !readme.is_empty() {
+        readme.push('\n');
+    }
+    readme.push_str(REACT_README_SECTION);
+    std::fs::write(&path, readme).map_err(ForgeError::io(format!("writing {}", path.display())))
+}
+
+/// Whether an entrypoint looks like a read (view) call rather than a
+/// state-changing one, used to pick which hook shape `--react` emits.
+///
+/// Soroban's contract interface carries no formal mutability annotation the
+/// way, say, Solidity's ABI `stateMutability` does, so this is a naming
+/// heuristic: common getter prefixes and a fixed list of well-known getter
+/// names. Anything else is treated as a write, which is the safer default —
+/// a write hook never runs on its own, so a misclassified write only means a
+/// mutation gets a manual `mutate()` trigger instead of auto-fetching.
+fn looks_like_read(name: &str) -> bool {
+    const READ_PREFIXES: &[&str] = &["get_", "is_", "has_", "list_", "view_", "query_", "read_"];
+    const READ_NAMES: &[&str] = &[
+        "balance",
+        "balance_of",
+        "allowance",
+        "owner",
+        "owner_of",
+        "admin",
+        "name",
+        "symbol",
+        "decimals",
+        "total_supply",
+        "token_uri",
+        "metadata",
+        "uri",
+    ];
+    READ_PREFIXES.iter().any(|prefix| name.starts_with(prefix)) || READ_NAMES.contains(&name)
+}
+
+/// `mint_to` -> `MintTo`. Entrypoint names are Rust identifiers (snake_case
+/// ASCII), which are always valid TypeScript identifiers, so no escaping is
+/// needed for the generated hook names.
+fn to_pascal_case(name: &str) -> String {
+    name.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Entrypoint invoked automatically at contract creation. It appears in the
+/// spec but the generated `Client` never exposes it as a callable method (a
+/// deployed contract cannot be re-constructed), so it never gets a hook.
+const CONSTRUCTOR_FN: &str = "__constructor";
+
+/// Pull the `function_v0` entries' names out of
+/// `stellar contract info interface --output json`, in spec order, excluding
+/// [`CONSTRUCTOR_FN`]. Only names are needed: hook parameter and return
+/// types are derived from the generated client itself via TypeScript's
+/// `Parameters`/`ReturnType`, not duplicated here.
+fn entrypoint_names(spec_json: &str) -> Result<Vec<String>> {
+    let entries: serde_json::Value = serde_json::from_str(spec_json)
+        .map_err(|e| ForgeError::Other(format!("could not parse contract spec JSON: {e}")))?;
+    let entries = entries
+        .as_array()
+        .ok_or_else(|| ForgeError::Other("contract spec JSON is not a list of entries".into()))?;
+    Ok(entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("function_v0")?
+                .get("name")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .filter(|name| name != CONSTRUCTOR_FN)
+        .collect())
+}
+
+/// Ask the official CLI for a wasm's interface as JSON. Thin system-touching
+/// wrapper; not unit-tested.
+fn read_interface_json(wasm: &Path) -> Result<String> {
+    let wasm_str = wasm.to_str().ok_or_else(|| {
+        ForgeError::Other(format!("wasm path {} is not valid UTF-8", wasm.display()))
+    })?;
+    let output = std::process::Command::new("stellar")
+        .args([
+            "contract",
+            "info",
+            "interface",
+            "--wasm",
+            wasm_str,
+            "--output",
+            "json",
+        ])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out) => Err(ForgeError::Other(format!(
+            "stellar contract info interface failed for {}: {}",
+            wasm.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(ForgeError::ToolMissing("stellar-cli".into()))
+        }
+        Err(e) => Err(ForgeError::io("running stellar contract info interface")(e)),
+    }
+}
+
+/// Shared runtime helpers plus the file header, common to every generated
+/// `hooks.ts` regardless of the contract's entrypoints.
+const HOOKS_PREAMBLE: &str = r#"// Generated by `soroban-forge bindings ts --react`. Do not edit by hand —
+// regenerate after the contract's interface changes.
+//
+// Soroban's contract interface has no read/write (view/mutating) annotation
+// the way an ABI's `stateMutability` would, so each hook below is chosen by
+// name: a `get_`/`is_`/`has_`/`list_`/`view_`/`query_`/`read_` prefix, or one
+// of a fixed list of common getter names, is treated as a read; everything
+// else is a write. If a hook has the wrong shape for your contract, that
+// heuristic missed it.
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Client } from "./index.js";
+
+/** State returned by a read hook. */
+export interface ReadState<T> {
+  data: T | undefined;
+  loading: boolean;
+  error: Error | undefined;
+  refetch: () => void;
+}
+
+/**
+ * Runs `call` on mount and whenever `depsKey` changes (compared with
+ * `JSON.stringify`). If `depsKey` is built from object/array arguments
+ * constructed fresh on every render, wrap it in `useMemo` first, or the hook
+ * will refetch every render.
+ */
+function useContractRead<T>(
+  call: () => Promise<{ result: T }>,
+  depsKey: unknown,
+): ReadState<T> {
+  const [data, setData] = useState<T>();
+  const [error, setError] = useState<Error>();
+  const [loading, setLoading] = useState(true);
+  const callRef = useRef(call);
+  callRef.current = call;
+  const key = JSON.stringify(depsKey);
+
+  const run = useCallback(() => {
+    setLoading(true);
+    setError(undefined);
+    callRef
+      .current()
+      .then((tx) => setData(tx.result))
+      .catch((e: unknown) => setError(e instanceof Error ? e : new Error(String(e))))
+      .finally(() => setLoading(false));
+    // `call` itself is intentionally excluded: `key` is the real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  useEffect(() => {
+    run();
+  }, [run]);
+
+  return { data, loading, error, refetch: run };
+}
+
+/** State returned by a write (mutation) hook. */
+export interface MutationState<Args extends unknown[], T> {
+  mutate: (...args: Args) => Promise<T>;
+  data: T | undefined;
+  loading: boolean;
+  error: Error | undefined;
+}
+
+/**
+ * Wraps a state-changing entrypoint. `mutate(...)` builds and simulates the
+ * call, signs and sends it, and resolves with the final result. It never
+ * runs on its own.
+ */
+function useContractMutation<Args extends unknown[], T>(
+  call: (...args: Args) => Promise<{ signAndSend: () => Promise<{ result: T }> }>,
+): MutationState<Args, T> {
+  const [data, setData] = useState<T>();
+  const [error, setError] = useState<Error>();
+  const [loading, setLoading] = useState(false);
+  const callRef = useRef(call);
+  callRef.current = call;
+
+  const mutate = useCallback(async (...args: Args): Promise<T> => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      const assembled = await callRef.current(...args);
+      const sent = await assembled.signAndSend();
+      setData(sent.result);
+      return sent.result;
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      setError(err);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { mutate, data, loading, error };
+}
+"#;
+
+fn render_read_hook(name: &str) -> String {
+    let pascal = to_pascal_case(name);
+    format!(
+        "\nexport function use{pascal}(\n  \
+         client: Client,\n  \
+         ...args: Parameters<Client[\"{name}\"]>\n\
+         ): ReadState<Awaited<ReturnType<Client[\"{name}\"]>>[\"result\"]> {{\n  \
+         return useContractRead(() => client.{name}(...args), args);\n\
+         }}\n"
+    )
+}
+
+fn render_write_hook(name: &str) -> String {
+    let pascal = to_pascal_case(name);
+    format!(
+        "\nexport function use{pascal}Mutation(\n  \
+         client: Client,\n\
+         ): MutationState<Parameters<Client[\"{name}\"]>, Awaited<ReturnType<Client[\"{name}\"]>>[\"result\"]> {{\n  \
+         return useContractMutation((...args: Parameters<Client[\"{name}\"]>) => client.{name}(...args));\n\
+         }}\n"
+    )
+}
+
+/// Render `src/hooks.ts`: the shared preamble plus one hook per entrypoint,
+/// in spec order.
+pub fn render_hooks_ts(entrypoints: &[String]) -> String {
+    let mut out = HOOKS_PREAMBLE.to_string();
+    for name in entrypoints {
+        out.push_str(&if looks_like_read(name) {
+            render_read_hook(name)
+        } else {
+            render_write_hook(name)
+        });
+    }
+    out
 }
 
 /// npm package name for a cargo package: npm names must be lowercase.
@@ -334,6 +697,16 @@ impl ForgePlugin for BindingsTsPlugin {
                             .long("watch")
                             .action(ArgAction::SetTrue)
                             .help("Watch the contract source and regenerate bindings on change"),
+                    )
+                    .arg(
+                        Arg::new("react")
+                            .long("react")
+                            .action(ArgAction::SetTrue)
+                            .help(
+                                "Also emit src/hooks.ts: a typed React hook per entrypoint, exported at \
+                                 the ./hooks subpath. Adds react as an optional peer dependency; without \
+                                 this flag react is never mentioned in the generated package",
+                            ),
                     ),
             )
     }
@@ -363,23 +736,31 @@ fn run_ts(matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
 
     let force = matches.get_flag("force");
     let watch = matches.get_flag("watch");
+    let react = matches.get_flag("react");
 
     if watch {
         // `--watch` always overwrites — that is the whole point of the loop.
-        return watch_loop(&dir, wasm_override.as_deref(), &output, ctx);
+        return watch_loop(&dir, wasm_override.as_deref(), &output, react, ctx);
     }
 
-    let wasm_path = generate_bindings(&dir, wasm_override.as_deref(), &output, force)?;
+    let wasm_path = generate_bindings(&dir, wasm_override.as_deref(), &output, force, react)?;
 
     if ctx.json {
         let report = serde_json::json!({
             "wasm_path": wasm_path.display().to_string(),
-            "output_dir": output.display().to_string()
+            "output_dir": output.display().to_string(),
+            "react": react,
         });
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
     } else {
         println!("generated TypeScript bindings from {}", wasm_path.display());
         println!("  -> {}", output.display());
+        if react {
+            println!(
+                "  -> {} (React hooks)",
+                output.join("src/hooks.ts").display()
+            );
+        }
         println!();
         println!("next steps:");
         println!("  cd {}", output.display());
@@ -400,11 +781,12 @@ fn watch_loop(
     dir: &Path,
     wasm_override: Option<&Path>,
     output: &Path,
+    react: bool,
     ctx: &ForgeContext,
 ) -> Result<()> {
     // First run is synchronous so a broken setup fails before we enter
     // the steady-state loop (e.g. missing stellar-cli, malformed wasm).
-    if let Err(err) = regenerate(dir, wasm_override, output, ctx) {
+    if let Err(err) = regenerate(dir, wasm_override, output, react, ctx) {
         if !ctx.quiet {
             eprintln!("[{}] regeneration failed: {err} (continuing)", timestamp());
         }
@@ -416,7 +798,7 @@ fn watch_loop(
         let now = snapshot_mtime(dir);
         if now != last {
             last = now;
-            if let Err(err) = regenerate(dir, wasm_override, output, ctx) {
+            if let Err(err) = regenerate(dir, wasm_override, output, react, ctx) {
                 if !ctx.quiet {
                     eprintln!("[{}] regeneration failed: {err} (continuing)", timestamp());
                 }
@@ -433,9 +815,10 @@ fn regenerate(
     dir: &Path,
     wasm_override: Option<&Path>,
     output: &Path,
+    react: bool,
     ctx: &ForgeContext,
 ) -> Result<PathBuf> {
-    let wasm = generate_bindings(dir, wasm_override, output, true)?;
+    let wasm = generate_bindings(dir, wasm_override, output, true, react)?;
     if !ctx.quiet {
         println!("[{}] regenerated -> {}", timestamp(), output.display());
     }
@@ -611,7 +994,7 @@ mod tests {
         )
         .unwrap();
 
-        finalize_package_json(tmp.path(), Some(&demo_info())).unwrap();
+        finalize_package_json(tmp.path(), Some(&demo_info()), false).unwrap();
 
         let raw = std::fs::read_to_string(tmp.path().join("package.json")).unwrap();
         assert!(raw.ends_with('\n'));
@@ -635,7 +1018,7 @@ mod tests {
         .unwrap();
 
         let output = tmp.path().join("bindings/typescript");
-        let err = generate_bindings(tmp.path(), None, &output, false).unwrap_err();
+        let err = generate_bindings(tmp.path(), None, &output, false, false).unwrap_err();
         assert!(err.to_string().contains("stellar contract build"));
     }
 
@@ -655,7 +1038,7 @@ mod tests {
         let output = tmp.path().join("bindings/typescript");
         std::fs::create_dir_all(&output).unwrap();
 
-        let err = generate_bindings(tmp.path(), None, &output, false).unwrap_err();
+        let err = generate_bindings(tmp.path(), None, &output, false, false).unwrap_err();
         assert!(matches!(err, ForgeError::AlreadyExists(_)));
     }
 
@@ -681,5 +1064,218 @@ mod tests {
         let ts = cmd.find_subcommand_mut("ts").expect("ts subcommand");
         let help = ts.render_long_help().to_string();
         assert!(help.contains("--watch"), "{help}");
+    }
+
+    #[test]
+    fn react_flag_is_exposed_on_the_ts_subcommand() {
+        let mut cmd = BindingsTsPlugin.command();
+        let ts = cmd.find_subcommand_mut("ts").expect("ts subcommand");
+        let help = ts.render_long_help().to_string();
+        assert!(help.contains("--react"), "{help}");
+    }
+
+    // --- --react: naming heuristic ---
+
+    #[test]
+    fn prefixed_names_are_reads() {
+        for name in [
+            "get_debt",
+            "is_paused",
+            "has_role",
+            "list_offers",
+            "view_state",
+            "query_price",
+            "read_config",
+        ] {
+            assert!(looks_like_read(name), "{name} should be a read");
+        }
+    }
+
+    #[test]
+    fn known_getter_names_are_reads() {
+        for name in [
+            "balance",
+            "balance_of",
+            "allowance",
+            "owner",
+            "owner_of",
+            "admin",
+            "name",
+            "symbol",
+            "decimals",
+            "total_supply",
+            "token_uri",
+            "metadata",
+            "uri",
+        ] {
+            assert!(looks_like_read(name), "{name} should be a read");
+        }
+    }
+
+    #[test]
+    fn unrecognised_names_default_to_write() {
+        for name in [
+            "mint",
+            "transfer",
+            "burn",
+            "initialize",
+            "deposit",
+            "withdraw",
+            "set_admin",
+        ] {
+            assert!(!looks_like_read(name), "{name} should be a write");
+        }
+    }
+
+    #[test]
+    fn pascal_case_conversion() {
+        assert_eq!(to_pascal_case("mint"), "Mint");
+        assert_eq!(to_pascal_case("get_contract_info"), "GetContractInfo");
+        assert_eq!(to_pascal_case("owner_of"), "OwnerOf");
+    }
+
+    // --- --react: entrypoint name extraction ---
+
+    fn spec_json_with_names(names: &[&str]) -> String {
+        let entries: Vec<serde_json::Value> = names
+            .iter()
+            .map(|n| serde_json::json!({"function_v0": {"doc": "", "name": n, "inputs": [], "outputs": []}}))
+            .collect();
+        serde_json::to_string(&entries).unwrap()
+    }
+
+    #[test]
+    fn entrypoint_names_reads_function_v0_entries_in_order() {
+        let json = spec_json_with_names(&["mint", "balance", "burn"]);
+        assert_eq!(
+            entrypoint_names(&json).unwrap(),
+            vec!["mint", "balance", "burn"]
+        );
+    }
+
+    #[test]
+    fn entrypoint_names_ignores_non_function_entries() {
+        let mut entries: Vec<serde_json::Value> =
+            serde_json::from_str(&spec_json_with_names(&["mint"])).unwrap();
+        entries.push(serde_json::json!({"udt_error_enum_v0": {"name": "Error", "cases": []}}));
+        let json = serde_json::to_string(&entries).unwrap();
+        assert_eq!(entrypoint_names(&json).unwrap(), vec!["mint"]);
+    }
+
+    #[test]
+    fn entrypoint_names_excludes_the_constructor() {
+        let json = spec_json_with_names(&["__constructor", "mint", "admin"]);
+        assert_eq!(entrypoint_names(&json).unwrap(), vec!["mint", "admin"]);
+    }
+
+    #[test]
+    fn entrypoint_names_rejects_malformed_json() {
+        assert!(entrypoint_names("not json").is_err());
+        assert!(entrypoint_names("{}").is_err());
+    }
+
+    // --- --react: hooks.ts rendering ---
+
+    #[test]
+    fn renders_a_read_hook_for_a_getter() {
+        let ts = render_hooks_ts(&["balance".to_string()]);
+        assert!(ts.contains("export function useBalance("), "{ts}");
+        assert!(ts.contains(r#"Parameters<Client["balance"]>"#), "{ts}");
+        assert!(ts.contains("useContractRead("), "{ts}");
+        assert!(!ts.contains("useBalanceMutation"), "{ts}");
+    }
+
+    #[test]
+    fn renders_a_mutation_hook_for_a_write() {
+        let ts = render_hooks_ts(&["mint".to_string()]);
+        assert!(ts.contains("export function useMintMutation("), "{ts}");
+        assert!(ts.contains("useContractMutation("), "{ts}");
+        assert!(!ts.contains("export function useMint(\n"), "{ts}");
+    }
+
+    #[test]
+    fn hooks_file_declares_no_shared_helper_twice_per_entrypoint() {
+        let ts = render_hooks_ts(&[
+            "mint".to_string(),
+            "burn".to_string(),
+            "balance".to_string(),
+        ]);
+        assert_eq!(ts.matches("function useContractRead<T>(").count(), 1);
+        assert_eq!(ts.matches("function useContractMutation<Args").count(), 1);
+        assert_eq!(ts.matches("export function use").count(), 3);
+    }
+
+    #[test]
+    fn empty_entrypoint_list_still_renders_the_shared_preamble() {
+        let ts = render_hooks_ts(&[]);
+        assert!(ts.contains("export interface ReadState"), "{ts}");
+        assert!(ts.contains("export interface MutationState"), "{ts}");
+        assert!(!ts.contains("export function use"), "{ts}");
+    }
+
+    // --- --react: package.json additions ---
+
+    #[test]
+    fn react_support_adds_optional_peer_and_hooks_export() {
+        let mut pkg = cli_package_json();
+        make_publishable(&mut pkg, Some(&demo_info()));
+        add_react_support(&mut pkg);
+
+        assert_eq!(pkg["peerDependencies"]["react"], REACT_PEER_RANGE);
+        assert_eq!(pkg["devDependencies"]["react"], REACT_PEER_RANGE);
+        assert_eq!(pkg["devDependencies"]["@types/react"], REACT_PEER_RANGE);
+        assert_eq!(pkg["peerDependenciesMeta"]["react"]["optional"], true);
+        assert_eq!(pkg["exports"]["./hooks"]["types"], "./dist/hooks.d.ts");
+        assert_eq!(pkg["exports"]["./hooks"]["import"], "./dist/hooks.js");
+    }
+
+    #[test]
+    fn without_react_flag_package_json_never_mentions_react() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            serde_json::to_string(&cli_package_json()).unwrap(),
+        )
+        .unwrap();
+
+        finalize_package_json(tmp.path(), Some(&demo_info()), false).unwrap();
+
+        let raw = std::fs::read_to_string(tmp.path().join("package.json")).unwrap();
+        assert!(!raw.contains("react"), "{raw}");
+    }
+
+    #[test]
+    fn with_react_flag_finalize_adds_the_peer_dependency() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            serde_json::to_string(&cli_package_json()).unwrap(),
+        )
+        .unwrap();
+
+        finalize_package_json(tmp.path(), Some(&demo_info()), true).unwrap();
+
+        let raw = std::fs::read_to_string(tmp.path().join("package.json")).unwrap();
+        let pkg: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(pkg["peerDependencies"]["react"], REACT_PEER_RANGE);
+    }
+
+    // --- --react: README section ---
+
+    #[test]
+    fn react_readme_section_is_appended() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("README.md"),
+            "# my-token\n\nSome existing content.\n",
+        )
+        .unwrap();
+
+        append_react_readme_section(tmp.path()).unwrap();
+
+        let readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
+        assert!(readme.contains("# my-token"), "{readme}");
+        assert!(readme.contains("## React hooks"), "{readme}");
+        assert!(readme.contains("useMintMutation"), "{readme}");
     }
 }

@@ -37,15 +37,49 @@ npm install
 npm pack          # runs the build, then packs dist/, src/ and README.md
 ```
 
+## `--react`: generated hooks
+
+```sh
+soroban-forge bindings ts --react
+```
+
+Strictly opt-in — without the flag nothing changes and `react` is never
+mentioned in the generated package. With it, `src/hooks.ts` gets one hook per
+entrypoint (`__constructor` excluded — a deployed contract cannot be
+re-constructed), typed against the generated `Client` via TypeScript's
+`Parameters`/`ReturnType` rather than duplicating its types, so the hooks
+always match whatever `stellar-cli` generated:
+
+- a **read** entrypoint gets `useXxx(client, ...args)`, a query-style hook
+  that fetches on mount/args-change and returns `{ data, loading, error,
+  refetch }`
+- a **write** entrypoint gets `useXxxMutation(client)`, which never runs on
+  its own and returns `{ mutate, data, loading, error }` — `mutate(...)`
+  builds, simulates, signs and sends the transaction
+
+Soroban's interface carries no read/write (view/mutating) annotation the way
+an ABI's `stateMutability` would, so the split is a naming heuristic:
+`get_`/`is_`/`has_`/`list_`/`view_`/`query_`/`read_` prefixes and a fixed list
+of common getters (`balance`, `owner`, `admin`, `name`, `symbol`, …) are
+reads; everything else is a write (the safer default — a write hook never
+auto-runs). See `looks_like_read` if a contract's naming needs a different
+call.
+
+`package.json` gains `react` as an **optional** peer dependency (plus
+`@types/react` in `devDependencies` for the build) and a `./hooks` export
+subpath — consumers who only use the plain client are unaffected. A "React
+hooks" section with a usage example is appended to the generated README.
+
 ## Public surface
 
 - `read_package_info(dir)` — reads `[package].name` and `version` from
   `Cargo.toml`
 - `locate_wasm(dir, crate_name)` — the default build output path under
   `target/wasm32v1-none/release/`
-- `generate_bindings(contract_dir, wasm_override, output, force)` — the
-  programmatic API behind `bindings ts`
+- `generate_bindings(contract_dir, wasm_override, output, force, react)` —
+  the programmatic API behind `bindings ts`
 - `make_publishable(package_json, info)` — the `package.json` rewrite above
+- `render_hooks_ts(entrypoints)` — renders `src/hooks.ts` for `--react`
 - `BindingsTsPlugin` — the `ForgePlugin` impl
 
 ## Testing

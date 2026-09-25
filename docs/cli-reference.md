@@ -54,7 +54,9 @@ scaffolding.
   workflows (build+test and a rustfmp/clippy lint job); `--dependabot` also
   writes `.github/dependabot.yml` for weekly cargo and github-actions updates.
 - `soroban-forge doctor [--json]` — check the local Soroban toolchain (optionally emitting machine-readable JSON).
-- `soroban-forge bindings ts` — generate a TypeScript client package from the built contract wasm.
+- `soroban-forge bindings ts [--react]` — generate a TypeScript client package
+  from the built contract wasm. `--react` additionally emits `src/hooks.ts`
+  (one typed hook per entrypoint) and is strictly opt-in.
 - `soroban-forge spec[--path <dir>] [--wasm <path>]` — print the built
   contract's interface: every entrypoint with its argument and return types,
   plus the types those signatures refer to. Reads the spec out of the wasm, so
