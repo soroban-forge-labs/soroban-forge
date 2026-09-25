@@ -18,11 +18,6 @@ Everyone taking part is expected to follow the
 | 6 — TypeScript bindings generator | `crates/bindings-ts` | Person F | `bindings ts` |
 | 7 — Deployment verification | `crates/verify` | Person G | `verify` |
 | 8 — Contract interface dump | `crates/spec` | Person H | `spec` |
-| 9 — Python bindings generator | `crates/binding-py` | Person I | `bindings-py` |
-
-Modules 6 and 9 share the `module:bindings` GitHub label (see
-`.github/labeler.yml`) — they're two crates and two subcommands, but one
-conceptual "bindings generators" module for labelling purposes.
 
 Rules of the road:
 
