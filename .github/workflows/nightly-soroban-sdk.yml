@@ -1,0 +1,82 @@
+name: nightly-soroban-sdk
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Resolve templates and latest SDK
+    runs-on: ubuntu-latest
+    outputs:
+      templates: ${{ steps.list.outputs.templates }}
+      sdk-version: ${{ steps.sdk.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Build soroban-forge
+        run: cargo build --release --bin soroban-forge
+      - name: List bundled templates
+        id: list
+        run: |
+          templates=$(./target/release/soroban-forge new --list-templates --json | jq -c '.templates')
+          echo "templates=$templates" >> "$GITHUB_OUTPUT"
+      - name: Resolve latest soroban-sdk
+        id: sdk
+        run: |
+          version=$(curl -fsSL https://crates.io/api/v1/crates/soroban-sdk | jq -r '.crate.max_version')
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Testing bundled contracts against soroban-sdk $version"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: soroban-forge-bin
+          path: target/release/soroban-forge
+          retention-days: 1
+
+  scaffold-and-test:
+    name: "${{ matrix.template }} with soroban-sdk ${{ needs.build.outputs.sdk-version }}"
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        template: ${{ fromJson(needs.build.outputs.templates) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: nightly-soroban-sdk-${{ matrix.template }}-${{ needs.build.outputs.sdk-version }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: soroban-forge-bin
+          path: bin
+      - name: Scaffold ${{ matrix.template }}
+        run: |
+          chmod +x bin/soroban-forge
+          bin/soroban-forge new smoke --template "${{ matrix.template }}" --no-git --output-dir "$RUNNER_TEMP"
+      - name: Update soroban-sdk to latest
+        working-directory: ${{ runner.temp }}/smoke
+        env:
+          SOROBAN_SDK_VERSION: ${{ needs.build.outputs.sdk-version }}
+        run: |
+          while IFS= read -r -d '' manifest; do
+            sed -i -E "s/(^[[:space:]]*soroban-sdk[[:space:]]*=[[:space:]]*\")[^\"]+(\".*$)/\1${SOROBAN_SDK_VERSION}\2/" "$manifest"
+            sed -i -E "/^[[:space:]]*soroban-sdk[[:space:]]*=/ s/(version[[:space:]]*=[[:space:]]*\")[^\"]+/\1${SOROBAN_SDK_VERSION}/" "$manifest"
+          done < <(find . -name Cargo.toml -not -path './target/*' -print0)
+          cargo update -p soroban-sdk
+      - name: Run tests
+        working-directory: ${{ runner.temp }}/smoke
+        run: cargo test
+      - name: Build contract for Wasm
+        working-directory: ${{ runner.temp }}/smoke
+        run: cargo build --target wasm32v1-none --release
