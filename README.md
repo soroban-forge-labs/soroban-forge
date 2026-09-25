@@ -99,6 +99,9 @@ with its own README, tests and a small public surface; they meet only at the
 > **Note:** See [`examples/README.md`](examples/README.md) for instructions on
 > regenerating the checked-in example projects.
 
+The full docs are also published as a browsable site:
+[soroban-forge-labs.github.io/soroban-forge](https://soroban-forge-labs.github.io/soroban-forge/).
+
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ownership map and how to pick
 up an issue — [ISSUES.md](ISSUES.md) lists well-scoped starter work. All
