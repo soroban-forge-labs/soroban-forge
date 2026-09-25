@@ -41,10 +41,26 @@
           - "docs/**"
           - "examples/**"
 
-# Module 6 - TypeScript bindings generator.
-# Directory is crates/binding-ts; the crate it publishes is
-# soroban-forge-bindings-ts.
+# Module 6 - TypeScript bindings generator, and module 9 - Python bindings
+# generator. Two crates, two subcommands (`bindings ts` / `bindings-py`,
+# separate top-level commands — see crates/binding-py/README.md for why),
+# sharing one label: both are "the bindings generators".
+# Directories are crates/binding-ts and crates/binding-py; the crates they
+# publish are soroban-forge-bindings-ts and soroban-forge-bindings-py.
 "module:bindings":
   - changed-files:
       - any-glob-to-any-file:
           - "crates/binding-ts/**"
+          - "crates/binding-py/**"
+
+# Module 7 - Deployment verification.
+"module:verify":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/verify/**"
+
+# Module 8 - Contract interface dump.
+"module:spec":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/spec/**"

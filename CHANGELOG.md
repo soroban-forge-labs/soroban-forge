@@ -7,6 +7,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `soroban-forge bindings-py`: a new crate generating a typed Python client
+  (`client.py`) from the built contract wasm — structs, tagged enums and
+  error enums as dataclasses/`IntEnum`, one method per entrypoint,
+  delegating all on-chain interaction to the official `stellar-sdk` package.
+  Validated with `mypy --strict` and real encode/decode round-trips (#270)
 - `.github/workflows/bindings-typecheck.yml`: generates `--react` bindings
   for the `token` and `nft` templates and runs a pinned `tsc --noEmit`
   against them on every push/PR (#269)

@@ -57,6 +57,11 @@ scaffolding.
 - `soroban-forge bindings ts [--react]` — generate a TypeScript client package
   from the built contract wasm. `--react` additionally emits `src/hooks.ts`
   (one typed hook per entrypoint) and is strictly opt-in.
+- `soroban-forge bindings-py [--path <dir>] [--wasm <path>] [--output <dir>] [--force]`
+  — generate `client.py`, a typed Python client, from the built contract
+  wasm; the generated client delegates to the official `stellar-sdk`
+  package. A separate top-level command rather than `bindings py` — see
+  `crates/binding-py/README.md` for why.
 - `soroban-forge spec[--path <dir>] [--wasm <path>]` — print the built
   contract's interface: every entrypoint with its argument and return types,
   plus the types those signatures refer to. Reads the spec out of the wasm, so
