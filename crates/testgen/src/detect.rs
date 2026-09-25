@@ -680,7 +680,7 @@ fn parse_publish_args(args: &str) -> (Vec<String>, Option<String>) {
         return (vec![], None);
     }
 
-    let mut topics = Vec::new();
+    let topics;
     let mut data = None;
 
     let mut depth = 0;

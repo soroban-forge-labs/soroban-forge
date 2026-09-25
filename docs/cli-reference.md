@@ -54,19 +54,25 @@ scaffolding.
   workflows (build+test and a rustfmp/clippy lint job); `--dependabot` also
   writes `.github/dependabot.yml` for weekly cargo and github-actions updates.
 - `soroban-forge doctor [--json]` — check the local Soroban toolchain (optionally emitting machine-readable JSON).
-- `soroban-forge bindings ts [--react]` — generate a TypeScript client package
-  from the built contract wasm. `--react` additionally emits `src/hooks.ts`
-  (one typed hook per entrypoint) and is strictly opt-in.
+- `soroban-forge bindings ts [--out-dir <dir>] [--package-name <name>] [--react]` — generate a TypeScript client package from the built contract wasm.
+  - `--out-dir <dir>` (alias `--output`) — target directory for generated bindings. Defaults to `bindings/<contract_name>`.
+  - `--package-name <name>` — npm package name for the generated `package.json`. Validated as a legal npm package name. Defaults to `@soroban-contracts/<name>`.
+  - `--react` — additionally emits `src/hooks.ts` (one typed hook per entrypoint) and is strictly opt-in.
 - `soroban-forge bindings-py [--path <dir>] [--wasm <path>] [--output <dir>] [--force]`
   — generate `client.py`, a typed Python client, from the built contract
   wasm; the generated client delegates to the official `stellar-sdk`
   package. A separate top-level command rather than `bindings py` — see
   `crates/binding-py/README.md` for why.
-- `soroban-forge spec[--path <dir>] [--wasm <path>]` — print the built
-  contract's interface: every entrypoint with its argument and return types,
-  plus the types those signatures refer to. Reads the spec out of the wasm, so
-  run `stellar contract build` first; `--json` emits the machine-readable spec.
-  Works under `--offline`.
+- `soroban-forge spec [<contract-id>] [--format <format>] [--path <dir>] [--wasm <path>] [--network <n>]` — print
+  the contract's interface: every entrypoint with its argument and return types,
+  plus the types those signatures refer to. When `<contract-id>` is provided,
+  fetches the on-chain wasm for that contract (via `stellar contract fetch`);
+  otherwise reads the spec out of the locally built wasm.
+  - `--format <rust|text|json|md|markdown>` (default `text`) — output format.
+    `--format md` emits documentation-ready Markdown tables of entrypoints, arguments, return types, and referenced custom types.
+  - `--json` — shortcut for `--format json`.
+  - `--network <name>` / `--rpc-url <url>` — network to fetch the contract from when `<contract-id>` is given (defaults to `testnet`).
+  - `--offline` — prohibit network access. When `<contract-id>` is specified, fails cleanly before any network call. Local wasm inspection continues to work offline.
 - `soroban-forge spec diff <old> <new> [--network <name>]` — compare two
   interfaces (each a wasm file, a `spec --json` file, or a deployed contract
   ID) and classify the differences: a removed entrypoint or a changed
@@ -80,3 +86,11 @@ scaffolding.
 - `soroban-forge verify <contract-id> [--network <n>]` — compare a deployed
   contract's wasm hash with the local release build; exits `1` on a mismatch.
   See [Contract Verification](contract-verification.md).
+
+- `soroban-forge deploy [--source <name|pubkey>] [--network <n>] [--rpc-url <url>] [--fund] [--dry-run]` — deploy
+  a built contract to a network.
+  - `--source <name>` — the identity or public key used to sign and pay for deployment.
+  - `--network <name>` — target network (`testnet` or `mainnet`, defaults to `testnet`).
+  - `--rpc-url <url>` — custom RPC endpoint.
+  - `--fund` — automatically fund an unfunded testnet source account via Friendbot before deploying. In an interactive terminal, omitting `--fund` prompts to fund the account; in non-interactive sessions (CI, scripts), an unfunded testnet account fails cleanly unless `--fund` is provided. Friendbot funding is never attempted on mainnet or under `--offline`.
+  - `--dry-run` — print the stellar command without submitting the transaction.

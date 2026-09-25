@@ -108,17 +108,29 @@ pub fn locate_wasm(dir: &Path, crate_name: &str) -> PathBuf {
 
 /// Generate a TypeScript bindings package for the contract in `contract_dir`
 /// into `output`. `wasm_override`, when given, is used instead of
-/// auto-detecting the built wasm. When `react` is set, also emits
-/// `output/src/hooks.ts` and marks `react` as a peer dependency; otherwise
-/// nothing react-related is written or declared. Returns the wasm path that
-/// was used.
+/// auto-detecting the built wasm. Returns the wasm path that was used.
 pub fn generate_bindings(
     contract_dir: &Path,
     wasm_override: Option<&Path>,
     output: &Path,
     force: bool,
-    react: bool,
 ) -> Result<PathBuf> {
+    generate_bindings_with_options(contract_dir, wasm_override, output, None, false, force)
+}
+
+/// Generate a TypeScript bindings package for the contract in `contract_dir`
+/// into `output` with an optional npm package name override.
+pub fn generate_bindings_with_options(
+    contract_dir: &Path,
+    wasm_override: Option<&Path>,
+    output: &Path,
+    package_name: Option<&str>,
+    react: bool,
+    force: bool,
+) -> Result<PathBuf> {
+    if let Some(name) = package_name {
+        validate_npm_package_name(name)?;
+    }
     // With --wasm the project manifest is optional: it only supplies the
     // npm package name and version.
     let info = match wasm_override {
@@ -147,7 +159,7 @@ pub fn generate_bindings(
     }
 
     run_stellar_bindings(&wasm_path, output)?;
-    finalize_package_json(output, info.as_ref(), react)?;
+    finalize_package_json(output, info.as_ref(), package_name, react)?;
     if react {
         let entrypoints = entrypoint_names(&read_interface_json(&wasm_path)?)?;
         std::fs::write(output.join("src/hooks.ts"), render_hooks_ts(&entrypoints)).map_err(
@@ -158,9 +170,14 @@ pub fn generate_bindings(
     Ok(wasm_path)
 }
 
-/// Rewrite `output/package.json` in place with [`make_publishable`], adding
-/// the `react` peer dependency and `./hooks` export when `react` is set.
-fn finalize_package_json(output: &Path, info: Option<&PackageInfo>, react: bool) -> Result<()> {
+/// Rewrite `output/package.json` in place with [`make_publishable_with_name`],
+/// adding the `react` peer dependency and `./hooks` export when `react` is set.
+fn finalize_package_json(
+    output: &Path,
+    info: Option<&PackageInfo>,
+    package_name: Option<&str>,
+    react: bool,
+) -> Result<()> {
     let path = output.join("package.json");
     let raw = std::fs::read_to_string(&path)
         .map_err(ForgeError::io(format!("reading {}", path.display())))?;
@@ -170,13 +187,197 @@ fn finalize_package_json(output: &Path, info: Option<&PackageInfo>, react: bool)
             path.display()
         ))
     })?;
-    make_publishable(&mut pkg, info);
+    make_publishable_with_name(&mut pkg, info, package_name);
     if react {
         add_react_support(&mut pkg);
     }
     let mut pretty = serde_json::to_string_pretty(&pkg).expect("a JSON value always serialises");
     pretty.push('\n');
     std::fs::write(&path, pretty).map_err(ForgeError::io(format!("writing {}", path.display())))
+}
+
+/// npm package name for a cargo package: npm names must be lowercase.
+/// Validate that `name` is a legal npm package name according to npm rules.
+pub fn validate_npm_package_name(name: &str) -> Result<()> {
+    fn invalid(name: &str, reason: &str) -> ForgeError {
+        ForgeError::InvalidArgument(format!(
+            "`{name}` is not a legal npm package name: {reason}"
+        ))
+    }
+
+    if name.is_empty() {
+        return Err(invalid(name, "package name cannot be empty"));
+    }
+    if name.len() > 214 {
+        return Err(invalid(
+            name,
+            "package name cannot be longer than 214 characters",
+        ));
+    }
+    if name.trim() != name {
+        return Err(invalid(
+            name,
+            "package name cannot contain leading or trailing whitespace",
+        ));
+    }
+    if name.chars().any(|c| c.is_ascii_uppercase()) {
+        return Err(invalid(
+            name,
+            "package name cannot contain uppercase characters",
+        ));
+    }
+    if name == "node_modules" || name == "favicon.ico" {
+        return Err(invalid(name, "package name is a reserved blacklisted name"));
+    }
+
+    let is_valid_part = |part: &str| -> std::result::Result<(), &'static str> {
+        if part.is_empty() {
+            return Err("name segment cannot be empty");
+        }
+        if part.starts_with('.') || part.starts_with('_') {
+            return Err("name segment cannot start with '.' or '_'");
+        }
+        for c in part.chars() {
+            if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.') {
+                return Err("name contains characters that are not URL-safe lowercase alphanumeric, '-', '_' or '.'");
+            }
+        }
+        Ok(())
+    };
+
+    if let Some(after_at) = name.strip_prefix('@') {
+        let parts: Vec<&str> = after_at.split('/').collect();
+        if parts.len() != 2 {
+            return Err(invalid(
+                name,
+                "scoped package name must have format @scope/package",
+            ));
+        }
+        if let Err(reason) = is_valid_part(parts[0]) {
+            return Err(invalid(name, &format!("invalid scope: {reason}")));
+        }
+        if let Err(reason) = is_valid_part(parts[1]) {
+            return Err(invalid(name, &format!("invalid package name: {reason}")));
+        }
+    } else {
+        if name.contains('/') {
+            return Err(invalid(name, "unscoped package name cannot contain '/'"));
+        }
+        if let Err(reason) = is_valid_part(name) {
+            return Err(invalid(name, reason));
+        }
+    }
+
+    Ok(())
+}
+
+/// npm package name for a cargo package: npm names must be lowercase.
+pub fn npm_package_name(package_name: &str) -> String {
+    package_name.to_ascii_lowercase()
+}
+
+/// Turn the `package.json` stellar-cli generates into one that can be
+/// `npm pack`ed and published without edits:
+pub fn make_publishable(pkg: &mut serde_json::Value, info: Option<&PackageInfo>) {
+    make_publishable_with_name(pkg, info, None);
+}
+
+/// Turn the `package.json` stellar-cli generates into one that can be
+/// `npm pack`ed and published without edits, optionally overriding the package name:
+///
+/// - name/version from `Cargo.toml` or `package_name_override` when given
+/// - `exports` as a conditional map (`types` first, then `import`/`default`)
+///   plus `main`/`types` for tools that predate `exports` — this is what
+///   lets the declarations resolve under both `node16`/`nodenext` and
+///   `bundler` module resolution
+/// - `files` limited to the build output, sources and README
+/// - `@stellar/stellar-sdk` moved from `dependencies` to
+///   `peerDependencies` (and mirrored in `devDependencies` so `tsc` can
+///   still build), so apps and the client share one SDK instance
+/// - a `prepack` build, so `npm pack`/`npm publish` never ship a stale or
+///   missing `dist/`
+///
+/// Fields stellar-cli sets that are not listed here are left untouched.
+pub fn make_publishable_with_name(
+    pkg: &mut serde_json::Value,
+    info: Option<&PackageInfo>,
+    package_name_override: Option<&str>,
+) {
+    use serde_json::{json, Map, Value};
+
+    if !pkg.is_object() {
+        *pkg = Value::Object(Map::new());
+    }
+    let obj = pkg.as_object_mut().expect("just ensured an object");
+
+    if let Some(custom_name) = package_name_override {
+        obj.insert("name".into(), json!(custom_name));
+        if let Some(info) = info {
+            if let Some(version) = &info.version {
+                obj.insert("version".into(), json!(version));
+            }
+        }
+    } else if let Some(info) = info {
+        obj.insert("name".into(), json!(npm_package_name(&info.package_name)));
+        if let Some(version) = &info.version {
+            obj.insert("version".into(), json!(version));
+        }
+    }
+    obj.entry("version").or_insert_with(|| json!("0.0.0"));
+
+    obj.insert("type".into(), json!("module"));
+    obj.insert("main".into(), json!("./dist/index.js"));
+    obj.insert("types".into(), json!("./dist/index.d.ts"));
+    obj.remove("typings");
+    obj.insert(
+        "exports".into(),
+        json!({
+            ".": {
+                "types": "./dist/index.d.ts",
+                "import": "./dist/index.js",
+                "default": "./dist/index.js"
+            },
+            "./package.json": "./package.json"
+        }),
+    );
+    obj.insert("files".into(), json!(["dist", "src", "README.md"]));
+    obj.insert("sideEffects".into(), json!(false));
+    obj.entry("engines")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .map(|engines| engines.entry("node").or_insert_with(|| json!(MIN_NODE)));
+
+    let scripts = obj
+        .entry("scripts")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    if let Some(scripts) = scripts {
+        scripts.entry("build").or_insert_with(|| json!("tsc"));
+        scripts.insert("prepack".into(), json!("npm run build"));
+    }
+
+    // Move the SDK to peerDependencies, keeping whatever range the CLI chose.
+    let sdk_range = obj
+        .get_mut("dependencies")
+        .and_then(Value::as_object_mut)
+        .and_then(|deps| deps.remove(STELLAR_SDK))
+        .unwrap_or_else(|| json!(DEFAULT_STELLAR_SDK_RANGE));
+    for table in ["peerDependencies", "devDependencies"] {
+        if let Some(deps) = obj
+            .entry(table)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+        {
+            deps.insert(STELLAR_SDK.into(), sdk_range.clone());
+        }
+    }
+    if obj
+        .get("dependencies")
+        .and_then(Value::as_object)
+        .is_some_and(Map::is_empty)
+    {
+        obj.remove("dependencies");
+    }
 }
 
 /// Declare `react` as an optional peer dependency (and a dev dependency, so
@@ -518,98 +719,6 @@ pub fn render_hooks_ts(entrypoints: &[String]) -> String {
     out
 }
 
-/// npm package name for a cargo package: npm names must be lowercase.
-pub fn npm_package_name(package_name: &str) -> String {
-    package_name.to_ascii_lowercase()
-}
-
-/// Turn the `package.json` stellar-cli generates into one that can be
-/// `npm pack`ed and published without edits:
-///
-/// - name/version from `Cargo.toml` when known
-/// - `exports` as a conditional map (`types` first, then `import`/`default`)
-///   plus `main`/`types` for tools that predate `exports` — this is what
-///   lets the declarations resolve under both `node16`/`nodenext` and
-///   `bundler` module resolution
-/// - `files` limited to the build output, sources and README
-/// - `@stellar/stellar-sdk` moved from `dependencies` to
-///   `peerDependencies` (and mirrored in `devDependencies` so `tsc` can
-///   still build), so apps and the client share one SDK instance
-/// - a `prepack` build, so `npm pack`/`npm publish` never ship a stale or
-///   missing `dist/`
-///
-/// Fields stellar-cli sets that are not listed here are left untouched.
-pub fn make_publishable(pkg: &mut serde_json::Value, info: Option<&PackageInfo>) {
-    use serde_json::{json, Map, Value};
-
-    if !pkg.is_object() {
-        *pkg = Value::Object(Map::new());
-    }
-    let obj = pkg.as_object_mut().expect("just ensured an object");
-
-    if let Some(info) = info {
-        obj.insert("name".into(), json!(npm_package_name(&info.package_name)));
-        if let Some(version) = &info.version {
-            obj.insert("version".into(), json!(version));
-        }
-    }
-    obj.entry("version").or_insert_with(|| json!("0.0.0"));
-
-    obj.insert("type".into(), json!("module"));
-    obj.insert("main".into(), json!("./dist/index.js"));
-    obj.insert("types".into(), json!("./dist/index.d.ts"));
-    obj.remove("typings");
-    obj.insert(
-        "exports".into(),
-        json!({
-            ".": {
-                "types": "./dist/index.d.ts",
-                "import": "./dist/index.js",
-                "default": "./dist/index.js"
-            },
-            "./package.json": "./package.json"
-        }),
-    );
-    obj.insert("files".into(), json!(["dist", "src", "README.md"]));
-    obj.insert("sideEffects".into(), json!(false));
-    obj.entry("engines")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .map(|engines| engines.entry("node").or_insert_with(|| json!(MIN_NODE)));
-
-    let scripts = obj
-        .entry("scripts")
-        .or_insert_with(|| json!({}))
-        .as_object_mut();
-    if let Some(scripts) = scripts {
-        scripts.entry("build").or_insert_with(|| json!("tsc"));
-        scripts.insert("prepack".into(), json!("npm run build"));
-    }
-
-    // Move the SDK to peerDependencies, keeping whatever range the CLI chose.
-    let sdk_range = obj
-        .get_mut("dependencies")
-        .and_then(Value::as_object_mut)
-        .and_then(|deps| deps.remove(STELLAR_SDK))
-        .unwrap_or_else(|| json!(DEFAULT_STELLAR_SDK_RANGE));
-    for table in ["peerDependencies", "devDependencies"] {
-        if let Some(deps) = obj
-            .entry(table)
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-        {
-            deps.insert(STELLAR_SDK.into(), sdk_range.clone());
-        }
-    }
-    if obj
-        .get("dependencies")
-        .and_then(Value::as_object)
-        .is_some_and(Map::is_empty)
-    {
-        obj.remove("dependencies");
-    }
-}
-
 /// Shell out to the official CLI. Never reimplemented locally.
 fn run_stellar_bindings(wasm: &Path, output: &Path) -> Result<()> {
     let wasm_str = wasm.to_str().ok_or_else(|| {
@@ -681,10 +790,16 @@ impl ForgePlugin for BindingsTsPlugin {
                             .help("Path to the built .wasm file [default: target/wasm32v1-none/release/<crate>.wasm]"),
                     )
                     .arg(
-                        Arg::new("output")
-                            .long("output")
+                        Arg::new("out-dir")
+                            .long("out-dir")
+                            .visible_alias("output")
                             .short('o')
                             .help("Output directory for the generated package [default: bindings/typescript]"),
+                    )
+                    .arg(
+                        Arg::new("package-name")
+                            .long("package-name")
+                            .help("Custom npm package name for the generated package (overrides default derived from Cargo.toml)"),
                     )
                     .arg(
                         Arg::new("force")
@@ -730,9 +845,17 @@ fn run_ts(matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
     let wasm_override = matches.get_one::<String>("wasm").map(|p| ctx.cwd.join(p));
 
     let output = matches
-        .get_one::<String>("output")
+        .get_one::<String>("out-dir")
+        .or_else(|| matches.get_one::<String>("output"))
         .map(|p| ctx.cwd.join(p))
         .unwrap_or_else(|| dir.join(DEFAULT_OUTPUT_SUBDIR));
+
+    let package_name = matches
+        .get_one::<String>("package-name")
+        .map(String::as_str);
+    if let Some(pkg_name) = package_name {
+        validate_npm_package_name(pkg_name)?;
+    }
 
     let force = matches.get_flag("force");
     let watch = matches.get_flag("watch");
@@ -740,10 +863,24 @@ fn run_ts(matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
 
     if watch {
         // `--watch` always overwrites — that is the whole point of the loop.
-        return watch_loop(&dir, wasm_override.as_deref(), &output, react, ctx);
+        return watch_loop(
+            &dir,
+            wasm_override.as_deref(),
+            &output,
+            package_name,
+            react,
+            ctx,
+        );
     }
 
-    let wasm_path = generate_bindings(&dir, wasm_override.as_deref(), &output, force, react)?;
+    let wasm_path = generate_bindings_with_options(
+        &dir,
+        wasm_override.as_deref(),
+        &output,
+        package_name,
+        react,
+        force,
+    )?;
 
     if ctx.json {
         let report = serde_json::json!({
@@ -770,23 +907,17 @@ fn run_ts(matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
     Ok(())
 }
 
-/// Re-render the bindings package every time the contract source tree
-/// changes. Ctrl-C cleanly exits; per-regeneration errors are printed but
-/// do not stop the loop (acceptance criteria).
-///
-/// Polling-based so we don't add a new dependency for a single command:
-/// `notify` would be the right answer at scale, but for a one-second poll
-/// over a scaffolded contract the disk cost is negligible.
 fn watch_loop(
     dir: &Path,
     wasm_override: Option<&Path>,
     output: &Path,
+    package_name: Option<&str>,
     react: bool,
     ctx: &ForgeContext,
 ) -> Result<()> {
     // First run is synchronous so a broken setup fails before we enter
     // the steady-state loop (e.g. missing stellar-cli, malformed wasm).
-    if let Err(err) = regenerate(dir, wasm_override, output, react, ctx) {
+    if let Err(err) = regenerate(dir, wasm_override, output, package_name, react, ctx) {
         if !ctx.quiet {
             eprintln!("[{}] regeneration failed: {err} (continuing)", timestamp());
         }
@@ -798,7 +929,7 @@ fn watch_loop(
         let now = snapshot_mtime(dir);
         if now != last {
             last = now;
-            if let Err(err) = regenerate(dir, wasm_override, output, react, ctx) {
+            if let Err(err) = regenerate(dir, wasm_override, output, package_name, react, ctx) {
                 if !ctx.quiet {
                     eprintln!("[{}] regeneration failed: {err} (continuing)", timestamp());
                 }
@@ -815,10 +946,12 @@ fn regenerate(
     dir: &Path,
     wasm_override: Option<&Path>,
     output: &Path,
+    package_name: Option<&str>,
     react: bool,
     ctx: &ForgeContext,
 ) -> Result<PathBuf> {
-    let wasm = generate_bindings(dir, wasm_override, output, true, react)?;
+    let wasm =
+        generate_bindings_with_options(dir, wasm_override, output, package_name, react, true)?;
     if !ctx.quiet {
         println!("[{}] regenerated -> {}", timestamp(), output.display());
     }
@@ -994,7 +1127,7 @@ mod tests {
         )
         .unwrap();
 
-        finalize_package_json(tmp.path(), Some(&demo_info()), false).unwrap();
+        finalize_package_json(tmp.path(), Some(&demo_info()), None, false).unwrap();
 
         let raw = std::fs::read_to_string(tmp.path().join("package.json")).unwrap();
         assert!(raw.ends_with('\n'));
@@ -1018,7 +1151,7 @@ mod tests {
         .unwrap();
 
         let output = tmp.path().join("bindings/typescript");
-        let err = generate_bindings(tmp.path(), None, &output, false, false).unwrap_err();
+        let err = generate_bindings(tmp.path(), None, &output, false).unwrap_err();
         assert!(err.to_string().contains("stellar contract build"));
     }
 
@@ -1038,7 +1171,7 @@ mod tests {
         let output = tmp.path().join("bindings/typescript");
         std::fs::create_dir_all(&output).unwrap();
 
-        let err = generate_bindings(tmp.path(), None, &output, false, false).unwrap_err();
+        let err = generate_bindings(tmp.path(), None, &output, false).unwrap_err();
         assert!(matches!(err, ForgeError::AlreadyExists(_)));
     }
 
@@ -1064,6 +1197,106 @@ mod tests {
         let ts = cmd.find_subcommand_mut("ts").expect("ts subcommand");
         let help = ts.render_long_help().to_string();
         assert!(help.contains("--watch"), "{help}");
+    }
+
+    #[test]
+    fn out_dir_and_package_name_flags_are_exposed_on_the_ts_subcommand() {
+        let mut cmd = BindingsTsPlugin.command();
+        let ts = cmd.find_subcommand_mut("ts").expect("ts subcommand");
+        let help = ts.render_long_help().to_string();
+        assert!(help.contains("--out-dir"), "{help}");
+        assert!(help.contains("--package-name"), "{help}");
+
+        // Both --out-dir and --output parse into out-dir
+        let m1 = ts
+            .clone()
+            .try_get_matches_from(vec!["ts", "--out-dir", "custom/dir"])
+            .unwrap();
+        assert_eq!(m1.get_one::<String>("out-dir").unwrap(), "custom/dir");
+
+        let m2 = ts
+            .clone()
+            .try_get_matches_from(vec![
+                "ts",
+                "--output",
+                "legacy/dir",
+                "--package-name",
+                "@my-scope/my-pkg",
+            ])
+            .unwrap();
+        assert_eq!(m2.get_one::<String>("out-dir").unwrap(), "legacy/dir");
+        assert_eq!(
+            m2.get_one::<String>("package-name").unwrap(),
+            "@my-scope/my-pkg"
+        );
+    }
+
+    #[test]
+    fn validates_legal_npm_package_names() {
+        assert!(validate_npm_package_name("my-package").is_ok());
+        assert!(validate_npm_package_name("foo_bar").is_ok());
+        assert!(validate_npm_package_name("abc.123").is_ok());
+        assert!(validate_npm_package_name("simple").is_ok());
+        assert!(validate_npm_package_name("@scope/package").is_ok());
+        assert!(validate_npm_package_name("@my-org/my-token").is_ok());
+        assert!(validate_npm_package_name("@stellar/client.sdk_123").is_ok());
+    }
+
+    #[test]
+    fn rejects_illegal_npm_package_names() {
+        assert!(validate_npm_package_name("").is_err());
+        assert!(validate_npm_package_name("   ").is_err());
+        assert!(validate_npm_package_name("  foo  ").is_err());
+        assert!(validate_npm_package_name("MyPackage").is_err()); // uppercase
+        assert!(validate_npm_package_name("@Scope/pkg").is_err()); // uppercase
+        assert!(validate_npm_package_name("@scope/Pkg").is_err()); // uppercase
+        assert!(validate_npm_package_name(".hidden").is_err());
+        assert!(validate_npm_package_name("_hidden").is_err());
+        assert!(validate_npm_package_name("node_modules").is_err());
+        assert!(validate_npm_package_name("favicon.ico").is_err());
+        assert!(validate_npm_package_name("foo/bar").is_err()); // unscoped cannot have slash
+        assert!(validate_npm_package_name("@scope").is_err()); // scoped missing subname
+        assert!(validate_npm_package_name("@scope/").is_err());
+        assert!(validate_npm_package_name("@/pkg").is_err());
+        assert!(validate_npm_package_name("@scope/pkg/extra").is_err());
+        assert!(validate_npm_package_name("@.scope/pkg").is_err());
+        assert!(validate_npm_package_name("@scope/.pkg").is_err());
+        assert!(validate_npm_package_name("foo bar").is_err()); // space
+        assert!(validate_npm_package_name("foo*bar").is_err()); // special char
+        assert!(validate_npm_package_name(&"a".repeat(215)).is_err()); // > 214 chars
+    }
+
+    #[test]
+    fn package_name_override_overrides_cargo_toml() {
+        let mut pkg = cli_package_json();
+        make_publishable_with_name(&mut pkg, Some(&demo_info()), Some("@stellar/custom-client"));
+        assert_eq!(pkg["name"], "@stellar/custom-client");
+        assert_eq!(pkg["version"], "1.2.3"); // kept from info
+    }
+
+    #[test]
+    fn package_name_override_without_cargo_toml_info() {
+        let mut pkg = cli_package_json();
+        make_publishable_with_name(&mut pkg, None, Some("standalone-client"));
+        assert_eq!(pkg["name"], "standalone-client");
+    }
+
+    #[test]
+    fn generate_bindings_with_options_rejects_invalid_package_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = generate_bindings_with_options(
+            tmp.path(),
+            None,
+            &tmp.path().join("out"),
+            Some("Invalid Name"),
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("not a legal npm package name"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1218,7 +1451,7 @@ mod tests {
     #[test]
     fn react_support_adds_optional_peer_and_hooks_export() {
         let mut pkg = cli_package_json();
-        make_publishable(&mut pkg, Some(&demo_info()));
+        make_publishable_with_name(&mut pkg, Some(&demo_info()), None);
         add_react_support(&mut pkg);
 
         assert_eq!(pkg["peerDependencies"]["react"], REACT_PEER_RANGE);
@@ -1238,7 +1471,7 @@ mod tests {
         )
         .unwrap();
 
-        finalize_package_json(tmp.path(), Some(&demo_info()), false).unwrap();
+        finalize_package_json(tmp.path(), Some(&demo_info()), None, false).unwrap();
 
         let raw = std::fs::read_to_string(tmp.path().join("package.json")).unwrap();
         assert!(!raw.contains("react"), "{raw}");
@@ -1253,7 +1486,7 @@ mod tests {
         )
         .unwrap();
 
-        finalize_package_json(tmp.path(), Some(&demo_info()), true).unwrap();
+        finalize_package_json(tmp.path(), Some(&demo_info()), None, true).unwrap();
 
         let raw = std::fs::read_to_string(tmp.path().join("package.json")).unwrap();
         let pkg: serde_json::Value = serde_json::from_str(&raw).unwrap();

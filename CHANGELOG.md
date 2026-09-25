@@ -24,6 +24,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   classifies the differences — a removed entrypoint or changed signature is
   breaking, a new entrypoint is additive. Exits `1` on a breaking change so
   CI can gate a release on interface stability (#277)
+- `soroban-forge bindings ts`: add `--out-dir` (alias `--output`) to customize where bindings are written and `--package-name` to set a custom npm package name, validated against npm naming rules (#267)
+- `soroban-forge spec`: render contract interface as GitHub Flavored Markdown (`--format md` / `--format markdown`) with entrypoint and custom type tables (#276)
+- `soroban-forge spec`: read interface from deployed contract ID (`spec <CONTRACT_ID>`), defaulting to local wasm when omitted and guarded under `--offline` (#278)
+- `soroban-forge deploy`: detect unfunded testnet source identities with interactive Friendbot prompt and automatic funding via `--fund`, guarded under `--offline` and mainnet (#282)
 - `soroban-forge verify` now prints an interface diff on a hash mismatch:
   entrypoints added, removed or changed between the deployed contract and
   the local build, also available as `spec_diff` in `--json`. If either

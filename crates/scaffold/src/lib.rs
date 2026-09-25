@@ -167,7 +167,6 @@ pub fn template_description(name: &str) -> Option<&'static str> {
         "access-control" => Some(
             "role-based access control — grant/revoke/has-role with an admin role that administers other roles",
         ),
-        "amm" => Some("constant-product AMM / liquidity pool (x*y=k, 0.3% fee)"),
         "allowlist-token" => Some("allowlist-gated token with admin-managed transfer restrictions"),
         "amm" => Some("constant-product AMM / liquidity pool (x*y=k, 0.3% fee)"),
         "atomic-swap" => Some("atomic two-party token swap with dual authorization"),
@@ -189,8 +188,6 @@ pub fn template_description(name: &str) -> Option<&'static str> {
         "payment-splitter" => Some("splits received funds between payees by fixed shares"),
         "pausable" => Some("admin-controlled circuit breaker gating guarded entrypoints"),
         "nft-marketplace" => Some("NFT marketplace for listing, buying, and cancelling sales with configurable fees"),
-        "oracle-consumer" => Some("consumes price data from an external oracle (e.g. Reflector)"),
-        "payment-splitter" => Some("splits received funds between payees by fixed shares"),
         "prediction-market" => {
             Some("binary outcome market with oracle resolution and parimutuel payouts")
         }
@@ -215,7 +212,6 @@ pub struct TemplateInfo {
     pub name: &'static str,
     pub description: String,
     /// Custom variables declared in the template's template.toml
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<manifest::TemplateVariable>,
 }
 

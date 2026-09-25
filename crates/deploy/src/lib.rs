@@ -98,6 +98,22 @@ impl NetworkArgs {
             .unwrap_or_else(|| DEFAULT_NETWORK.to_string())
     }
 
+    /// Whether this target is testnet (where friendbot is available).
+    pub fn is_testnet(&self) -> bool {
+        if let Some(passphrase) = &self.network_passphrase {
+            if passphrase.contains("Public Global Stellar Network") {
+                return false;
+            }
+        }
+        if let Some(network) = &self.network {
+            network == "testnet"
+        } else if let Some(rpc_url) = &self.rpc_url {
+            rpc_url.contains("testnet")
+        } else {
+            true // default network is testnet
+        }
+    }
+
     /// The corresponding `stellar` CLI arguments.
     pub fn cli_args(&self) -> Vec<String> {
         let mut args = Vec::new();
@@ -226,8 +242,7 @@ pub fn extract_contract_id(stdout: &str) -> Option<String> {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .filter(|l| l.starts_with('C') && l.chars().count() == 56)
-        .next_back()
+        .rfind(|l| l.starts_with('C') && l.chars().count() == 56)
         .map(str::to_string)
 }
 
@@ -277,6 +292,191 @@ fn shell_quote(s: &str) -> String {
     } else {
         format!("'{}'", s.replace('\'', r"'\''"))
     }
+}
+
+/// Resolve the public key (`G...`) for `source`.
+pub fn resolve_source_public_key(source: &str) -> Option<String> {
+    let trimmed = source.trim();
+    if trimmed.starts_with('G') && trimmed.len() == 56 {
+        return Some(trimmed.to_string());
+    }
+
+    // Check ~/.config/soroban-forge/identities.json
+    if let Some(config_dir) = dirs::config_dir() {
+        let path = config_dir.join("soroban-forge").join("identities.json");
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(pk) = val
+                    .get("identities")
+                    .and_then(|ids| ids.get(trimmed))
+                    .and_then(|id| id.get("public_key"))
+                    .and_then(|pk| pk.as_str())
+                {
+                    if pk.starts_with('G') && pk.len() == 56 {
+                        return Some(pk.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Try `stellar keys address <source>`
+    let output = std::process::Command::new("stellar")
+        .args(["keys", "address", trimmed])
+        .output();
+    if let Ok(out) = output {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines().map(str::trim) {
+                if line.starts_with('G') && line.len() == 56 {
+                    return Some(line.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if `public_key` is already funded on testnet Horizon.
+pub fn is_account_funded(public_key: &str) -> Result<bool> {
+    let url = format!("https://horizon-testnet.stellar.org/accounts/{public_key}");
+    match ureq::get(&url).call() {
+        Ok(_) => Ok(true),
+        Err(ureq::Error::Status(404, _)) => Ok(false),
+        Err(e) => {
+            log::warn!("could not query account funding status from Horizon: {e}");
+            Err(ForgeError::Other(format!("failed to check account funding status: {e}")))
+        }
+    }
+}
+
+/// Fund `public_key` on testnet via friendbot.
+pub fn fund_via_friendbot(public_key: &str, network_passphrase: Option<&str>) -> Result<String> {
+    if let Some(passphrase) = network_passphrase {
+        if passphrase.contains("Public Global Stellar Network") {
+            return Err(ForgeError::InvalidArgument(
+                "friendbot funding is only available on testnet, not mainnet".into(),
+            ));
+        }
+    }
+
+    let url = format!("https://friendbot.stellar.org/?addr={public_key}");
+    log::debug!("requesting friendbot funding for {public_key}: {url}");
+    let response = ureq::get(&url).call().map_err(|e| {
+        ForgeError::Other(format!(
+            "friendbot request failed: {e}
+               hint: check your network connection, or the account may already be funded"
+        ))
+    })?;
+
+    let body = response
+        .into_string()
+        .map_err(|e| ForgeError::io("reading friendbot response")(e))?;
+
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(balance) = v
+            .get("balances")
+            .and_then(|b| b.as_array())
+            .and_then(|arr| {
+                arr.iter().find_map(|item| {
+                    if item.get("asset_type").and_then(|t| t.as_str()) == Some("native") {
+                        item.get("balance").and_then(|b| b.as_str())
+                    } else {
+                        None
+                    }
+                })
+            })
+        {
+            return Ok(balance.to_string());
+        }
+    }
+
+    Ok("10000".to_string())
+}
+
+/// Ensure `source` is funded on testnet, prompting or using `--fund`.
+pub fn ensure_source_funded(
+    source: &str,
+    network: &NetworkArgs,
+    auto_fund: bool,
+    ctx: &ForgeContext,
+) -> Result<()> {
+    if !network.is_testnet() || ctx.offline {
+        return Ok(());
+    }
+
+    let Some(pubkey) = resolve_source_public_key(source) else {
+        return Ok(());
+    };
+
+    use std::io::IsTerminal;
+    let is_interactive = !ctx.quiet && !ctx.json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+
+    ensure_source_funded_with(
+        source,
+        &pubkey,
+        network,
+        auto_fund,
+        is_interactive,
+        is_account_funded,
+        |pk| fund_via_friendbot(pk, network.network_passphrase.as_deref()),
+    )
+}
+
+/// Inner logic for detecting unfunded testnet source and funding it or prompting.
+pub fn ensure_source_funded_with<F, G>(
+    source: &str,
+    pubkey: &str,
+    network: &NetworkArgs,
+    auto_fund: bool,
+    is_interactive: bool,
+    mut is_funded_fn: F,
+    mut fund_fn: G,
+) -> Result<()>
+where
+    F: FnMut(&str) -> Result<bool>,
+    G: FnMut(&str) -> Result<String>,
+{
+    if !network.is_testnet() {
+        return Ok(());
+    }
+
+    let funded = is_funded_fn(pubkey)?;
+    if funded {
+        return Ok(());
+    }
+
+    if auto_fund {
+        let balance = fund_fn(pubkey)?;
+        log::info!("funded `{source}` ({pubkey}) via friendbot: {balance} XLM");
+        Ok(())
+    } else if is_interactive {
+        if confirm(&format!("source account `{source}` ({pubkey}) is not funded on testnet. Fund it via friendbot?")) {
+            let balance = fund_fn(pubkey)?;
+            log::info!("funded `{source}` ({pubkey}) via friendbot: {balance} XLM");
+            Ok(())
+        } else {
+            Err(ForgeError::InvalidArgument(format!(
+                "aborted: source account `{source}` is unfunded on testnet"
+            )))
+        }
+    } else {
+        Err(ForgeError::InvalidArgument(format!(
+            "source account `{source}` ({pubkey}) is not funded on testnet; pass --fund to fund it via friendbot before deploying"
+        )))
+    }
+}
+
+fn confirm(prompt: &str) -> bool {
+    use std::io::Write;
+    print!("{prompt} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// The `deploy` subcommand.
@@ -330,10 +530,17 @@ impl ForgePlugin for DeployPlugin {
                     .action(clap::ArgAction::SetTrue)
                     .help("Print the stellar command that would be run without submitting anything"),
             )
+            .arg(
+                Arg::new("fund")
+                    .long("fund")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Automatically fund an unfunded testnet source account via friendbot before deploying"),
+            )
     }
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         let dry_run = matches.get_flag("dry-run");
+        let auto_fund = matches.get_flag("fund");
 
         // --dry-run does not submit anything but does need to resolve the wasm
         // path to show the full command; it is therefore allowed in offline mode.
@@ -357,6 +564,10 @@ impl ForgePlugin for DeployPlugin {
             matches.get_one::<String>("rpc-url").cloned(),
             matches.get_one::<String>("network-passphrase").cloned(),
         );
+
+        if !dry_run && !ctx.offline && network.is_testnet() {
+            ensure_source_funded(source, &network, auto_fund, ctx)?;
+        }
 
         if dry_run {
             let wasm_path = build_if_needed(&dir, wasm_override.as_deref())?;
@@ -550,5 +761,118 @@ mod tests {
         // --source value "alice" looks like a plain identity name, but it's
         // still treated as a secret and redacted.
         assert!(cmd.contains("<redacted>"), "{cmd}");
+    }
+
+    #[test]
+    fn help_documents_fund_flag() {
+        let help = DeployPlugin.command().render_long_help().to_string();
+        assert!(help.contains("--fund"), "{help}");
+    }
+
+    #[test]
+    fn network_args_identifies_testnet_correctly() {
+        let testnet_default = NetworkArgs::resolve(None, None, None);
+        assert!(testnet_default.is_testnet());
+
+        let testnet_explicit = NetworkArgs::resolve(Some("testnet".into()), None, None);
+        assert!(testnet_explicit.is_testnet());
+
+        let mainnet = NetworkArgs::resolve(Some("mainnet".into()), None, None);
+        assert!(!mainnet.is_testnet());
+
+        let mainnet_passphrase = NetworkArgs::resolve(
+            Some("testnet".into()),
+            None,
+            Some("Public Global Stellar Network ; September 2015".into()),
+        );
+        assert!(!mainnet_passphrase.is_testnet());
+    }
+
+    #[test]
+    fn resolve_source_public_key_accepts_direct_pubkey() {
+        let pk = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H";
+        assert_eq!(resolve_source_public_key(pk), Some(pk.to_string()));
+    }
+
+    #[test]
+    fn ensure_source_funded_skips_when_already_funded() {
+        let network = NetworkArgs::resolve(Some("testnet".into()), None, None);
+        let mut funded_called = false;
+        let res = ensure_source_funded_with(
+            "alice",
+            "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            &network,
+            false,
+            false,
+            |_| Ok(true), // already funded
+            |_| {
+                funded_called = true;
+                Ok("10000".into())
+            },
+        );
+        assert!(res.is_ok());
+        assert!(!funded_called);
+    }
+
+    #[test]
+    fn ensure_source_funded_auto_funds_when_flag_present() {
+        let network = NetworkArgs::resolve(Some("testnet".into()), None, None);
+        let mut funded_called = false;
+        let res = ensure_source_funded_with(
+            "alice",
+            "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            &network,
+            true, // auto_fund = true
+            false, // non-interactive
+            |_| Ok(false), // unfunded
+            |_| {
+                funded_called = true;
+                Ok("10000".into())
+            },
+        );
+        assert!(res.is_ok());
+        assert!(funded_called);
+    }
+
+    #[test]
+    fn ensure_source_funded_fails_non_interactive_without_fund_flag() {
+        let network = NetworkArgs::resolve(Some("testnet".into()), None, None);
+        let mut funded_called = false;
+        let res = ensure_source_funded_with(
+            "alice",
+            "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            &network,
+            false, // auto_fund = false
+            false, // is_interactive = false
+            |_| Ok(false), // unfunded
+            |_| {
+                funded_called = true;
+                Ok("10000".into())
+            },
+        );
+        assert!(res.is_err());
+        assert!(!funded_called);
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("pass --fund"), "expected hint to pass --fund, got: {err}");
+    }
+
+    #[test]
+    fn ensure_source_funded_never_attempts_funding_on_mainnet() {
+        let network = NetworkArgs::resolve(Some("mainnet".into()), None, None);
+        let mut checked = false;
+        let res = ensure_source_funded_with(
+            "alice",
+            "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            &network,
+            true,
+            false,
+            |_| {
+                checked = true;
+                Ok(false)
+            },
+            |_| Ok("10000".into()),
+        );
+        assert!(res.is_ok());
+        assert!(!checked);
     }
 }

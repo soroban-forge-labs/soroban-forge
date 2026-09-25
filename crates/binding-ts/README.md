@@ -37,6 +37,16 @@ npm install
 npm pack          # runs the build, then packs dist/, src/ and README.md
 ```
 
+## CLI Options
+
+- `--path <dir>` — contract project directory [default: current directory]
+- `--wasm <path>` — path to built wasm file [default: target/wasm32v1-none/release/<crate>.wasm]
+- `--out-dir <dir>`, `-o` (alias: `--output`) — directory to write generated bindings to [default: `bindings/typescript`]
+- `--package-name <name>` — custom legal npm package name overriding the default derived from `Cargo.toml`
+- `--force` — overwrite the output directory if it exists
+- `--watch` — re-generate bindings on contract source changes
+- `--react` — see below
+
 ## `--react`: generated hooks
 
 ```sh
@@ -72,13 +82,13 @@ hooks" section with a usage example is appended to the generated README.
 
 ## Public surface
 
-- `read_package_info(dir)` — reads `[package].name` and `version` from
-  `Cargo.toml`
-- `locate_wasm(dir, crate_name)` — the default build output path under
-  `target/wasm32v1-none/release/`
-- `generate_bindings(contract_dir, wasm_override, output, force, react)` —
-  the programmatic API behind `bindings ts`
-- `make_publishable(package_json, info)` — the `package.json` rewrite above
+- `validate_npm_package_name(name)` — validates npm package names according to npm rules
+- `read_package_info(dir)` — reads `[package].name` and `version` from `Cargo.toml`
+- `locate_wasm(dir, crate_name)` — the default build output path under `target/wasm32v1-none/release/`
+- `generate_bindings(contract_dir, wasm_override, output, force)` — standard bindings generator
+- `generate_bindings_with_options(contract_dir, wasm_override, output, package_name, react, force)` — the full bindings generator behind `bindings ts`
+- `make_publishable(package_json, info)` — package.json rewrite
+- `make_publishable_with_name(package_json, info, package_name)` — package.json rewrite with custom name
 - `render_hooks_ts(entrypoints)` — renders `src/hooks.ts` for `--react`
 - `BindingsTsPlugin` — the `ForgePlugin` impl
 

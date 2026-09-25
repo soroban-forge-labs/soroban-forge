@@ -83,7 +83,7 @@ fn workspace_without_contracts_errors() {
     assert!(stderr.contains("--contract"), "{stderr}");
 }
 
-/// `test-init` at a workspace root generates a harness for every member.
+/// `test-init` at a multi-contract workspace root requires `--contract <name>`.
 #[test]
 fn test_init_harnesses_each_workspace_member() {
     let temp = tempfile::tempdir().unwrap();
@@ -108,15 +108,31 @@ fn test_init_harnesses_each_workspace_member() {
     assert!(scaffold.status.success(), "{scaffold:?}");
     let root = temp.path().join("ws-demo");
 
-    let init = Command::new(env!("CARGO_BIN_EXE_soroban-forge"))
+    // Bare `test-init` without `--contract` in multi-contract workspace fails with candidate list
+    let init_bare = Command::new(env!("CARGO_BIN_EXE_soroban-forge"))
         .args(["test-init", "--path", root.to_str().unwrap()])
         .output()
         .unwrap();
-    assert!(init.status.success(), "{init:?}");
-    let stdout = String::from_utf8(init.stdout).unwrap();
-    assert!(stdout.contains("workspace members"), "{stdout}");
+    assert!(!init_bare.status.success(), "{init_bare:?}");
+    let stderr = String::from_utf8(init_bare.stderr).unwrap();
+    assert!(stderr.contains("--contract"), "{stderr}");
+    assert!(stderr.contains("a (contracts/a)"), "{stderr}");
+    assert!(stderr.contains("b (contracts/b)"), "{stderr}");
 
+    // Providing `--contract` generates harness for each targeted member
     for member in ["a", "b"] {
+        let init = Command::new(env!("CARGO_BIN_EXE_soroban-forge"))
+            .args([
+                "test-init",
+                "--path",
+                root.to_str().unwrap(),
+                "--contract",
+                member,
+            ])
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "{init:?}");
+
         let tests = root.join("contracts").join(member).join("tests");
         assert!(
             tests.join("forge_smoke.rs").is_file(),

@@ -110,3 +110,44 @@ fn json_spec_reports_errors_as_json() {
         .unwrap()
         .contains("stellar contract build"));
 }
+
+#[test]
+fn spec_help_mentions_contract_id_and_format() {
+    let output = forge().args(["spec", "--help"]).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("CONTRACT_ID"), "{stdout}");
+    assert!(stdout.contains("--format"), "{stdout}");
+    assert!(stdout.contains("--network"), "{stdout}");
+}
+
+#[test]
+fn spec_rejects_malformed_contract_id_before_network() {
+    let output = forge()
+        .args([
+            "spec",
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("not a valid contract ID"), "{stderr}");
+}
+
+#[test]
+fn spec_with_contract_id_refuses_offline() {
+    let output = forge()
+        .args([
+            "--offline",
+            "spec",
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("offline mode"), "{stderr}");
+}

@@ -1089,12 +1089,14 @@ name = "soroban-forge-deploy"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dirs",
  "log",
  "serde",
  "serde_json",
  "soroban-forge-core",
  "tempfile",
  "toml",
+ "ureq",
 ]
 
 [[package]]

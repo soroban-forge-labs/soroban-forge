@@ -48,6 +48,17 @@ npm install my-token @stellar/stellar-sdk@^16
 Type declarations resolve under both `node16`/`nodenext` and `bundler`
 module resolution. See `crates/binding-ts/README.md` for the full field list.
 
+## Options
+
+- `--out-dir <dir>` (alias `--output`) - target directory for generated bindings. Defaults to `bindings/<contract_name>`.
+- `--package-name <name>` - npm package name in `package.json`. Validated according to npm package naming rules. Defaults to `@soroban-contracts/<contract_name>`.
+
+### Example with Custom Output and Package Name
+
+```sh
+forge bindings ts --out-dir src/clients/distribution --package-name @my-org/distribution-client
+```
+
 ## React Hooks
 
 `soroban-forge bindings ts --react` additionally emits `src/hooks.ts`: one
