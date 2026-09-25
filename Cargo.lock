@@ -1011,7 +1011,6 @@ version = "0.1.0"
 dependencies = [
  "clap_complete",
  "serde_json",
- "soroban-forge-bindings-py",
  "soroban-forge-bindings-ts",
  "soroban-forge-ci-presets",
  "soroban-forge-core",
@@ -1028,19 +1027,6 @@ dependencies = [
  "soroban-forge-testgen",
  "soroban-forge-verify",
  "tempfile",
-]
-
-[[package]]
-name = "soroban-forge-bindings-py"
-version = "0.1.0"
-dependencies = [
- "clap",
- "log",
- "serde",
- "serde_json",
- "soroban-forge-core",
- "tempfile",
- "toml",
 ]
 
 [[package]]

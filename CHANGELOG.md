@@ -7,23 +7,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- `soroban-forge bindings-py`: a new crate generating a typed Python client
-  (`client.py`) from the built contract wasm — structs, tagged enums and
-  error enums as dataclasses/`IntEnum`, one method per entrypoint,
-  delegating all on-chain interaction to the official `stellar-sdk` package.
-  Validated with `mypy --strict` and real encode/decode round-trips (#270)
-- `.github/workflows/bindings-typecheck.yml`: generates `--react` bindings
-  for the `token` and `nft` templates and runs a pinned `tsc --noEmit`
-  against them on every push/PR (#269)
-- `soroban-forge bindings ts --react`: emits `src/hooks.ts`, a typed React
-  hook per entrypoint (a query-style hook for reads, a mutation hook for
-  writes), exported at a `./hooks` subpath with `react` as an optional peer
-  dependency. Strictly opt-in — nothing changes without the flag (#268)
-- `soroban-forge spec diff <old> <new>`: compares two interfaces (each a
-  wasm file, a `spec --json` file, or a deployed contract ID) and
-  classifies the differences — a removed entrypoint or changed signature is
-  breaking, a new entrypoint is additive. Exits `1` on a breaking change so
-  CI can gate a release on interface stability (#277)
 - `soroban-forge bindings ts`: add `--out-dir` (alias `--output`) to customize where bindings are written and `--package-name` to set a custom npm package name, validated against npm naming rules (#267)
 - `soroban-forge spec`: render contract interface as GitHub Flavored Markdown (`--format md` / `--format markdown`) with entrypoint and custom type tables (#276)
 - `soroban-forge spec`: read interface from deployed contract ID (`spec <CONTRACT_ID>`), defaulting to local wasm when omitted and guarded under `--offline` (#278)

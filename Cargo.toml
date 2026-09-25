@@ -26,7 +26,6 @@ soroban-forge-testgen = { path = "crates/testgen" }
 soroban-forge-ci-presets = { path = "crates/ci-presets" }
 soroban-forge-doctor = { path = "crates/doctor" }
 soroban-forge-bindings-ts = { path = "crates/binding-ts" }
-soroban-forge-bindings-py = { path = "crates/binding-py" }
 soroban-forge-templates = { path = "crates/templates" }
 soroban-forge-spec = { path = "crates/spec" }
 soroban-forge-verify = { path = "crates/verify" }

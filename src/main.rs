@@ -9,7 +9,6 @@ fn main() {
         Box::new(soroban_forge_ci_presets::CiPresetsPlugin),
         Box::new(soroban_forge_doctor::DoctorPlugin),
         Box::new(soroban_forge_bindings_ts::BindingsTsPlugin),
-        Box::new(soroban_forge_bindings_py::BindingsPyPlugin),
         Box::new(soroban_forge_templates::TemplatesPlugin),
         Box::new(soroban_forge_spec::SpecPlugin),
         Box::new(soroban_forge_verify::VerifyPlugin),
@@ -34,7 +33,9 @@ fn main() {
             "zsh" => generate(shells::Zsh, &mut cmd, "soroban-forge", &mut stdout),
             "fish" => generate(shells::Fish, &mut cmd, "soroban-forge", &mut stdout),
             other => {
-                eprintln!("error: unknown shell `{other}` — supported: bash, zsh, fish");
+                eprintln!(
+                    "error: unknown shell `{other}` — supported: bash, zsh, fish"
+                );
                 std::process::exit(1);
             }
         }

@@ -52,40 +52,11 @@ module resolution. See `crates/binding-ts/README.md` for the full field list.
 
 - `--out-dir <dir>` (alias `--output`) - target directory for generated bindings. Defaults to `bindings/<contract_name>`.
 - `--package-name <name>` - npm package name in `package.json`. Validated according to npm package naming rules. Defaults to `@soroban-contracts/<contract_name>`.
+- `--contract <name>` - contract name when running in a multi-contract workspace.
+- `--overwrite` - overwrite existing output directory.
 
 ### Example with Custom Output and Package Name
 
 ```sh
 forge bindings ts --out-dir src/clients/distribution --package-name @my-org/distribution-client
 ```
-
-## React Hooks
-
-`soroban-forge bindings ts --react` additionally emits `src/hooks.ts`: one
-hook per entrypoint, typed against the generated client. It is strictly
-opt-in — omit the flag and nothing react-related is generated or declared.
-
-```tsx
-import { Client } from "my-token";
-import { useBalance, useMintMutation } from "my-token/hooks";
-
-const client = new Client({ contractId: "C...", networkPassphrase: "...", rpcUrl: "..." });
-
-function Balance({ id }: { id: string }) {
-  const { data, loading, error, refetch } = useBalance(client, { id });
-  if (loading) return <p>Loading…</p>;
-  if (error) return <p>{error.message}</p>;
-  return <p>{String(data)} <button onClick={refetch}>Refresh</button></p>;
-}
-
-function MintButton({ to }: { to: string }) {
-  const { mutate, loading } = useMintMutation(client);
-  return <button disabled={loading} onClick={() => mutate({ to, amount: 100n })}>Mint</button>;
-}
-```
-
-Read entrypoints (`get_*`, `balance`, `owner`, `admin`, …) get a query-style
-hook that fetches on mount; everything else gets a mutation hook that only
-runs when you call `mutate(...)`. See `crates/binding-ts/README.md` for the
-full classification rule and the `package.json` changes (`react` as an
-optional peer dependency, a `./hooks` export subpath).
