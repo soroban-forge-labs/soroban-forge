@@ -7,6 +7,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `soroban-forge spec diff <old> <new>`: compares two interfaces (each a
+  wasm file, a `spec --json` file, or a deployed contract ID) and
+  classifies the differences — a removed entrypoint or changed signature is
+  breaking, a new entrypoint is additive. Exits `1` on a breaking change so
+  CI can gate a release on interface stability (#277)
 - `soroban-forge verify` now prints an interface diff on a hash mismatch:
   entrypoints added, removed or changed between the deployed contract and
   the local build, also available as `spec_diff` in `--json`. If either

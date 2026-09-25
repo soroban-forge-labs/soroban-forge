@@ -60,6 +60,11 @@ scaffolding.
   plus the types those signatures refer to. Reads the spec out of the wasm, so
   run `stellar contract build` first; `--json` emits the machine-readable spec.
   Works under `--offline`.
+- `soroban-forge spec diff <old> <new> [--network <name>]` — compare two
+  interfaces (each a wasm file, a `spec --json` file, or a deployed contract
+  ID) and classify the differences: a removed entrypoint or a changed
+  signature is breaking, a new entrypoint is additive. Exits `1` on a
+  breaking change; `--json` emits `{added, removed, changed, breaking}`.
 - `soroban-forge optimize` — optimize a built contract wasm. Use `--check` with
   `--max-size <bytes>` to fail (exit 1) if the optimized size exceeds the
   budget. The budget can also be set as `optimize.max_size` in `forge.toml`; the

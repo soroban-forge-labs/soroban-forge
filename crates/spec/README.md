@@ -20,7 +20,45 @@ the build (`target/wasm32v1-none/release/<crate>.wasm`, the same layout
 reporting a missing `stellar` CLI as `ToolMissing` (exit `2`) with a pointer
 to `soroban-forge doctor`.
 
-Nothing here touches the network, so `spec` works under `--offline`.
+Nothing here touches the network, so `spec` works under `--offline`, unless
+`spec diff` is asked to compare a deployed contract by ID.
+
+## `spec diff` — interface stability check
+
+```sh
+soroban-forge spec diff old.wasm new.wasm
+soroban-forge spec diff old-spec.json new.wasm           # a spec --json file works too
+soroban-forge spec diff CDLZ… new.wasm --network testnet # or a deployed contract
+```
+
+Each of `OLD`/`NEW` is auto-detected: a `.json` file (as `spec --json`
+writes), a strkey contract ID (`C…`), or otherwise a wasm file. Both sides
+are read with `stellar contract info interface --output json` and compared
+entrypoint by entrypoint:
+
+- a **removed** entrypoint, or one whose **signature changed** — breaking
+- a **new** entrypoint — additive
+
+```
+✗ BREAKING — 1 removed, 1 changed (1 added)
+
+  + mint(to: address, amount: i128)
+  - burn(from: address, amount: i128)
+  ~ balance
+      old  balance(id: address) -> i128
+      new  balance(id: address) -> u128
+```
+
+Exits `1` on a breaking change, so CI can gate a release: `soroban-forge spec
+diff "$(git show main:target/…/old.wasm)" new.wasm || exit 1` (or diff two
+`spec --json` snapshots checked into the repo). `--json` reports
+`{"old", "new", "added", "removed", "changed", "breaking"}`. `--network`,
+`--rpc-url` and `--network-passphrase` only matter when a side is a contract
+ID; a contract ID under `--offline` is a user error, not a network attempt.
+
+Unlike `bindings ts --react`'s hooks, `spec diff` does not exclude
+`__constructor` — a changed constructor signature is a real interface change
+worth flagging here.
 
 ## Public surface
 
@@ -33,6 +71,16 @@ Nothing here touches the network, so `spec` works under `--offline`.
 - `dump_interface(dir, wasm_override, format) -> (PathBuf, String)` — the
   programmatic API behind the subcommand
 - `format_header(wasm)` — the human-mode header line
+- `classify_spec_arg(arg) -> SpecArg` — auto-detect a `spec diff` argument
+  (file / wasm / contract ID)
+- `read_spec_json(arg, network, offline)` / `diff_specs(old_json, new_json)`
+  / `diff(old, new, network, offline)` — the programmatic API behind
+  `spec diff`
+- `SpecDiff` (`is_empty` / `is_breaking`), `ChangedEntrypoint`
+- `format_diff_report` / `json_diff_report` / `breaking_change_error` —
+  `spec diff` output and the error a breaking change becomes
+- `NetworkArgs` — `--network` / `--rpc-url` / `--network-passphrase` for a
+  contract-ID source
 - `SpecPlugin` — the `ForgePlugin` impl
 
 ## Tests
