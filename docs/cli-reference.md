@@ -54,9 +54,15 @@ scaffolding.
   workflows (build+test and a rustfmp/clippy lint job); `--dependabot` also
   writes `.github/dependabot.yml` for weekly cargo and github-actions updates.
 - `soroban-forge doctor [--json]` — check the local Soroban toolchain (optionally emitting machine-readable JSON).
-- `soroban-forge bindings ts [--out-dir <dir>] [--package-name <name>]` — generate a TypeScript client package from the built contract wasm.
+- `soroban-forge bindings ts [--out-dir <dir>] [--package-name <name>] [--react]` — generate a TypeScript client package from the built contract wasm.
   - `--out-dir <dir>` (alias `--output`) — target directory for generated bindings. Defaults to `bindings/<contract_name>`.
   - `--package-name <name>` — npm package name for the generated `package.json`. Validated as a legal npm package name. Defaults to `@soroban-contracts/<name>`.
+  - `--react` — additionally emits `src/hooks.ts` (one typed hook per entrypoint) and is strictly opt-in.
+- `soroban-forge bindings-py [--path <dir>] [--wasm <path>] [--output <dir>] [--force]`
+  — generate `client.py`, a typed Python client, from the built contract
+  wasm; the generated client delegates to the official `stellar-sdk`
+  package. A separate top-level command rather than `bindings py` — see
+  `crates/binding-py/README.md` for why.
 - `soroban-forge spec [<contract-id>] [--format <format>] [--path <dir>] [--wasm <path>] [--network <n>]` — print
   the contract's interface: every entrypoint with its argument and return types,
   plus the types those signatures refer to. When `<contract-id>` is provided,
@@ -67,6 +73,11 @@ scaffolding.
   - `--json` — shortcut for `--format json`.
   - `--network <name>` / `--rpc-url <url>` — network to fetch the contract from when `<contract-id>` is given (defaults to `testnet`).
   - `--offline` — prohibit network access. When `<contract-id>` is specified, fails cleanly before any network call. Local wasm inspection continues to work offline.
+- `soroban-forge spec diff <old> <new> [--network <name>]` — compare two
+  interfaces (each a wasm file, a `spec --json` file, or a deployed contract
+  ID) and classify the differences: a removed entrypoint or a changed
+  signature is breaking, a new entrypoint is additive. Exits `1` on a
+  breaking change; `--json` emits `{added, removed, changed, breaking}`.
 - `soroban-forge optimize` — optimize a built contract wasm. Use `--check` with
   `--max-size <bytes>` to fail (exit 1) if the optimized size exceeds the
   budget. The budget can also be set as `optimize.max_size` in `forge.toml`; the
