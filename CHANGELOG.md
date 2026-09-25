@@ -7,6 +7,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `.github/workflows/bindings-typecheck.yml`: generates `--react` bindings
+  for the `token` and `nft` templates and runs a pinned `tsc --noEmit`
+  against them on every push/PR (#269)
 - `soroban-forge bindings ts --react`: emits `src/hooks.ts`, a typed React
   hook per entrypoint (a query-style hook for reads, a mutation hook for
   writes), exported at a `./hooks` subpath with `react` as an optional peer

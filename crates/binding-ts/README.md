@@ -91,3 +91,9 @@ cargo test -p soroban-forge-bindings-ts
 Tests never shell out to the real `stellar` binary — the pre-flight checks
 (missing wasm, existing output dir) and the `package.json` rewrite are
 covered directly.
+
+CI additionally generates real `--react` bindings for the `token` and `nft`
+templates and type-checks them with a pinned `tsc` — see
+`.github/workflows/bindings-typecheck.yml`. That job is what actually
+compiles the generated output; it catches regressions this crate's own
+unit tests (which never invoke `stellar` or `tsc`) cannot.
