@@ -23,9 +23,14 @@ use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::{Deserialize, Serialize};
-use soroban_forge_core::toolchain::{MIN_RUST, MIN_STELLAR};
+use soroban_forge_core::toolchain::{known_broken_stellar_cli_replacement, MIN_RUST, MIN_STELLAR};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 use soroban_forge_scaffold::SOROBAN_SDK_VERSION;
+
+// Re-exported so external callers of `soroban_forge_doctor::version_at_least`
+// and `soroban_forge_doctor::parse_semverish` keep working after these
+// helpers moved into `soroban-forge-core` (issue #415).
+pub use soroban_forge_core::toolchain::{parse_semverish, version_at_least};
 
 /// Default Soroban RPC endpoint used for the connectivity check.
 pub const TESTNET_RPC_URL: &str = "https://soroban-testnet.stellar.org";
@@ -78,74 +83,6 @@ fn capture_in(cmd: &str, args: &[&str], dir: &Path) -> Option<String> {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.lines().next().map(|l| l.trim().to_string())
-}
-
-/// Parse `X.Y` out of a `tool X.Y.Z ...` version line and compare against a
-/// minimum. Unparseable versions count as too old.
-pub fn version_at_least(version_line: &str, min: (u32, u32)) -> bool {
-    version_line
-        .split_whitespace()
-        .find_map(|word| {
-            let mut parts = word.split('.');
-            let major: u32 = parts.next()?.parse().ok()?;
-            let minor: u32 = parts
-                .next()?
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .ok()?;
-            Some((major, minor))
-        })
-        .map(|version| version >= min)
-        .unwrap_or(false)
-}
-
-/// Leniently parse a cargo version requirement (e.g. `26.1.0`, `^26.1`,
-/// `=26.1.0`, `>=26, <27`) into `(major, minor, patch)`. Missing components
-/// default to zero. Returns `None` for wildcards or anything else that does
-/// not start with a numeric major version.
-pub fn parse_semverish(version: &str) -> Option<(u32, u32, u32)> {
-    let first = version
-        .split(',')
-        .next()?
-        .trim()
-        .trim_start_matches(['^', '~', '=', '>', '<', 'v', ' ']);
-    let mut parts = first.split('.');
-    let major: u32 = parts.next()?.trim().parse().ok()?;
-    let minor: u32 = parts
-        .next()
-        .unwrap_or("0")
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0);
-    let patch: u32 = parts
-        .next()
-        .unwrap_or("0")
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0);
-    Some((major, minor, patch))
-}
-
-fn stellar_cli_version(line: &str) -> Option<(u32, u32, u32)> {
-    line.split_whitespace()
-        .find_map(|word| parse_semverish(word))
-}
-
-fn known_broken_stellar_cli_replacement(line: &str) -> Option<&'static str> {
-    let version = stellar_cli_version(line)?;
-    match version {
-        (27, 0, 0) => Some("27.0.1"),
-        (27, 0, 1) => Some("27.1.0"),
-        (28, 0, 0) => Some("28.0.1"),
-        (29, 0, 0) => Some("29.0.1"),
-        _ => None,
-    }
 }
 
 /// Extract the declared `soroban-sdk` version from a parsed manifest.

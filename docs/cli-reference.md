@@ -12,10 +12,6 @@
 - `--offline` — prohibit network access. Network-dependent operations fail with a
   a clear message, while `doctor` skips its connectivity prob.
 
-
-
-
-
   cd
 
 Global options may appear before or after a subcommand and can be combined.
@@ -84,13 +80,28 @@ scaffolding.
     additions are reported as additive. Exits `1` when breaking changes exist.
   - `--network <name>` / `--rpc-url <url>` — network to fetch the contract from when `<contract-id>` is given (defaults to `testnet`).
   - `--offline` — prohibit network access. When `<contract-id>` is specified, fails cleanly before any network call. Local wasm inspection continues to work offline.
-- `soroban-forge optimize` — optimize a built contract wasm. Use `--check` with
-  `--max-size <bytes>` to fail (exit 1) if the optimized size exceeds the
+- `soroban-forge optimize` — optimize a built contract wasm. Before shelling
+  out to `stellar contract optimize`, the installed `stellar-cli` is
+  pre-flighted (presence, minimum version, known-broken releases); a failure
+  exits `2` with a message pointing at `soroban-forge doctor`. Use `--check`
+  with `--max-size <bytes>` to fail (exit 1) if the optimized size exceeds the
   budget. The budget can also be set as `optimize.max_size` in `forge.toml`; the
   command-line `--max-size` overrides the config. The report includes the
   before and after byte sizes and percentage saved; `--json` includes these as
-  `before_bytes`, `after_bytes`, and `percent_saved`. `--quiet` suppresses the
-  report. On budget failure, the actual and budgeted sizes are printed.
+  `before_bytes`, `after_bytes`, `percent_saved`, and a `status` field whose
+  value is `"optimized"` when any bytes were saved or `"already-minimal"` when
+  the wasm was already as small as `stellar contract optimize` can make it —
+  letting automated consumers branch on the outcome without treating
+  `saved_bytes == 0` as ambiguous. Human output reflects the same distinction
+  in its wording. `--quiet` suppresses the report. On budget failure, the
+  actual and budgeted sizes are printed.
+  - `--in-place` — overwrite the input wasm with the optimized bytes and
+    remove the intermediate `<stem>.optimized.wasm`, leaving only the original
+    filename on disk (holding the optimized bytes). This is the supported way
+    to clean up the pre-optimization artifact so a deploy pipeline can consume
+    a single canonical path without accidentally picking up the unoptimized
+    file. The replacement is atomic: if anything fails before the optimized
+    bytes are committed, the original wasm is left byte-for-byte untouched.
 - `soroban-forge verify <contract-id> [--network <n>]` — compare a deployed
   contract's wasm hash with the local release build; exits `1` on a mismatch.
   See [Contract Verification](contract-verification.md).
