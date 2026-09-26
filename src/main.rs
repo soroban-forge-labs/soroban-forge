@@ -33,9 +33,10 @@ fn main() {
             "bash" => generate(shells::Bash, &mut cmd, "soroban-forge", &mut stdout),
             "zsh" => generate(shells::Zsh, &mut cmd, "soroban-forge", &mut stdout),
             "fish" => generate(shells::Fish, &mut cmd, "soroban-forge", &mut stdout),
+            "powershell" => generate(shells::PowerShell, &mut cmd, "soroban-forge", &mut stdout),
             other => {
                 eprintln!(
-                    "error: unknown shell `{other}` — supported: bash, zsh, fish"
+                    "error: unknown shell `{other}` — supported: bash, zsh, fish, powershell"
                 );
                 std::process::exit(1);
             }

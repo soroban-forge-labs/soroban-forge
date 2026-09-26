@@ -20,6 +20,7 @@
 //!   normal invocations is left untouched.
 
 use std::path::Path;
+use std::time::Duration;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
@@ -221,6 +222,7 @@ fn run_stellar_simulate(
     function: &str,
     fn_args: &[String],
     cwd: &Path,
+    timeout: Option<Duration>,
 ) -> Result<SimulationOutput> {
     let mut args = build_invoke_args(contract_id, source, network, function, fn_args);
     // Insert --sim-only before the `--` separator so stellar-cli treats it as
@@ -233,10 +235,12 @@ fn run_stellar_simulate(
 
     log::debug!("simulating: stellar {}", args.join(" "));
 
-    let out = std::process::Command::new("stellar")
-        .args(&args)
-        .current_dir(cwd)
-        .output();
+    let out = soroban_forge_core::timeout::output_with_timeout(
+        std::process::Command::new("stellar")
+            .args(&args)
+            .current_dir(cwd),
+        timeout,
+    );
 
     match out {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -398,14 +402,17 @@ fn run_stellar_invoke(
     function: &str,
     fn_args: &[String],
     cwd: &Path,
+    timeout: Option<Duration>,
 ) -> Result<()> {
     let args = build_invoke_args(contract_id, source, network, function, fn_args);
     log::debug!("running: stellar {}", args.join(" "));
 
-    let status = std::process::Command::new("stellar")
-        .args(&args)
-        .current_dir(cwd)
-        .status();
+    let status = soroban_forge_core::timeout::status_with_timeout(
+        std::process::Command::new("stellar")
+            .args(&args)
+            .current_dir(cwd),
+        timeout,
+    );
 
     match status {
         Ok(s) if s.success() => Ok(()),
@@ -552,7 +559,15 @@ impl ForgePlugin for InvokePlugin {
         if simulate {
             // Issue #285: simulate and pretty-print.
             let sim =
-                run_stellar_simulate(contract_id, source, &network, function, &fn_args, &ctx.cwd)?;
+                run_stellar_simulate(
+                contract_id,
+                source,
+                &network,
+                function,
+                &fn_args,
+                &ctx.cwd,
+                ctx.timeout(),
+            )?;
 
             if ctx.json {
                 let mut obj = serde_json::Map::new();
@@ -599,7 +614,15 @@ impl ForgePlugin for InvokePlugin {
             return Ok(());
         }
 
-        run_stellar_invoke(contract_id, source, &network, function, &fn_args, &ctx.cwd)
+        run_stellar_invoke(
+            contract_id,
+            source,
+            &network,
+            function,
+            &fn_args,
+            &ctx.cwd,
+            ctx.timeout(),
+        )
     }
 }
 

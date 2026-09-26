@@ -10,6 +10,7 @@
 //! arguments and extracts the contract ID from the CLI's output.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{Arg, ArgMatches, Command};
 use serde::Deserialize;
@@ -204,13 +205,19 @@ pub fn build_deploy_args(wasm: &Path, source: &str, network: &NetworkArgs) -> Re
 /// contract ID. Never reimplemented locally.
 ///
 /// Thin system-touching wrapper; not unit-tested.
-fn run_stellar_deploy(wasm: &Path, source: &str, network: &NetworkArgs) -> Result<String> {
+fn run_stellar_deploy(
+    wasm: &Path,
+    source: &str,
+    network: &NetworkArgs,
+    timeout: Option<Duration>,
+) -> Result<String> {
     let args = build_deploy_args(wasm, source, network)?;
     log::debug!("deploying {}", wasm.display());
 
-    let result = std::process::Command::new("stellar")
-        .args(&args)
-        .output();
+    let result = soroban_forge_core::timeout::output_with_timeout(
+        std::process::Command::new("stellar").args(&args),
+        timeout,
+    );
 
     match result {
         Ok(out) if out.status.success() => {
@@ -253,9 +260,10 @@ pub fn deploy(
     wasm_override: Option<&Path>,
     source: &str,
     network: &NetworkArgs,
+    timeout: Option<Duration>,
 ) -> Result<String> {
     let wasm_path = build_if_needed(dir, wasm_override)?;
-    run_stellar_deploy(&wasm_path, source, network)
+    run_stellar_deploy(&wasm_path, source, network, timeout)
 }
 
 /// Names of arguments that may contain secret material and must be redacted
@@ -338,10 +346,22 @@ pub fn resolve_source_public_key(source: &str) -> Option<String> {
     None
 }
 
+/// GET `url`, bounded by `timeout` when one is set (`--timeout`).
+fn http_get(
+    url: &str,
+    timeout: Option<Duration>,
+) -> std::result::Result<ureq::Response, ureq::Error> {
+    let mut request = ureq::get(url);
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
+    }
+    request.call()
+}
+
 /// Check if `public_key` is already funded on testnet Horizon.
-pub fn is_account_funded(public_key: &str) -> Result<bool> {
+pub fn is_account_funded(public_key: &str, timeout: Option<Duration>) -> Result<bool> {
     let url = format!("https://horizon-testnet.stellar.org/accounts/{public_key}");
-    match ureq::get(&url).call() {
+    match http_get(&url, timeout) {
         Ok(_) => Ok(true),
         Err(ureq::Error::Status(404, _)) => Ok(false),
         Err(e) => {
@@ -352,7 +372,11 @@ pub fn is_account_funded(public_key: &str) -> Result<bool> {
 }
 
 /// Fund `public_key` on testnet via friendbot.
-pub fn fund_via_friendbot(public_key: &str, network_passphrase: Option<&str>) -> Result<String> {
+pub fn fund_via_friendbot(
+    public_key: &str,
+    network_passphrase: Option<&str>,
+    timeout: Option<Duration>,
+) -> Result<String> {
     if let Some(passphrase) = network_passphrase {
         if passphrase.contains("Public Global Stellar Network") {
             return Err(ForgeError::InvalidArgument(
@@ -363,7 +387,7 @@ pub fn fund_via_friendbot(public_key: &str, network_passphrase: Option<&str>) ->
 
     let url = format!("https://friendbot.stellar.org/?addr={public_key}");
     log::debug!("requesting friendbot funding for {public_key}: {url}");
-    let response = ureq::get(&url).call().map_err(|e| {
+    let response = http_get(&url, timeout).map_err(|e| {
         ForgeError::Other(format!(
             "friendbot request failed: {e}
                hint: check your network connection, or the account may already be funded"
@@ -419,8 +443,8 @@ pub fn ensure_source_funded(
         network,
         auto_fund,
         is_interactive,
-        is_account_funded,
-        |pk| fund_via_friendbot(pk, network.network_passphrase.as_deref()),
+        |pk| is_account_funded(pk, ctx.timeout()),
+        |pk| fund_via_friendbot(pk, network.network_passphrase.as_deref(), ctx.timeout()),
     )
 }
 
@@ -582,7 +606,7 @@ impl ForgePlugin for DeployPlugin {
             return Ok(());
         }
 
-        let contract_id = deploy(&dir, wasm_override.as_deref(), source, &network)?;
+        let contract_id = deploy(&dir, wasm_override.as_deref(), source, &network, ctx.timeout())?;
 
         if ctx.json {
             let report = serde_json::json!({

@@ -40,7 +40,22 @@ Adding a new module = new crate implementing `ForgePlugin` + one line in
   semantics.
 - `--list` prints installed built-in and external subcommands; combining it with
   the global `--json` flag emits a `{"builtin":[...],"external":[...]}` object
-  for scripts.
+  for scripts. Only executable files (Unix executable bit set) named
+  `soroban-forge-*` on `PATH` are listed.
+- Global flags given *before* an external subcommand name are forwarded to the
+  `soroban-forge-<name>` binary as environment variables:
+  `--verbose` → `SOROBAN_FORGE_VERBOSE=1`, `--quiet` → `SOROBAN_FORGE_QUIET=1`,
+  `--json` → `SOROBAN_FORGE_JSON=1`, `--yes` → `SOROBAN_FORGE_YES=1`. Flags after
+  the subcommand name are passed through on its argv as before.
+- `--timeout <SECS>` (whole seconds, greater than 0; anything else is an error)
+  bounds network-capable operations: HTTP calls (friendbot, Horizon) and the
+  `stellar` subprocesses that talk to the network (`contract deploy`,
+  `contract invoke`, `contract fetch`), which are killed when the deadline
+  passes. Local-only `stellar` calls (`contract build`, `contract info
+  interface`, bindings generation) and the fixed 5 s connectivity check in
+  `doctor` do not use it.
+- `soroban-forge completions <shell>` accepts `bash`, `zsh`, `fish` and
+  `powershell`.
 
 ## Tests
 

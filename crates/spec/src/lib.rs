@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{Arg, ArgMatches, Command};
 use serde::{Deserialize, Serialize};
@@ -221,7 +222,12 @@ pub fn diff_specs(old_spec: &str, new_spec: &str) -> Result<SpecDiff> {
 }
 
 /// Resolve a diff input as a spec JSON file, WASM file, or deployed contract ID.
-pub fn load_diff_spec(source: &str, cwd: &Path, network: &NetworkArgs) -> Result<String> {
+pub fn load_diff_spec(
+    source: &str,
+    cwd: &Path,
+    network: &NetworkArgs,
+    timeout: Option<Duration>,
+) -> Result<String> {
     let path = cwd.join(source);
     if path.is_file() {
         if path.extension().and_then(|ext| ext.to_str()) == Some("wasm") {
@@ -233,7 +239,7 @@ pub fn load_diff_spec(source: &str, cwd: &Path, network: &NetworkArgs) -> Result
     validate_contract_id(source)?;
     let temp = tempfile::tempdir().map_err(ForgeError::io("creating temporary directory"))?;
     let wasm = temp.path().join("contract.wasm");
-    fetch_onchain_wasm(source, network, &wasm)?;
+    fetch_onchain_wasm(source, network, &wasm, timeout)?;
     dump_interface_from_wasm(&wasm, SpecFormat::Json)
 }
 
@@ -292,7 +298,12 @@ impl NetworkArgs {
 }
 
 /// Download the wasm deployed at `contract_id` into `out_file` using the official CLI.
-fn fetch_onchain_wasm(contract_id: &str, network: &NetworkArgs, out_file: &Path) -> Result<()> {
+fn fetch_onchain_wasm(
+    contract_id: &str,
+    network: &NetworkArgs,
+    out_file: &Path,
+    timeout: Option<Duration>,
+) -> Result<()> {
     let out_str = out_file
         .to_str()
         .ok_or_else(|| ForgeError::Other(format!("path {} is not valid UTF-8", out_file.display())))?;
@@ -309,7 +320,7 @@ fn fetch_onchain_wasm(contract_id: &str, network: &NetworkArgs, out_file: &Path)
     cmd.args(network.cli_args());
     log::debug!("fetching on-chain wasm for {contract_id}");
 
-    match cmd.output() {
+    match soroban_forge_core::timeout::output_with_timeout(&mut cmd, timeout) {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -842,8 +853,18 @@ impl ForgePlugin for SpecPlugin {
                 diff_matches.get_one::<String>("rpc-url").cloned(),
                 diff_matches.get_one::<String>("network-passphrase").cloned(),
             );
-            let old = load_diff_spec(diff_matches.get_one::<String>("old").unwrap(), &ctx.cwd, &network)?;
-            let new = load_diff_spec(diff_matches.get_one::<String>("new").unwrap(), &ctx.cwd, &network)?;
+            let old = load_diff_spec(
+                diff_matches.get_one::<String>("old").unwrap(),
+                &ctx.cwd,
+                &network,
+                ctx.timeout(),
+            )?;
+            let new = load_diff_spec(
+                diff_matches.get_one::<String>("new").unwrap(),
+                &ctx.cwd,
+                &network,
+                ctx.timeout(),
+            )?;
             let diff = diff_specs(&old, &new)?;
             let output = format_spec_diff(&diff);
             if ctx.json {
@@ -883,7 +904,7 @@ impl ForgePlugin for SpecPlugin {
                 let temp = tempfile::tempdir()
                     .map_err(ForgeError::io("creating temporary directory"))?;
                 let fetched_wasm = temp.path().join("onchain.wasm");
-                fetch_onchain_wasm(id, &network, &fetched_wasm)?;
+                fetch_onchain_wasm(id, &network, &fetched_wasm, ctx.timeout())?;
                 let output = dump_interface_from_wasm(&fetched_wasm, format)?;
                 (id.clone(), output)
             }
