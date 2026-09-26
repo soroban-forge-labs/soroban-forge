@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use clap::{Arg, ArgMatches, Command};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 
 /// Network used when neither `--network` nor `--rpc-url` is given.
@@ -107,12 +107,152 @@ pub fn validate_contract_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn looks_like_contract_id(value: &str) -> bool {
+    value.starts_with('C') && value.chars().count() == CONTRACT_ID_LEN
+}
+
 /// How to reach the network when fetching deployed contract wasm.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkArgs {
     pub network: Option<String>,
     pub rpc_url: Option<String>,
     pub network_passphrase: Option<String>,
+}
+
+/// One interface change detected by `spec diff`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SpecChange {
+    pub function: String,
+    pub old_signature: Option<String>,
+    pub new_signature: Option<String>,
+}
+
+/// Changes between two contract interfaces.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SpecDiff {
+    pub breaking: Vec<SpecChange>,
+    pub additive: Vec<SpecChange>,
+}
+
+impl SpecDiff {
+    pub fn is_breaking(&self) -> bool {
+        !self.breaking.is_empty()
+    }
+}
+
+fn entrypoint_signature(entry: &serde_json::Value) -> Result<String> {
+    let function = entry
+        .get("function_v0")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| ForgeError::InvalidArgument("invalid function entry in contract spec".into()))?;
+    let inputs = function
+        .get("inputs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ForgeError::InvalidArgument("function spec is missing an inputs array".into()))?;
+    let outputs = function
+        .get("outputs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ForgeError::InvalidArgument("function spec is missing an outputs array".into()))?;
+    let input_signatures = inputs
+        .iter()
+        .map(|input| {
+            let name = input.get("name").and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ForgeError::InvalidArgument("function input is missing its name".into()))?;
+            let ty = input.get("type")
+                .ok_or_else(|| ForgeError::InvalidArgument("function input is missing its type".into()))?;
+            Ok(format!("{name}: {}", render_type(ty)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let output_signatures = outputs.iter().map(render_type).collect::<Vec<_>>();
+    Ok(format!("({}) -> {}", input_signatures.join(", "), output_signatures.join(", ")))
+}
+
+fn spec_entrypoints(spec_json: &str) -> Result<BTreeMap<String, (serde_json::Value, String)>> {
+    let entries: serde_json::Value = serde_json::from_str(spec_json)
+        .map_err(|e| ForgeError::InvalidArgument(format!("could not parse contract spec JSON: {e}")))?;
+    let entries = entries.as_array()
+        .ok_or_else(|| ForgeError::InvalidArgument("contract spec JSON is not an array".into()))?;
+    let mut functions = BTreeMap::new();
+    for entry in entries {
+        let Some(function) = entry.get("function_v0") else { continue };
+        let name = function.get("name").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ForgeError::InvalidArgument("function spec is missing its name".into()))?;
+        let signature = entrypoint_signature(entry)?;
+        if functions.insert(name.to_string(), (entry.clone(), signature)).is_some() {
+            return Err(ForgeError::InvalidArgument(format!("contract spec contains duplicate entrypoint `{name}`")));
+        }
+    }
+    Ok(functions)
+}
+
+/// Compare two JSON-formatted contract specs by entrypoint and full signature.
+pub fn diff_specs(old_spec: &str, new_spec: &str) -> Result<SpecDiff> {
+    let old = spec_entrypoints(old_spec)?;
+    let new = spec_entrypoints(new_spec)?;
+    let mut diff = SpecDiff::default();
+    for (name, (old_entry, old_signature)) in &old {
+        match new.get(name) {
+            None => diff.breaking.push(SpecChange {
+                function: name.clone(),
+                old_signature: Some(old_signature.clone()),
+                new_signature: None,
+            }),
+            Some((new_entry, new_signature)) if old_entry["function_v0"]["inputs"] != new_entry["function_v0"]["inputs"]
+                || old_entry["function_v0"]["outputs"] != new_entry["function_v0"]["outputs"] => {
+                diff.breaking.push(SpecChange {
+                    function: name.clone(),
+                    old_signature: Some(old_signature.clone()),
+                    new_signature: Some(new_signature.clone()),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    for (name, (_, signature)) in &new {
+        if !old.contains_key(name) {
+            diff.additive.push(SpecChange {
+                function: name.clone(),
+                old_signature: None,
+                new_signature: Some(signature.clone()),
+            });
+        }
+    }
+    Ok(diff)
+}
+
+/// Resolve a diff input as a spec JSON file, WASM file, or deployed contract ID.
+pub fn load_diff_spec(source: &str, cwd: &Path, network: &NetworkArgs) -> Result<String> {
+    let path = cwd.join(source);
+    if path.is_file() {
+        if path.extension().and_then(|ext| ext.to_str()) == Some("wasm") {
+            return dump_interface_from_wasm(&path, SpecFormat::Json);
+        }
+        return std::fs::read_to_string(&path)
+            .map_err(ForgeError::io(format!("reading spec file {}", path.display())));
+    }
+    validate_contract_id(source)?;
+    let temp = tempfile::tempdir().map_err(ForgeError::io("creating temporary directory"))?;
+    let wasm = temp.path().join("contract.wasm");
+    fetch_onchain_wasm(source, network, &wasm)?;
+    dump_interface_from_wasm(&wasm, SpecFormat::Json)
+}
+
+pub fn format_spec_diff(diff: &SpecDiff) -> String {
+    let mut output = String::new();
+    if diff.breaking.is_empty() && diff.additive.is_empty() {
+        return "No entrypoint changes.\n".into();
+    }
+    for change in &diff.breaking {
+        match (&change.old_signature, &change.new_signature) {
+            (Some(old), Some(new)) => output.push_str(&format!("BREAKING changed `{}`: {old} -> {new}\n", change.function)),
+            (Some(old), None) => output.push_str(&format!("BREAKING removed `{}`: {old}\n", change.function)),
+            _ => unreachable!("breaking changes have an old signature"),
+        }
+    }
+    for change in &diff.additive {
+        output.push_str(&format!("ADDITIVE added `{}`: {}\n", change.function, change.new_signature.as_deref().unwrap_or("")));
+    }
+    output
 }
 
 impl NetworkArgs {
@@ -678,9 +818,47 @@ impl ForgePlugin for SpecPlugin {
                     .long("network-passphrase")
                     .help("Stellar network passphrase (overrides network default)"),
             )
+            .subcommand(
+                Command::new("diff")
+                    .about("Compare two contract specs and report breaking or additive entrypoint changes")
+                    .arg(Arg::new("old").required(true).value_name("OLD_SPEC"))
+                    .arg(Arg::new("new").required(true).value_name("NEW_SPEC"))
+                    .arg(Arg::new("network").long("network").short('n').help("Network for contract ID inputs [default: testnet]"))
+                    .arg(Arg::new("rpc-url").long("rpc-url").help("Stellar RPC endpoint URL"))
+                    .arg(Arg::new("network-passphrase").long("network-passphrase").help("Stellar network passphrase")),
+            )
     }
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
+        if let Some(("diff", diff_matches)) = matches.subcommand() {
+            if ctx.offline && (looks_like_contract_id(diff_matches.get_one::<String>("old").unwrap())
+                || looks_like_contract_id(diff_matches.get_one::<String>("new").unwrap())) {
+                return Err(ForgeError::InvalidArgument(
+                    "spec diff with contract IDs is unavailable in offline mode".into(),
+                ));
+            }
+            let network = NetworkArgs::resolve(
+                diff_matches.get_one::<String>("network").cloned(),
+                diff_matches.get_one::<String>("rpc-url").cloned(),
+                diff_matches.get_one::<String>("network-passphrase").cloned(),
+            );
+            let old = load_diff_spec(diff_matches.get_one::<String>("old").unwrap(), &ctx.cwd, &network)?;
+            let new = load_diff_spec(diff_matches.get_one::<String>("new").unwrap(), &ctx.cwd, &network)?;
+            let diff = diff_specs(&old, &new)?;
+            let output = format_spec_diff(&diff);
+            if ctx.json {
+                println!("{}", serde_json::to_string_pretty(&diff).unwrap());
+            } else {
+                print!("{output}");
+            }
+            if diff.is_breaking() {
+                return Err(ForgeError::VerificationFailed(
+                    "contract spec contains breaking entrypoint changes".into(),
+                ));
+            }
+            return Ok(());
+        }
+
         let contract_id = matches.get_one::<String>("contract-id");
 
         if let Some(id) = contract_id {
@@ -752,6 +930,41 @@ mod tests {
     use super::*;
 
     const VALID_ID: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    fn spec_with_functions(functions: serde_json::Value) -> String {
+        serde_json::to_string(&functions).unwrap()
+    }
+
+    #[test]
+    fn diff_reports_added_removed_and_signature_changed_entrypoints() {
+        let old = spec_with_functions(serde_json::json!([
+            { "function_v0": { "name": "keep", "inputs": [], "outputs": [] } },
+            { "function_v0": { "name": "remove_me", "inputs": [{"name":"id","type":"u32"}], "outputs": [] } },
+            { "function_v0": { "name": "change_me", "inputs": [{"name":"value","type":"u32"}], "outputs": [] } }
+        ]));
+        let new = spec_with_functions(serde_json::json!([
+            { "function_v0": { "name": "keep", "inputs": [], "outputs": [] } },
+            { "function_v0": { "name": "change_me", "inputs": [{"name":"value","type":"u64"}], "outputs": [] } },
+            { "function_v0": { "name": "new_one", "inputs": [], "outputs": ["bool"] } }
+        ]));
+
+        let diff = diff_specs(&old, &new).unwrap();
+        assert_eq!(diff.breaking.iter().map(|change| change.function.as_str()).collect::<Vec<_>>(), ["change_me", "remove_me"]);
+        assert_eq!(diff.additive.iter().map(|change| change.function.as_str()).collect::<Vec<_>>(), ["new_one"]);
+        assert!(format_spec_diff(&diff).contains("BREAKING changed `change_me`"));
+        assert!(format_spec_diff(&diff).contains("ADDITIVE added `new_one`"));
+    }
+
+    #[test]
+    fn identical_specs_have_no_changes() {
+        let spec = spec_with_functions(serde_json::json!([
+            { "function_v0": { "name": "read", "inputs": [{"name":"key","type":"symbol"}], "outputs": [{"type":"u32"}] } }
+        ]));
+        let diff = diff_specs(&spec, &spec).unwrap();
+        assert!(!diff.is_breaking());
+        assert!(diff.additive.is_empty());
+        assert_eq!(format_spec_diff(&diff), "No entrypoint changes.\n");
+    }
 
     #[test]
     fn locates_wasm_by_crate_name() {
@@ -859,6 +1072,18 @@ mod tests {
             matches.get_one::<String>("wasm").map(String::as_str),
             Some("a.wasm")
         );
+    }
+
+    #[test]
+    fn command_parses_diff_sources_and_network_options() {
+        let matches = SpecPlugin.command().try_get_matches_from(vec![
+            "spec", "diff", "old.json", "new.wasm", "--network", "localnet",
+        ]).unwrap();
+        let (name, diff) = matches.subcommand().unwrap();
+        assert_eq!(name, "diff");
+        assert_eq!(diff.get_one::<String>("old").map(String::as_str), Some("old.json"));
+        assert_eq!(diff.get_one::<String>("new").map(String::as_str), Some("new.wasm"));
+        assert_eq!(diff.get_one::<String>("network").map(String::as_str), Some("localnet"));
     }
 
     #[test]

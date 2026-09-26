@@ -11,7 +11,17 @@ soroban-forge spec --format md  # documentation-ready Markdown table for READMEs
 soroban-forge spec --json       # the same spec as JSON
 soroban-forge spec --wasm path/to/contract.wasm
 soroban-forge spec <CONTRACT_ID> # fetch and dump deployed contract interface
+soroban-forge spec diff old-spec.json new-spec.json
+soroban-forge spec diff old.wasm new.wasm
+soroban-forge spec diff <OLD_CONTRACT_ID> <NEW_CONTRACT_ID>
 ```
+
+`spec diff` accepts JSON spec files, WASM files, or deployed contract IDs on
+either side. Removed entrypoints and changed input/output signatures are
+reported as breaking; added entrypoints are additive. It exits with code `1`
+when any breaking change is found, so it can gate CI. Contract IDs are fetched
+using the selected network (default `testnet`); pass `--network`, `--rpc-url`,
+or `--network-passphrase` after the two inputs to select another endpoint.
 
 ## Options
 
