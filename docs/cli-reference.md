@@ -54,9 +54,15 @@ scaffolding.
   workflows (build+test and a rustfmp/clippy lint job); `--dependabot` also
   writes `.github/dependabot.yml` for weekly cargo and github-actions updates.
 - `soroban-forge doctor [--json]` — check the local Soroban toolchain (optionally emitting machine-readable JSON).
-- `soroban-forge bindings ts [--out-dir <dir>] [--package-name <name>]` — generate a TypeScript client package from the built contract wasm.
+- `soroban-forge bindings ts [--out-dir <dir>] [--package-name <name>] [--react]` — generate a TypeScript client package from the built contract wasm.
   - `--out-dir <dir>` (alias `--output`) — target directory for generated bindings. Defaults to `bindings/<contract_name>`.
   - `--package-name <name>` — npm package name for the generated `package.json`. Validated as a legal npm package name. Defaults to `@soroban-contracts/<name>`.
+  - `--react` — additionally emits `src/hooks.ts` (one typed hook per entrypoint) and is strictly opt-in.
+- `soroban-forge bindings-py [--path <dir>] [--wasm <path>] [--output <dir>] [--force]`
+  — generate `client.py`, a typed Python client, from the built contract
+  wasm; the generated client delegates to the official `stellar-sdk`
+  package. A separate top-level command rather than `bindings py` — see
+  `crates/binding-py/README.md` for why.
 - `soroban-forge spec [<contract-id>] [--format <format>] [--path <dir>] [--wasm <path>] [--network <n>]` — print
   the contract's interface: every entrypoint with its argument and return types,
   plus the types those signatures refer to. When `<contract-id>` is provided,

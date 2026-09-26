@@ -7,6 +7,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `soroban-forge bindings-py`: a new crate generating a typed Python client
+  (`client.py`) from the built contract wasm — structs, tagged enums and
+  error enums as dataclasses/`IntEnum`, one method per entrypoint,
+  delegating all on-chain interaction to the official `stellar-sdk` package.
+  Validated with `mypy --strict` and real encode/decode round-trips (#270)
+- `.github/workflows/bindings-typecheck.yml`: generates `--react` bindings
+  for the `token` and `nft` templates and runs a pinned `tsc --noEmit`
+  against them on every push/PR (#269)
+- `soroban-forge bindings ts --react`: emits `src/hooks.ts`, a typed React
+  hook per entrypoint (a query-style hook for reads, a mutation hook for
+  writes), exported at a `./hooks` subpath with `react` as an optional peer
+  dependency. Strictly opt-in — nothing changes without the flag (#268)
+- `.github/workflows/docs.yml`: builds `docs/` with mdBook and publishes it
+  to GitHub Pages on every push to `main`; PRs build-check only, never
+  deploy. Fixed `book.toml`, which no longer built under current mdBook
+  (`multilingual` was removed) (#105)
 - `soroban-forge bindings ts`: add `--out-dir` (alias `--output`) to customize where bindings are written and `--package-name` to set a custom npm package name, validated against npm naming rules (#267)
 - `soroban-forge spec`: render contract interface as GitHub Flavored Markdown (`--format md` / `--format markdown`) with entrypoint and custom type tables (#276)
 - `soroban-forge spec`: read interface from deployed contract ID (`spec <CONTRACT_ID>`), defaulting to local wasm when omitted and guarded under `--offline` (#278)
@@ -28,6 +44,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   published release, with each step marked manual or automated (#264)
 
 ### Fixed
+- `soroban-forge bindings ts` panicked ("Unknown argument or group id")
+  on the plain, no-flags invocation — `--out-dir`'s fallback lookup queried
+  its own `visible_alias` ("output") as if it were a second, separate arg id
 - `main` failed to compile after conflicting merges in `core` (config
   report and unknown-key check), `doctor` (`gather_checks`) and `ci-presets`
   (`--diff` provider match, duplicate `Command` import, stray brace)
