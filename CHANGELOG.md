@@ -7,6 +7,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `soroban-forge --list --json` now emits structured `builtin` and `external`
+  subcommand arrays for scripts (#332)
 - `soroban-forge bindings ts`: add `--out-dir` (alias `--output`) to customize where bindings are written and `--package-name` to set a custom npm package name, validated against npm naming rules (#267)
 - `soroban-forge spec`: render contract interface as GitHub Flavored Markdown (`--format md` / `--format markdown`) with entrypoint and custom type tables (#276)
 - `soroban-forge spec`: read interface from deployed contract ID (`spec <CONTRACT_ID>`), defaulting to local wasm when omitted and guarded under `--offline` (#278)
