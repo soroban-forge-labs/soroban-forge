@@ -134,6 +134,12 @@ pub fn build_command(plugins: &[Box<dyn ForgePlugin>]) -> Command {
         if plugin.name() == "optimize" {
             subcmd = subcmd
                 .arg(
+                    Arg::new("in-place")
+                        .long("in-place")
+                        .action(ArgAction::SetTrue)
+                        .help("Overwrite the input wasm with the optimized bytes and remove the .optimized.wasm file"),
+                )
+                .arg(
                     Arg::new("check")
                         .long("check")
                         .action(ArgAction::SetTrue)
@@ -508,5 +514,27 @@ mod tests {
             .try_get_matches_from(["soroban-forge", "--json", "dummy", "--flag"])
             .unwrap();
         assert!(matches.get_flag("json"));
+    }
+
+    /// The optimize subcommand must advertise `--in-place` and accept it.
+    /// We use a real `OptimizePlugin` here because core cannot otherwise
+    /// reference it — this exercises the same core-side injection the
+    /// binary relies on.
+    #[test]
+    fn optimize_subcommand_exposes_in_place_flag() {
+        use soroban_forge_optimize::OptimizePlugin;
+
+        let plugins: Vec<Box<dyn ForgePlugin>> = vec![Box::new(OptimizePlugin)];
+        let cmd = build_command(&plugins);
+
+        let help = cmd.clone().render_long_help().to_string();
+        assert!(help.contains("--in-place"), "{help}");
+
+        let matches = cmd
+            .try_get_matches_from(["soroban-forge", "optimize", "--in-place"])
+            .unwrap();
+        let (name, sub) = matches.subcommand().unwrap();
+        assert_eq!(name, "optimize");
+        assert!(sub.get_flag("in-place"));
     }
 }
