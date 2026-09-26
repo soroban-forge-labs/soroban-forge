@@ -1,9 +1,21 @@
-# NFT Example
+# nft
 
-A non-fungible token contract for Soroban.
+An NFT (non-fungible token) smart contract for Stellar/Soroban, generated with [soroban-forge](https://github.com/soroban-forge-labs/soroban-forge).
+
+Includes per-token metadata URIs, admin-gated minting, token transfers, and burning.
+
+## Commands
 
 ```sh
-forge init my-nft --template nft
-cd my-nft
-forge build && forge test
+# Run unit tests
+cargo test
+
+# Build the release WASM file
+stellar contract build
+
+# Deploy to Testnet
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/nft.wasm \
+  --source <your-identity> \
+  --network testnet
 ```

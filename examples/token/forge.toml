@@ -1,0 +1,4 @@
+# soroban-forge project configuration
+[project]
+name = "token"
+authors = ["Joseph <josepholadele001@gmail.com>"]

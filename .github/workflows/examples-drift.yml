@@ -1,0 +1,26 @@
+# Regenerates every checked-in example under examples/ from its template and
+# fails if the result differs, so a checked-in example cannot silently fall
+# behind the template that produces it. See scripts/regenerate-examples.py.
+name: examples-drift
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check examples match their templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Build soroban-forge
+        run: cargo build --release --bin soroban-forge
+      - name: Check examples for drift
+        run: scripts/regenerate-examples.py --check

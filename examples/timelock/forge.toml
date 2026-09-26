@@ -1,0 +1,4 @@
+# soroban-forge project configuration
+[project]
+name = "timelock"
+authors = ["Joseph <josepholadele001@gmail.com>"]

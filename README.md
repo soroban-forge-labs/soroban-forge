@@ -31,7 +31,8 @@ cd soroban-forge && cargo install --path . && cd ..
 #    (--fix prompts before running each install; drop it to only report)
 soroban-forge doctor --fix
 
-# 3. create a project (`soroban-forge templates` lists all six)
+# 3. create a project (`soroban-forge templates` lists all of them —
+#    see docs/template-catalogue.md for what each demonstrates)
 soroban-forge new my-token --template token
 cd my-token
 
@@ -52,6 +53,12 @@ New to Soroban entirely? Follow the full walkthrough:
 
 Hitting an error? Check the
 [troubleshooting / FAQ](docs/troubleshooting.md) page first.
+
+Other useful starting points:
+
+- [Template catalogue](docs/template-catalogue.md) — every bundled template, what it demonstrates, and when to pick it
+- [CLI cookbook](docs/cookbook.md) — copy-paste recipes for common workflows
+- [Security considerations](docs/security-considerations.md) — what the generated contracts do and do not protect against
 
 ## Commands
 

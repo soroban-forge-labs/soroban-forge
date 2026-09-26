@@ -161,3 +161,8 @@ so the first two caveats matter even if you never deploy this contract.
 8. **Fees round up, amounts do not.** `fee_for` rounds in the pool's favour so
    a small loan is never free. Overflow checks are on in the release profile,
    so an absurd `amount` traps rather than wrapping.
+
+See [security-considerations.md](https://github.com/soroban-forge-labs/soroban-forge/blob/main/docs/security-considerations.md)
+for how this template's authorization and overflow assumptions compare to the
+rest of the bundled templates — this template is a starting point, not
+audited code.
