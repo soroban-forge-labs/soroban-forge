@@ -1,5 +1,10 @@
 # Templates
 
+For the full list of every bundled template — what each demonstrates, its
+entrypoints, and when to pick it — see the
+[template catalogue](template-catalogue.md). This page covers the smaller
+set below plus how template variables work.
+
 List them at any time with `soroban-forge templates`:
 
 - `amm` – constant-product AMM / liquidity pool (x*y=k, 0.3% fee)
