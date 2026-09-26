@@ -38,6 +38,9 @@ Adding a new module = new crate implementing `ForgePlugin` + one line in
 - `--quiet` is global and exposed to plugins as `ForgeContext::quiet`; plugins
   suppress successful informational reports while retaining errors and exit
   semantics.
+- `--list` prints installed built-in and external subcommands; combining it with
+  the global `--json` flag emits a `{"builtin":[...],"external":[...]}` object
+  for scripts.
 
 ## Tests
 

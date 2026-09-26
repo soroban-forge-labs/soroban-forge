@@ -236,7 +236,7 @@ pub fn run(plugins: Vec<Box<dyn ForgePlugin>>) -> Result<()> {
     // --list must be handled before logging / dispatch so it works even
     // when there is no subcommand.
     if matches.get_flag("list") {
-        list_subcommands(&plugins);
+        list_subcommands(&plugins, matches.get_flag("json"));
         return Ok(());
     }
 
@@ -296,18 +296,27 @@ fn try_run_external(name: &str, sub_matches: &ArgMatches) -> Result<()> {
 }
 
 /// Print all subcommands (built-in + external) to stdout.
-fn list_subcommands(plugins: &[Box<dyn ForgePlugin>]) {
-    println!("Installed subcommands:");
-    println!();
-
+fn list_subcommands(plugins: &[Box<dyn ForgePlugin>], json: bool) {
     let mut builtins: Vec<&str> = plugins.iter().map(|p| p.name()).collect();
     builtins.sort();
+    let externals = find_external_subcommands();
+
+    if json {
+        let output = serde_json::json!({
+            "builtin": builtins,
+            "external": externals,
+        });
+        println!("{}", serde_json::to_string(&output).unwrap());
+        return;
+    }
+
+    println!("Installed subcommands:");
+    println!();
     println!("  Built-in:");
     for name in &builtins {
         println!("    {name}");
     }
 
-    let externals = find_external_subcommands();
     if !externals.is_empty() {
         println!("  External:");
         for name in &externals {

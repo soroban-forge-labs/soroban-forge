@@ -5,6 +5,8 @@
 - `--quiet`, `-q` — suppress informational command output; errors and exit
   codes are unchanged.
 - `--verbose`, `-v` — enable debug logging.
+- `--json` — emit machine-readable JSON where supported. With `--list`, the
+  output is `{"builtin":[...],"external":[...]}`.
 - `--log-file <path>` — also write JSON-lines structured logs to a file while trying to
   preserving normal terminal output.
 - `--offline` — prohibit network access. Network-dependent operations fail with a
@@ -17,6 +19,9 @@
   cd
 
 Global options may appear before or after a subcommand and can be combined.
+
+Use `soroban-forge --list` to list installed built-in and external subcommands.
+Add `--json` for structured output suitable for scripts.
 
 ## Commands
 
