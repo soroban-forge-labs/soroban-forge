@@ -984,12 +984,15 @@ fn set_cargo_toml_license(dest: &Path, license_id: &str) -> Result<()> {
     let path = dest.join("Cargo.toml");
     let contents = std::fs::read_to_string(&path)
         .map_err(ForgeError::io(format!("reading {}", path.display())))?;
-    let field = license::cargo_license_field(license_id);
-    let patched = contents.replacen(
-        "[package]\n",
-        &format!("[package]\nlicense = \"{field}\"\n"),
-        1,
-    );
+    let patched = if let Some(field) = license::cargo_license_field(license_id) {
+        contents.replacen(
+            "[package]\n",
+            &format!("[package]\nlicense = \"{field}\"\n"),
+            1,
+        )
+    } else {
+        contents
+    };
     std::fs::write(&path, patched).map_err(ForgeError::io(format!("writing {}", path.display())))
 }
 
@@ -1425,7 +1428,9 @@ impl ForgePlugin for ScaffoldPlugin {
                 println!("  pre-commit install              # enable the git hooks");
             }
             if let Some(license_id) = matches.get_one::<String>("license") {
-                println!("  license: {}", license::cargo_license_field(license_id));
+                if let Some(field) = license::cargo_license_field(license_id) {
+                    println!("  license: {}", field);
+                }
             }
             if matches.get_flag("devcontainer") {
                 println!("  Reopen in Container             # or: devcontainer up (Codespaces-ready)");
