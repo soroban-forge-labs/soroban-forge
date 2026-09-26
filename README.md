@@ -63,7 +63,8 @@ Hitting an error? Check the
 | `test-init`                      | generate fixtures + smoke/TTL tests; `--layout inline` puts them in `src/` |
 | `ci-init --provider github`      | write CI workflows (`github`, `gitlab`, `circleci`, `bitbucket`); `--deploy` adds manual testnet deploy, `--matrix` a toolchain matrix |
 | `doctor`                         | check rustc/cargo, `wasm32v1-none` target, stellar-cli    |
-| `bindings ts`                    | generate a TypeScript client package from a built contract wasm |
+| `bindings ts [--react]`          | generate a TypeScript client package from a built contract wasm; `--react` adds typed hooks |
+| `bindings-py`                    | generate a typed Python client (`client.py`) from a built contract wasm |
 | `spec`                           | print the contract interface — entrypoints with their argument and return types — from the built wasm (`--json` for machine-readable output) |
 | `verify <contract-id>`           | compare a deployed contract's wasm hash with the local release build (exit `1` on mismatch) |
 | `deploy --source <identity>`     | build (if needed) and deploy the contract, printing its contract ID |
@@ -95,6 +96,7 @@ with its own README, tests and a small public surface; they meet only at the
 | 6 — TypeScript bindings | [`crates/bindings-ts`](crates/bindings-ts) | `bindings ts` |
 | 7 — Deployment verification | [`crates/verify`](crates/verify) | `verify` |
 | 8 — Contract interface dump | [`crates/spec`](crates/spec) | `spec` |
+| 9 — Python bindings | [`crates/binding-py`](crates/binding-py) | `bindings-py` |
 
 > **Note:** See [`examples/README.md`](examples/README.md) for instructions on
 > regenerating the checked-in example projects.
