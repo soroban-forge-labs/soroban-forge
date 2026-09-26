@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Arg, ArgMatches, Command};
 use serde::{Deserialize, Serialize};
@@ -77,11 +78,28 @@ pub fn generate_keypair() -> (String, String) {
     (public, secret)
 }
 
+/// GET `url`, bounded by `timeout` when one is set (`--timeout`).
+fn http_get(
+    url: &str,
+    timeout: Option<Duration>,
+) -> std::result::Result<ureq::Response, ureq::Error> {
+    let mut request = ureq::get(url);
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
+    }
+    request.call()
+}
+
 /// Fund a Stellar testnet account via friendbot.
 /// Returns the parsed balance (in XLM) on success.
 ///
 /// Refuses to run on mainnet (passphrase contains "Public Global Stellar Network").
-pub fn fund_friendbot(public_key: &str, network_passphrase: Option<&str>) -> Result<String> {
+/// The request is bounded by `timeout` when set (`--timeout`).
+pub fn fund_friendbot(
+    public_key: &str,
+    network_passphrase: Option<&str>,
+    timeout: Option<Duration>,
+) -> Result<String> {
     // #287 — refuse to run on mainnet
     if let Some(passphrase) = network_passphrase {
         if passphrase.contains("Public Global Stellar Network") {
@@ -93,7 +111,7 @@ pub fn fund_friendbot(public_key: &str, network_passphrase: Option<&str>) -> Res
 
     let url = format!("https://friendbot.stellar.org/?addr={public_key}");
     log::debug!("requesting friendbot: {url}");
-    let response = ureq::get(&url).call().map_err(|e| {
+    let response = http_get(&url, timeout).map_err(|e| {
         // Surface actionable error messages (#287)
         ForgeError::Other(format!(
             "friendbot request failed: {e}\n  \
@@ -335,7 +353,7 @@ impl ForgePlugin for IdentityPlugin {
                 }
 
                 // #287 — fund_friendbot now returns the balance
-                let balance = fund_friendbot(&id.public_key, effective_passphrase)?;
+                let balance = fund_friendbot(&id.public_key, effective_passphrase, ctx.timeout())?;
 
                 if ctx.json {
                     let report = serde_json::json!({
@@ -474,12 +492,35 @@ mod tests {
         assert!(has_show_secret, "list must have --show-secret flag");
     }
 
+    // #329 — --timeout bounds a slow HTTP call instead of hanging forever
+    #[test]
+    fn http_get_is_bounded_by_timeout() {
+        // A server that accepts the connection but never responds.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let _accepter = std::thread::spawn(move || {
+            let held = listener.accept();
+            std::thread::sleep(Duration::from_secs(10));
+            drop(held);
+        });
+
+        let started = std::time::Instant::now();
+        let result = http_get(&url, Some(Duration::from_millis(300)));
+        assert!(result.is_err(), "a silent server must trip the timeout");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "request was not bounded by the timeout: {:?}",
+            started.elapsed()
+        );
+    }
+
     // #287 — fund refuses on mainnet passphrase
     #[test]
     fn fund_friendbot_refuses_mainnet_passphrase() {
         let result = fund_friendbot(
             "GABC",
             Some("Public Global Stellar Network ; September 2015"),
+            None,
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -492,7 +533,7 @@ mod tests {
         // We cannot make real network calls in unit tests. We verify that the
         // mainnet guard does NOT fire for a testnet passphrase. The ureq call
         // will fail (no network in CI) but the error won't be about mainnet.
-        let result = fund_friendbot("GABC", Some("Test SDF Network ; September 2015"));
+        let result = fund_friendbot("GABC", Some("Test SDF Network ; September 2015"), None);
         match &result {
             Err(e) => {
                 let msg = e.to_string();

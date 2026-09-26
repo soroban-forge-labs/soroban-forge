@@ -82,6 +82,11 @@ impl ForgeContext {
         })
     }
 
+    /// The `--timeout` bound for network-capable operations, if one was given.
+    pub fn timeout(&self) -> Option<std::time::Duration> {
+        self.timeout_secs.map(std::time::Duration::from_secs)
+    }
+
     pub fn progress(&self, message: &str) {
         if !self.quiet && !self.json {
             eprintln!("==> {message}");
@@ -140,6 +145,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ForgeContext::with_output(dir.path().to_path_buf(), 0, false, true, false).unwrap();
         assert!(ctx.json);
+    }
+
+    #[test]
+    fn context_timeout_reflects_timeout_secs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ForgeContext::new(dir.path().to_path_buf(), 0).unwrap();
+        assert_eq!(ctx.timeout(), None);
+        ctx.timeout_secs = Some(7);
+        assert_eq!(ctx.timeout(), Some(std::time::Duration::from_secs(7)));
     }
 
     #[test]

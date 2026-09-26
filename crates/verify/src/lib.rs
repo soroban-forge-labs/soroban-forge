@@ -22,6 +22,7 @@
 //! [`ForgeError::ToolMissing`] (exit `2`).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::{Deserialize, Serialize};
@@ -526,7 +527,12 @@ pub fn mismatch_error(report: &VerifyReport) -> ForgeError {
 /// stdout so nothing the tool prints can end up in the bytes we hash.
 ///
 /// Thin system-touching wrapper; not unit-tested.
-fn fetch_onchain_wasm(contract_id: &str, network: &NetworkArgs, out_file: &Path) -> Result<()> {
+fn fetch_onchain_wasm(
+    contract_id: &str,
+    network: &NetworkArgs,
+    out_file: &Path,
+    timeout: Option<Duration>,
+) -> Result<()> {
     let out_str = path_str(out_file)?;
 
     let mut cmd = std::process::Command::new("stellar");
@@ -541,7 +547,7 @@ fn fetch_onchain_wasm(contract_id: &str, network: &NetworkArgs, out_file: &Path)
     cmd.args(network.cli_args());
     log::debug!("fetching on-chain wasm for {contract_id}");
 
-    match cmd.output() {
+    match soroban_forge_core::timeout::output_with_timeout(&mut cmd, timeout) {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -622,6 +628,7 @@ pub fn verify(
     wasm_override: Option<&Path>,
     network: &NetworkArgs,
     reproducible: bool,
+    timeout: Option<Duration>,
 ) -> Result<VerifyReport> {
     validate_contract_id(contract_id)?;
 
@@ -634,7 +641,7 @@ pub fn verify(
 
     let scratch = tempfile::tempdir().map_err(ForgeError::io("creating a temporary directory"))?;
     let fetched = scratch.path().join("onchain.wasm");
-    fetch_onchain_wasm(contract_id, network, &fetched)?;
+    fetch_onchain_wasm(contract_id, network, &fetched, timeout)?;
     let onchain_hash = hash_wasm_file(&fetched)?;
 
     let report = VerifyReport::new(
@@ -797,6 +804,7 @@ impl ForgePlugin for VerifyPlugin {
             wasm_override.as_deref(),
             &network,
             reproducible,
+            ctx.timeout(),
         )?;
 
         if ctx.json {
@@ -942,7 +950,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // No Cargo.toml, no wasm, no `stellar` on PATH — the ID check still
         // decides the outcome, so nothing here shells out.
-        let err = verify("nope", tmp.path(), None, &NetworkArgs::default(), false).unwrap_err();
+        let err = verify("nope", tmp.path(), None, &NetworkArgs::default(), false, None).unwrap_err();
         assert!(err.to_string().contains("not a valid contract ID"), "{err}");
     }
 
@@ -955,7 +963,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = verify(VALID_ID, tmp.path(), None, &NetworkArgs::default(), false).unwrap_err();
+        let err = verify(VALID_ID, tmp.path(), None, &NetworkArgs::default(), false, None).unwrap_err();
         assert!(err.to_string().contains("stellar contract build"), "{err}");
     }
 

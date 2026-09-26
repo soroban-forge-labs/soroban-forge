@@ -19,6 +19,7 @@ pub mod error;
 pub mod logging;
 pub mod plugin;
 pub mod render; // template renderer
+pub mod timeout;
 pub mod toolchain;
 
 pub use cli::run;
