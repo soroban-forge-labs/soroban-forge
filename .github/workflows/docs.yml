@@ -1,0 +1,60 @@
+# Builds docs/ (via the mdBook config in book.toml) and publishes it to
+# GitHub Pages on every push to main. PRs only build, as a check that the
+# book still compiles — they never deploy.
+#
+# One-time manual step for a repo admin: Settings -> Pages -> Build and
+# deployment -> Source -> "GitHub Actions".
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  MDBOOK_VERSION: v0.5.4
+
+jobs:
+  build:
+    name: build book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install mdBook
+        # Official binary release, pinned to a specific version.
+        # See: https://github.com/rust-lang/mdBook/releases
+        run: |
+          mkdir -p ~/.local/bin
+          curl -fsSL \
+            "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xz -C ~/.local/bin
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: mdbook build
+        run: mdbook build
+      - name: Configure Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+      - name: Upload book as a Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: book
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

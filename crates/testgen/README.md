@@ -22,6 +22,13 @@ Soroban contract project and it generates
 Pass `--prop` (or `--invariant`/`--property`) to `test-init` to generate the
 property-based invariant harness, and `--fuzz` to emit a cargo-fuzz target.
 
+Pass `--localnet` to generate `tests/forge_localnet.rs`, an ignored integration
+test that builds, deploys, and invokes the first detected entrypoint against a
+running local Soroban network. Run it with
+`cargo test --test forge_localnet -- --ignored`; see
+[docs/testing.md](../../docs/testing.md#localnet-integration-test) for network
+defaults and environment-variable overrides.
+
 `--budget [ENTRYPOINT]` emits the budget test, measuring the named entrypoint or
 the first one detected. It starts at Soroban's per-transaction ceilings (100M
 CPU instructions, 40 MiB); run `cargo test --test forge_budget -- --nocapture`

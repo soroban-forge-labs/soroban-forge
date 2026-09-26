@@ -210,7 +210,25 @@ pub fn format_report(report: &OptimizeReport) -> String {
 
 /// The same report as JSON, for `--json`.
 pub fn json_report(report: &OptimizeReport) -> String {
-    serde_json::to_string_pretty(report).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    let mut value = match serde_json::to_value(report) {
+        Ok(value) => value,
+        Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert("percent_saved".into(), serde_json::json!(report.percent_saved()));
+    }
+    serde_json::to_string_pretty(&value).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+}
+
+/// Select the report output, or suppress it entirely in quiet mode.
+pub fn report_output(report: &OptimizeReport, json: bool, quiet: bool) -> Option<String> {
+    if quiet {
+        None
+    } else if json {
+        Some(json_report(report))
+    } else {
+        Some(format_report(report))
+    }
 }
 
 /// Fail if the optimized size exceeds the configured budget.
@@ -296,10 +314,11 @@ impl ForgePlugin for OptimizePlugin {
         let report = optimize(&wasm_path)?;
         check_budget(&report, max_size)?;
 
-        if ctx.json {
-            println!("{}", json_report(&report));
-        } else if !ctx.quiet {
-            print!("{}", format_report(&report));
+        if let Some(output) = report_output(&report, ctx.json, ctx.quiet) {
+            print!("{output}");
+            if !output.ends_with('\n') {
+                println!();
+            }
         }
 
         Ok(())
@@ -406,6 +425,7 @@ mod tests {
         assert!(text.contains("1000 bytes"), "{text}");
         assert!(text.contains("750 bytes"), "{text}");
         assert!(text.contains("250 bytes"), "{text}");
+        assert!(text.contains("25.0%"), "{text}");
     }
 
     #[test]
@@ -420,6 +440,21 @@ mod tests {
         assert_eq!(parsed["before_bytes"], 1000);
         assert_eq!(parsed["after_bytes"], 750);
         assert_eq!(parsed["saved_bytes"], 250);
+        assert_eq!(parsed["percent_saved"], 25.0);
+    }
+
+    #[test]
+    fn quiet_suppresses_text_and_json_reports() {
+        let report = OptimizeReport::new(
+            Path::new("a.wasm"),
+            Path::new("a.optimized.wasm"),
+            1000,
+            750,
+        );
+        assert_eq!(report_output(&report, false, true), None);
+        assert_eq!(report_output(&report, true, true), None);
+        assert!(report_output(&report, false, false).unwrap().contains("25.0%"));
+        assert!(report_output(&report, true, false).unwrap().contains("percent_saved"));
     }
 
     #[test]
