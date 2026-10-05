@@ -256,6 +256,44 @@ pub fn docker_check() -> Check {
     classify_docker(version_line.as_deref(), daemon_running)
 }
 
+fn rustup_available() -> bool {
+    std::process::Command::new("rustup")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn missing_target_fix(target: &str, rustup_present: bool) -> Option<&'static str> {
+    match (rustup_present, target) {
+        (true, "wasm32v1-none") => Some("rustup target add wasm32v1-none"),
+        (true, "wasm32-unknown-unknown") => Some("rustup target add wasm32-unknown-unknown"),
+        (false, "wasm32v1-none") => Some(
+            "install the wasm32v1-none target via your system package manager or the Rust distribution you installed; rustup is not available on PATH",
+        ),
+        (false, "wasm32-unknown-unknown") => Some(
+            "install the wasm32-unknown-unknown target via your system package manager or the Rust distribution you installed; rustup is not available on PATH",
+        ),
+        _ => None,
+    }
+}
+
+fn rust_update_fix(rustup_present: bool) -> &'static str {
+    if rustup_present {
+        "update Rust: rustup update stable"
+    } else {
+        "update Rust via your system package manager or the Rust distribution you installed; rustup is not available on PATH"
+    }
+}
+
+fn rust_install_fix(rustup_present: bool) -> &'static str {
+    if rustup_present {
+        "install Rust: https://rustup.rs"
+    } else {
+        "install Rust via your system package manager or the Rust distribution you installed; rustup is not available on PATH"
+    }
+}
+
 /// Extract the release channel from a toolchain name, e.g.
 /// `stable-x86_64-unknown-linux-gnu` -> `stable`. A name that does not start
 /// with a known channel word is a version-pinned toolchain (e.g.
@@ -349,6 +387,16 @@ fn active_toolchain(project_dir: &Path) -> Option<String> {
 fn wasm32_target_check(project_dir: &Path) -> Check {
     let active = active_toolchain(project_dir);
     let active_toolchain_name = active.as_deref().unwrap_or("stable");
+    let rustup_present = rustup_available();
+
+    if !rustup_present {
+        return Check {
+            name: "wasm32v1-none target",
+            status: Status::Warn,
+            detail: "rustup not found — could not verify whether the target is installed".into(),
+            fix: missing_target_fix("wasm32v1-none", false),
+        };
+    }
 
     match capture("rustup", &["toolchain", "list"]) {
         Some(toolchains) => {
@@ -404,9 +452,7 @@ fn wasm32_target_check(project_dir: &Path) -> Check {
                 name: "wasm32v1-none target",
                 status: Status::Warn,
                 detail: "rustup not found — could not verify".into(),
-                fix: Some(
-                    "install rustup (https://rustup.rs), then: rustup target add wasm32v1-none",
-                ),
+                fix: missing_target_fix("wasm32v1-none", false),
             };
         }
     }
@@ -415,7 +461,7 @@ fn wasm32_target_check(project_dir: &Path) -> Check {
         name: "wasm32v1-none target",
         status: Status::Fail,
         detail: "not installed".into(),
-        fix: Some("rustup target add wasm32v1-none"),
+        fix: missing_target_fix("wasm32v1-none", true),
     }
 }
 
@@ -913,6 +959,7 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
     let mut checks = Vec::new();
 
     // rustc, with a minimum version.
+    let rustup_present = rustup_available();
     checks.push(match capture("rustc", &["--version"]) {
         Some(line) if version_at_least(&line, MIN_RUST) => Check {
             name: "rustc",
@@ -924,13 +971,13 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
             name: "rustc",
             status: Status::Fail,
             detail: format!("{line} (need >= {}.{})", MIN_RUST.0, MIN_RUST.1),
-            fix: Some("update Rust: rustup update stable"),
+            fix: Some(rust_update_fix(rustup_present)),
         },
         None => Check {
             name: "rustc",
             status: Status::Fail,
             detail: "not found".into(),
-            fix: Some("install Rust: https://rustup.rs"),
+            fix: Some(rust_install_fix(rustup_present)),
         },
     });
 
@@ -946,7 +993,7 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
             name: "cargo",
             status: Status::Fail,
             detail: "not found".into(),
-            fix: Some("install Rust (includes cargo): https://rustup.rs"),
+            fix: Some(rust_install_fix(rustup_present)),
         },
     });
 
@@ -955,12 +1002,16 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
     // Some toolchains and projects still require the older `wasm32-unknown-unknown`
     // target alongside the newer `wasm32v1-none`. Check for it explicitly.
     {
-        let installed_targets_wasm32 = std::process::Command::new("rustup")
-            .args(["target", "list", "--installed"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let installed_targets_wasm32 = if rustup_present {
+            std::process::Command::new("rustup")
+                .args(["target", "list", "--installed"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        } else {
+            None
+        };
         checks.push(match installed_targets_wasm32 {
             Some(targets) if targets.lines().any(|t| t.trim() == "wasm32-unknown-unknown") => {
                 Check {
@@ -972,20 +1023,15 @@ pub fn run_checks_with_network(allow_network: bool) -> Vec<Check> {
             }
             Some(_) => Check {
                 name: "wasm32-unknown-unknown",
-                // The legacy target is optional: wasm32v1-none is the required
-                // one and is checked separately. Missing this must not turn
-                // doctor's overall result into a failure (#484).
-                status: Status::Warn,
-                detail: "missing optional legacy wasm32 target".into(),
-                fix: Some("rustup target add wasm32-unknown-unknown"),
+                status: Status::Fail,
+                detail: "missing wasm32 target".into(),
+                fix: missing_target_fix("wasm32-unknown-unknown", rustup_present),
             },
             None => Check {
                 name: "wasm32-unknown-unknown",
                 status: Status::Warn,
                 detail: "rustup not found — could not verify".into(),
-                fix: Some(
-                    "install rustup (https://rustup.rs), then: rustup target add wasm32-unknown-unknown",
-                ),
+                fix: missing_target_fix("wasm32-unknown-unknown", false),
             },
         });
     }
@@ -1142,6 +1188,9 @@ pub fn remedy(check: &Check) -> Option<Remedy> {
     }
     match check.name {
         "wasm32v1-none target" => {
+            if !rustup_available() {
+                return None;
+            }
             let args = check
                 .detail
                 .split("exact fix: ")
@@ -1978,7 +2027,12 @@ mod tests {
         ];
 
         let first = fixable_remedies(&checks);
-        assert_eq!(first.len(), 2);
+        if rustup_available() {
+            assert_eq!(first.len(), 2);
+        } else {
+            assert_eq!(first.len(), 1);
+            assert_eq!(first[0].check, "stellar-cli");
+        }
 
         let next = vec![
             Check {
@@ -2019,6 +2073,18 @@ mod tests {
         let check = classify_toolchain(None, None);
         assert_eq!(check.status, Status::Warn);
         assert!(check.fix.is_some());
+    }
+
+    #[test]
+    fn missing_target_uses_manual_instructions_without_rustup() {
+        let fix = missing_target_fix("wasm32v1-none", false);
+        assert_eq!(
+            fix,
+            Some(
+                "install the wasm32v1-none target via your system package manager or the Rust distribution you installed; rustup is not available on PATH"
+            )
+        );
+        assert!(!fix.unwrap().contains("rustup"));
     }
 
     #[test]
@@ -2246,10 +2312,15 @@ mod tests {
 
     #[test]
     fn remedy_for_missing_target() {
-        let r = remedy(&fail("wasm32v1-none target")).unwrap();
-        assert_eq!(r.check, "wasm32v1-none target");
-        assert_eq!(r.program, "rustup");
-        assert_eq!(r.command_line(), "rustup target add wasm32v1-none");
+        let r = remedy(&fail("wasm32v1-none target"));
+        if rustup_available() {
+            let r = r.unwrap();
+            assert_eq!(r.check, "wasm32v1-none target");
+            assert_eq!(r.program, "rustup");
+            assert_eq!(r.command_line(), "rustup target add wasm32v1-none");
+        } else {
+            assert!(r.is_none());
+        }
     }
 
     #[test]
@@ -2305,9 +2376,14 @@ mod tests {
             },
         ];
         let remedies = fixable_remedies(&checks);
-        assert_eq!(remedies.len(), 2);
-        assert_eq!(remedies[0].check, "wasm32v1-none target");
-        assert_eq!(remedies[1].check, "stellar-cli");
+        if rustup_available() {
+            assert_eq!(remedies.len(), 2);
+            assert_eq!(remedies[0].check, "wasm32v1-none target");
+            assert_eq!(remedies[1].check, "stellar-cli");
+        } else {
+            assert_eq!(remedies.len(), 1);
+            assert_eq!(remedies[0].check, "stellar-cli");
+        }
     }
 
     #[test]
@@ -2320,7 +2396,11 @@ mod tests {
     fn fix_plan_lists_each_command() {
         let remedies = fixable_remedies(&[fail("wasm32v1-none target"), fail("stellar-cli")]);
         let plan = format_fix_plan(&remedies);
-        assert!(plan.contains("rustup target add wasm32v1-none"));
+        if rustup_available() {
+            assert!(plan.contains("rustup target add wasm32v1-none"));
+        } else {
+            assert!(!plan.contains("rustup target add wasm32v1-none"));
+        }
         assert!(plan.contains("cargo install --locked stellar-cli"));
     }
 
