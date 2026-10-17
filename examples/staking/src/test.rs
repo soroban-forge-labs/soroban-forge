@@ -208,3 +208,123 @@ fn get_pending_reward_after_claim_is_zero() {
     staking.claim(&alice);
     assert_eq!(staking.get_pending_reward(&alice), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Near-limit arithmetic tests
+// ---------------------------------------------------------------------------
+
+/// Build a staking environment whose admin has been minted `admin_balance`
+/// tokens.  Used by the near-limit tests that need amounts far beyond what
+/// the default `setup` helper mints.
+fn setup_with_balance(
+    env: &Env,
+    admin_balance: i128,
+) -> (StakingContractClient<'_>, TokenClient<'_>, Address, Address, Address) {
+    env.mock_all_auths();
+    let admin = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+
+    let token_id = env.register_stellar_asset_contract(admin.clone());
+    let token = TokenClient::new(env, &token_id);
+    let sac = StellarAssetClient::new(env, &token_id);
+    sac.mint(&admin, &admin_balance);
+
+    let staking_id = env.register(StakingContract, (admin.clone(), token_id));
+    let staking = StakingContractClient::new(env, &staking_id);
+
+    (staking, token, admin, alice, bob)
+}
+
+/// The largest `amount` that can be passed to `distribute` without overflowing
+/// `amount * SCALE` is `i128::MAX / SCALE`.
+///
+/// SCALE = 1_000_000_000_000_000_000 (1e18)
+/// i128::MAX / SCALE = 170_141_183_460  (≈ 170 tokens at 18 decimals)
+///
+/// This test distributes exactly that amount and verifies the full reward
+/// reaches the single staker — i.e., checked arithmetic does *not* fire here.
+#[test]
+fn distribute_near_scale_limit_succeeds() {
+    // i128::MAX / SCALE — the largest safe distribution amount.
+    let limit: i128 = i128::MAX / 1_000_000_000_000_000_000_i128; // 170_141_183_460
+
+    let env = Env::default();
+    // Mint twice the limit: once to distribute, once already held by the contract
+    // (in practice the admin holds the tokens and transfers them in).
+    let (staking, token, _admin, alice, _bob) = setup_with_balance(&env, limit * 2);
+
+    // Alice stakes 1 unit so total > 0.
+    // Give Alice 1 token to deposit by minting directly to her.
+    let token_id = token.address.clone();
+    let sac = StellarAssetClient::new(&env, &token_id);
+    sac.mint(&alice, &1);
+
+    staking.deposit(&alice, &1);
+    assert_eq!(staking.get_total_staked(), 1);
+
+    // Distribute exactly `limit` — amount * SCALE = i128::MAX / SCALE * SCALE
+    // which fits in i128 (it equals i128::MAX rounded down to a multiple of SCALE).
+    staking.distribute(&limit);
+
+    // Alice is the sole staker so she should receive the full `limit`.
+    let claimed = staking.claim(&alice);
+    assert_eq!(claimed, limit);
+    // Alice was minted 1 token (deposit does not transfer tokens from the user in this
+    // contract — only rewards are transferred).  After claiming `limit` rewards her
+    // balance is 1 + limit.
+    assert_eq!(token.balance(&alice), 1 + limit);
+}
+
+/// Distributing `i128::MAX / SCALE + 1` must panic with `Error::Overflow`
+/// because `(i128::MAX / SCALE + 1) * SCALE` overflows i128.
+#[test]
+#[should_panic]
+fn distribute_one_over_scale_limit_overflows() {
+    let limit: i128 = i128::MAX / 1_000_000_000_000_000_000_i128;
+    let over = limit + 1; // amount * SCALE overflows
+
+    let env = Env::default();
+    let (staking, token, _admin, alice, _bob) = setup_with_balance(&env, over * 2);
+
+    let token_id = token.address.clone();
+    let sac = StellarAssetClient::new(&env, &token_id);
+    sac.mint(&alice, &1);
+
+    staking.deposit(&alice, &1);
+    // This must panic with Error::Overflow.
+    staking.distribute(&over);
+}
+
+/// Two successive near-limit distributions: each distribution uses half the safe limit
+/// so `amount * SCALE` stays well within i128. The accumulator must correctly sum
+/// both deltas.
+#[test]
+fn two_distributions_near_limit_accumulate_correctly() {
+    // Use limit / 4 per distribution (quarter of the safe limit), distribute twice.
+    // This keeps each `amount * SCALE` far from overflow while still exercising
+    // large-value accumulator arithmetic.
+    let limit: i128 = i128::MAX / 1_000_000_000_000_000_000_i128;
+    let quarter = limit / 4;
+    let two_quarters = quarter * 2; // exact, no rounding edge case
+
+    let env = Env::default();
+    // Admin needs at least 2 * quarter tokens to distribute.
+    let (staking, token, _admin, alice, _bob) = setup_with_balance(&env, two_quarters + 1);
+
+    let token_id = token.address.clone();
+    let sac = StellarAssetClient::new(&env, &token_id);
+    sac.mint(&alice, &1);
+
+    staking.deposit(&alice, &1);
+    staking.distribute(&quarter);
+    staking.distribute(&quarter);
+
+    // Both distributions accrue to Alice (sole staker with 1 unit, total = 1).
+    // acc_per_share = 2 * quarter * SCALE / 1.
+    // pending = 1 * (2 * quarter * SCALE) / SCALE = 2 * quarter.  No rounding.
+    let claimed = staking.claim(&alice);
+    assert_eq!(claimed, two_quarters);
+    // Alice was minted 1 token (deposit does not move user tokens in this contract).
+    assert_eq!(token.balance(&alice), 1 + two_quarters);
+}

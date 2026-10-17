@@ -12,6 +12,11 @@ pub enum Error {
     NotAdmin = 2,
     NoRewards = 3,
     InvalidAmount = 4,
+    /// An intermediate multiplication or division would overflow i128.
+    /// This can happen when `amount * SCALE` exceeds i128::MAX, which
+    /// is possible for 18-decimal tokens once `amount` exceeds roughly
+    /// 1.7 × 10²⁰ base units (~170 tokens at 18 decimals).
+    Overflow = 5,
 }
 
 #[contracttype]
@@ -72,7 +77,11 @@ fn pending(env: &Env, user: &Address) -> i128 {
     }
     let acc = acc_per_share(env);
     let debt = reward_debt(env, user);
-    let raw = s * acc / SCALE;
+    // s * acc can overflow when both values are large; fail loudly rather than wrap.
+    let raw = s
+        .checked_mul(acc)
+        .unwrap_or_else(|| panic_with_error!(env, Error::Overflow))
+        / SCALE;
     if raw > debt { raw - debt } else { 0 }
 }
 
@@ -80,7 +89,11 @@ fn _claim(env: &Env, user: &Address) -> i128 {
     let amt = pending(env, user);
     if amt > 0 {
         let s = read_staked(env, user);
-        set_reward_debt(env, user, s * acc_per_share(env) / SCALE);
+        let new_debt = s
+            .checked_mul(acc_per_share(env))
+            .unwrap_or_else(|| panic_with_error!(env, Error::Overflow))
+            / SCALE;
+        set_reward_debt(env, user, new_debt);
         let tok = token(env);
         soroban_sdk::token::Client::new(env, &tok).transfer(
             &env.current_contract_address(),
@@ -109,7 +122,11 @@ impl StakingContract {
         _claim(&env, &user);
         let new = read_staked(&env, &user) + amount;
         write_staked(&env, &user, new);
-        set_reward_debt(&env, &user, new * acc_per_share(&env) / SCALE);
+        let new_debt = new
+            .checked_mul(acc_per_share(&env))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow))
+            / SCALE;
+        set_reward_debt(&env, &user, new_debt);
         set_total_staked(&env, total_staked(&env) + amount);
         env.events().publish((symbol_short!("deposit"), user), amount);
     }
@@ -126,7 +143,11 @@ impl StakingContract {
         _claim(&env, &user);
         let new = cur - amount;
         write_staked(&env, &user, new);
-        set_reward_debt(&env, &user, new * acc_per_share(&env) / SCALE);
+        let new_debt = new
+            .checked_mul(acc_per_share(&env))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow))
+            / SCALE;
+        set_reward_debt(&env, &user, new_debt);
         set_total_staked(&env, total_staked(&env) - amount);
         env.events().publish((symbol_short!("withdraw"), user), amount);
     }
@@ -135,13 +156,21 @@ impl StakingContract {
         admin(&env).require_auth();
         let total = total_staked(&env);
         if total > 0 {
+            // Validate arithmetic before moving tokens: amount * SCALE overflows
+            // i128 when amount > i128::MAX / SCALE (~1.7 × 10²⁰ base units, or
+            // ~170 whole tokens at 18 decimals). Surface this as Error::Overflow
+            // rather than a silent wrap-around trap.
+            let delta = amount
+                .checked_mul(SCALE)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow))
+                / total;
             let tok = token(&env);
             soroban_sdk::token::Client::new(&env, &tok).transfer(
                 &admin(&env),
                 &env.current_contract_address(),
                 &amount,
             );
-            set_acc_per_share(&env, acc_per_share(&env) + amount * SCALE / total);
+            set_acc_per_share(&env, acc_per_share(&env) + delta);
         }
         env.events().publish((symbol_short!("distrib"),), amount);
     }
