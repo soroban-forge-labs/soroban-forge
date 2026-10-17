@@ -1,5 +1,5 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 use soroban_sdk::{Address, Env};
 
@@ -58,12 +58,43 @@ fn multi_staker_proportional_distribution() {
 }
 
 #[test]
-fn distribute_with_no_stakers_is_noop() {
+fn distribute_with_no_stakers_rejects_without_side_effects() {
     let env = Env::default();
-    let (staking, _token, _admin, _alice, _bob) = setup(&env);
+    let (staking, token, admin, alice, _bob) = setup(&env);
+    let admin_balance = token.balance(&admin);
+    let contract_balance = token.balance(&staking.address);
+    let events = env.events().all();
 
-    staking.distribute(&500);
+    assert_eq!(staking.try_distribute(&500), Err(Ok(Error::NoStakers.into())));
+
+    assert_eq!(env.events().all(), events);
+    assert_eq!(token.balance(&admin), admin_balance);
+    assert_eq!(token.balance(&staking.address), contract_balance);
+    assert_eq!(staking.get_total_staked(), 0);
     assert_eq!(staking.get_acc_reward_per_share(), 0);
+    assert_eq!(staking.get_pending_reward(&alice), 0);
+}
+
+#[test]
+fn distribute_after_last_withdrawal_rejects_without_side_effects() {
+    let env = Env::default();
+    let (staking, token, admin, alice, _bob) = setup(&env);
+    staking.deposit(&alice, &1000);
+    staking.distribute(&500);
+    staking.withdraw(&alice, &1000);
+    let accumulator = staking.get_acc_reward_per_share();
+    let admin_balance = token.balance(&admin);
+    let contract_balance = token.balance(&staking.address);
+    let events = env.events().all();
+
+    assert_eq!(staking.try_distribute(&500), Err(Ok(Error::NoStakers.into())));
+
+    assert_eq!(env.events().all(), events);
+    assert_eq!(token.balance(&admin), admin_balance);
+    assert_eq!(token.balance(&staking.address), contract_balance);
+    assert_eq!(staking.get_total_staked(), 0);
+    assert_eq!(staking.get_acc_reward_per_share(), accumulator);
+    assert_eq!(staking.get_pending_reward(&alice), 0);
 }
 
 #[test]
@@ -100,7 +131,7 @@ fn rounding_handling() {
     let env = Env::default();
     let (staking, token, _admin, alice, bob) = setup(&env);
 
-    // Alice 1/3, Bob 2/3 — 10 rewards
+    // Alice 1/3, Bob 2/3 â€” 10 rewards
     staking.deposit(&alice, &100);
     staking.deposit(&bob, &200);
     staking.distribute(&10);

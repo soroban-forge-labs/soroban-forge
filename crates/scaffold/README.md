@@ -125,3 +125,9 @@ not in these functions — a programmatic caller that passes `force` means it.
 ## Tests
 
 `cargo test -p soroban-forge-scaffold`
+
+## Empty staking pools
+
+The `staking` template rejects `distribute` when total stake is zero with
+`Error::NoStakers` (code 5). No reward tokens move, the accumulator is unchanged,
+and no `distrib` event is emitted. This also applies after the last staker withdraws.

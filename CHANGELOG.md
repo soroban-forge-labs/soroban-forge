@@ -73,6 +73,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Reject staking reward distributions to an empty pool with `Error::NoStakers`, without emitting a misleading `distrib` event (#572).
+
 - Concurrent writes to `identities.json` and `networks.json` no longer lose
   each other: every read-modify-write of either store (`identity
   generate|import|use|fund|remove`, `network add|use|remove`) now runs under

@@ -12,6 +12,10 @@ A staking contract with proportional reward distribution using the O(1)
 - `claim` — withdraw your proportional share of rewards (O(1) per user)
 - `get_pending_reward` — preview rewards before claiming
 
+`distribute` requires a non-empty pool. When total stake is zero, it fails with
+`Error::NoStakers` (code 5) without moving tokens, updating rewards, or emitting
+a `distrib` event. The admin can retry after someone stakes.
+
 ## Develop
 
 ```sh
