@@ -24,19 +24,19 @@ jobs:
     timeout-minutes: 60
     steps:
       # ci-init-step: release/build-and-release/checkout
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           persist-credentials: false
       # ci-init-step: release/build-and-release/install-rust
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
         with:
           targets: wasm32v1-none
       # ci-init-step: release/build-and-release/rust-cache
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
       # ci-init-step: release/build-and-release/cache-wasm-target
       - name: Cache target/wasm32v1-none
-        uses: actions/cache@v4
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9  # v4
         with:
           path: |
             target/wasm32v1-none
@@ -93,7 +93,7 @@ jobs:
           fi
       # ci-init-step: release/build-and-release/create-release
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           files: |
             /tmp/release-signing.pub

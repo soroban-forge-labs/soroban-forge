@@ -37,7 +37,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
       # ci-init-step: contract-size/contract-size/cache-wasm-target
       - name: Cache target/wasm32v1-none
-        uses: actions/cache@v4
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9  # v4
         with:
           path: |
             target/wasm32v1-none

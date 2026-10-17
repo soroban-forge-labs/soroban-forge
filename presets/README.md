@@ -50,7 +50,7 @@ cache key, create
 `.soroban-forge/ci-overrides/github/build-test/build-and-test/rust-cache.yml`:
 
 ```yaml
-- uses: Swatinem/rust-cache@v2
+- uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
   with:
     key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 ```

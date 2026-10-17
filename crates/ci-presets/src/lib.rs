@@ -790,7 +790,8 @@ mod tests {
         let contents =
             std::fs::read_to_string(coverage_dir.path().join(".github/workflows/coverage.yml"))
                 .unwrap();
-        assert!(contents.contains("codecov/codecov-action@v4"));
+        assert!(contents
+            .contains("codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4"));
         assert!(contents.contains("cargo llvm-cov"));
     }
 
@@ -1056,7 +1057,9 @@ mod tests {
         assert!(written.iter().any(|path| path == ".github/workflows/release.yml"));
         let contents = std::fs::read_to_string(dir.path().join(".github/workflows/release.yml")).unwrap();
         assert!(contents.contains("cargo build --target wasm32v1-none --release --locked"));
-        assert!(contents.contains("softprops/action-gh-release@v2"));
+        assert!(contents.contains(
+            "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2"
+        ));
         assert!(contents.contains("v*.*.*"));
     }
 
@@ -1323,5 +1326,71 @@ mod tests {
         assert_eq!(removed, vec![".gitlab-ci.yml".to_string()]);
         assert!(!dir.path().join(".gitlab-ci.yml").exists());
     }
-}
+    /// A floating `uses:` is what #609 removed; catch the next one before a
+    /// preset ships it. Every action reference in `presets/` must name a
+    /// 40-character commit SHA, and keep the `# <version>` comment that tells a
+    /// reader which release the SHA belongs to.
+    #[test]
+    fn every_preset_action_is_pinned_to_a_commit_sha() {
+        fn is_sha(ref_: &str) -> bool {
+            ref_.len() == 40
+                && ref_
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }
 
+        fn walk(dir: &Dir<'_>, bad: &mut Vec<String>) {
+            for file in dir.files() {
+                let Some(text) = file.contents_utf8() else {
+                    continue;
+                };
+                for (n, line) in text.lines().enumerate() {
+                    let Some((_, after)) = line.split_once("uses:") else {
+                        continue;
+                    };
+                    let after = after.trim();
+                    let (action, rest) = match after.split_once(char::is_whitespace) {
+                        Some((action, rest)) => (action, rest),
+                        None => (after, ""),
+                    };
+                    if action.starts_with("./") || action.is_empty() {
+                        continue;
+                    }
+                    let Some((_, r)) = action.rsplit_once('@') else {
+                        bad.push(format!(
+                            "{}:{}: `{action}` names no ref at all",
+                            file.path().display(),
+                            n + 1
+                        ));
+                        continue;
+                    };
+                    if !is_sha(r) {
+                        bad.push(format!(
+                            "{}:{}: `{action}` should be pinned to a 40-character SHA, found `{r}`",
+                            file.path().display(),
+                            n + 1
+                        ));
+                    }
+                    if !rest.contains('#') {
+                        bad.push(format!(
+                            "{}:{}: `{action}` has no `# <version>` comment",
+                            file.path().display(),
+                            n + 1
+                        ));
+                    }
+                }
+            }
+            for sub in dir.dirs() {
+                walk(sub, bad);
+            }
+        }
+
+        let mut bad = Vec::new();
+        walk(&PRESETS, &mut bad);
+        assert!(
+            bad.is_empty(),
+            "every `uses:` in presets/ must be pinned to a commit SHA with a version comment:\n{}",
+            bad.join("\n")
+        );
+    }
+}
