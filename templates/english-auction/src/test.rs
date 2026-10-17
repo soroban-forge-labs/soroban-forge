@@ -24,6 +24,7 @@ fn make_token(env: &Env) -> Tok<'_> {
 #[allow(dead_code)]
 struct TestContext<'a> {
     contract: EnglishAuctionContractClient<'a>,
+    contract_address: Address,
     asset_token: Tok<'a>,
     payment_token: Tok<'a>,
     seller: Address,
@@ -52,6 +53,7 @@ fn setup(env: &Env) -> TestContext<'_> {
     let duration = 1_000_u64;
 
     let contract_id = env.register(EnglishAuctionContract, ());
+    let contract_address = contract_id.clone();
     let contract = EnglishAuctionContractClient::new(env, &contract_id);
 
     contract.initialize(
@@ -73,6 +75,7 @@ fn setup(env: &Env) -> TestContext<'_> {
 
     TestContext {
         contract,
+        contract_address,
         asset_token,
         payment_token,
         seller,
@@ -124,7 +127,8 @@ fn test_place_multiple_bids() {
 fn test_bid_below_reserve() {
     let env = Env::default();
     let ctx = setup(&env);
-    ctx.contract.place_bid(&ctx.bidder1, &(ctx.reserve_price - 1));
+    ctx.contract
+        .place_bid(&ctx.bidder1, &(ctx.reserve_price - 1));
 }
 
 #[test]
@@ -146,12 +150,71 @@ fn test_settle_after_auction_ends() {
 }
 
 #[test]
-fn test_cancel_auction() {
+fn test_cancel_auction_after_bid_fails() {
     let env = Env::default();
     let ctx = setup(&env);
 
     ctx.contract.place_bid(&ctx.bidder1, &ctx.reserve_price);
+    let result = ctx.contract.try_cancel();
+
+    assert!(result.is_err());
+    assert_eq!(ctx.contract.get_state(), AuctionState::Open);
+    assert_eq!(
+        ctx.asset_token.client.balance(&ctx.contract_address),
+        ctx.asset_amount
+    );
+    assert_eq!(ctx.asset_token.client.balance(&ctx.seller), 0);
+    assert_eq!(
+        ctx.payment_token.client.balance(&ctx.contract_address),
+        ctx.reserve_price
+    );
+    assert_eq!(
+        ctx.payment_token.client.balance(&ctx.bidder1),
+        10_000 - ctx.reserve_price
+    );
+}
+
+#[test]
+fn test_cancel_ended_auction_with_bid_fails_before_settlement() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    ctx.contract.place_bid(&ctx.bidder1, &ctx.reserve_price);
+    env.ledger()
+        .with_mut(|li| li.timestamp = ctx.start_ts + ctx.duration + 1);
+
+    let result = ctx.contract.try_cancel();
+
+    assert!(result.is_err());
+    assert_eq!(ctx.contract.get_state(), AuctionState::Open);
+    assert_eq!(
+        ctx.asset_token.client.balance(&ctx.contract_address),
+        ctx.asset_amount
+    );
+    assert_eq!(ctx.asset_token.client.balance(&ctx.seller), 0);
+    assert_eq!(
+        ctx.payment_token.client.balance(&ctx.contract_address),
+        ctx.reserve_price
+    );
+    assert_eq!(
+        ctx.payment_token.client.balance(&ctx.bidder1),
+        10_000 - ctx.reserve_price
+    );
+}
+
+#[test]
+fn test_cancel_ended_auction_without_bids() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = ctx.start_ts + ctx.duration + 1);
     ctx.contract.cancel();
 
     assert_eq!(ctx.contract.get_state(), AuctionState::Canceled);
+    assert_eq!(
+        ctx.asset_token.client.balance(&ctx.seller),
+        ctx.asset_amount
+    );
+    assert_eq!(ctx.asset_token.client.balance(&ctx.contract_address), 0);
 }
