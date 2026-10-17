@@ -550,11 +550,19 @@ fn print_diff(path: &Path, generated: &str) -> Result<()> {
     let mut cmd = std::process::Command::new("diff");
     cmd.arg("-u").arg("--label").arg("generated").arg("--label").arg(path.to_string_lossy().as_ref());
     cmd.arg(left).arg(&temp_path);
-    let output = cmd.output().map_err(ForgeError::io(format!("running diff for {}", path.display())))?;
+    let output = cmd.output().map_err(|error| diff_spawn_error(path, error))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     print!("\n--- {} ---\n{stdout}", path.display());
     std::fs::remove_file(&temp_path).ok();
     Ok(())
+}
+
+fn diff_spawn_error(path: &Path, error: std::io::Error) -> ForgeError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        ForgeError::ToolMissing("diff — install diffutils to use --diff".into())
+    } else {
+        ForgeError::io(format!("running diff for {}", path.display()))(error)
+    }
 }
 
 pub struct CiPresetsPlugin;
@@ -708,6 +716,34 @@ impl ForgePlugin for CiPresetsPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_diff_binary_returns_tool_missing() {
+        let error = diff_spawn_error(
+            Path::new("workflow.yml"),
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+
+        assert!(matches!(
+            error,
+            ForgeError::ToolMissing(message) if message == "diff — install diffutils to use --diff"
+        ));
+    }
+
+    #[test]
+    fn other_diff_spawn_errors_remain_io_errors() {
+        let error = diff_spawn_error(
+            Path::new("workflow.yml"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+
+        assert!(matches!(
+            error,
+            ForgeError::Io { context, source }
+                if context == "running diff for workflow.yml"
+                    && source.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+    }
 
     fn base_opts() -> GenerateOptions {
         GenerateOptions::default()

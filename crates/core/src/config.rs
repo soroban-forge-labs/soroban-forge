@@ -138,6 +138,19 @@ impl ForgeConfig {
         Some(effective)
     }
 
+    /// Find the project config file from `dir`, searching parent directories.
+    pub fn find_config_path(dir: &Path) -> Option<PathBuf> {
+        let mut current = Some(dir);
+        while let Some(path) = current {
+            let candidate = path.join(CONFIG_FILE_NAME);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            current = path.parent();
+        }
+        None
+    }
+
     /// Read the optional user-level defaults file. Missing files are normal;
     /// malformed or unreadable files return a configuration error.
     pub fn load_user_config() -> Result<Option<Self>> {
@@ -153,7 +166,7 @@ impl ForgeConfig {
     /// Load `forge.toml` from `dir`, returning `Ok(None)` when the file does
     /// not exist and an error only when it exists but cannot be parsed.
     pub fn load_from(dir: &Path) -> Result<Option<Self>> {
-        let Some(path) = find_config_path(dir) else {
+        let Some(path) = Self::find_config_path(dir) else {
             return Ok(None);
         };
         let raw = std::fs::read_to_string(&path)
@@ -181,18 +194,6 @@ impl ForgeConfig {
     pub fn author(&self) -> Option<&str> {
         self.project.authors.first().map(String::as_str)
     }
-}
-
-fn find_config_path(dir: &Path) -> Option<PathBuf> {
-    let mut current = Some(dir);
-    while let Some(path) = current {
-        let candidate = path.join(CONFIG_FILE_NAME);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        current = path.parent();
-    }
-    None
 }
 
 #[cfg(test)]

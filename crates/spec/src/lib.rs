@@ -1709,6 +1709,7 @@ mod tests {
         let cmd = SpecPlugin.command();
         let ctx = ForgeContext {
             cwd: PathBuf::from("."),
+            project_config_path: None,
             config: None,
             verbose: 0,
             quiet: false,

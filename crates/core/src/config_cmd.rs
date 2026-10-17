@@ -1,6 +1,8 @@
 //! The `soroban-forge config` subcommand: print the resolved configuration
 //! and warn about unrecognized keys in `forge.toml`.
 
+use std::path::Path;
+
 use clap::{ArgMatches, Command};
 
 use crate::config::{resolved_report, unknown_keys, ForgeConfig, CONFIG_FILE_NAME};
@@ -23,17 +25,8 @@ impl ForgePlugin for ConfigPlugin {
     fn run(&self, _matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         // Re-read the raw file for unknown-key detection; the typed config in
         // `ctx` has already dropped anything it did not recognize.
-        let path = ctx.cwd.join(CONFIG_FILE_NAME);
-        let strays = if path.is_file() {
-            let raw = std::fs::read_to_string(&path)
-                .map_err(ForgeError::io(format!("reading {}", path.display())))?;
-            unknown_keys(&raw).map_err(|e| ForgeError::Config {
-                path: path.clone(),
-                message: e.to_string(),
-            })?
-        } else {
-            Vec::new()
-        };
+        let path = ctx.project_config_path.as_deref();
+        let strays = project_unknown_keys(path)?;
         let user_path = ForgeConfig::user_config_path();
         let user_strays = if let Some(user_path) = user_path.as_ref().filter(|p| p.is_file()) {
             let raw = std::fs::read_to_string(user_path)
@@ -48,7 +41,7 @@ impl ForgePlugin for ConfigPlugin {
 
         if ctx.json {
             let report = serde_json::json!({
-                "config_file_present": path.is_file(),
+                "config_file_present": path.is_some(),
                 "user_config_file": user_path.as_ref().filter(|p| p.is_file()).map(|p| p.display().to_string()),
                 "resolved": {
                     "project": {
@@ -77,9 +70,9 @@ impl ForgePlugin for ConfigPlugin {
         }
 
         if !ctx.quiet {
-            if !path.is_file() && !user_path.as_ref().is_some_and(|p| p.is_file()) {
+            if path.is_none() && !user_path.as_ref().is_some_and(|p| p.is_file()) {
                 println!("# no project or user config found — showing defaults\n");
-            } else if !path.is_file() {
+            } else if path.is_none() {
                 println!("# no {CONFIG_FILE_NAME} found — showing user defaults\n");
             }
             print!("{}", resolved_report(&ctx.config));
@@ -87,7 +80,9 @@ impl ForgePlugin for ConfigPlugin {
         // Warnings are diagnostics, not informational output: stderr, even
         // under --quiet (matching "errors still go to stderr").
         for key in &strays {
-            eprintln!("warning: unknown key `{key}` in {CONFIG_FILE_NAME}");
+            if let Some(path) = path {
+                eprintln!("warning: unknown key `{key}` in {}", path.display());
+            }
         }
         if let Some(user_path) = user_path {
             for key in &user_strays {
@@ -96,6 +91,18 @@ impl ForgePlugin for ConfigPlugin {
         }
         Ok(())
     }
+}
+
+fn project_unknown_keys(path: Option<&Path>) -> Result<Vec<String>> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let raw = std::fs::read_to_string(path)
+        .map_err(ForgeError::io(format!("reading {}", path.display())))?;
+    unknown_keys(&raw).map_err(|e| ForgeError::Config {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -129,6 +136,37 @@ mod tests {
         plugin
             .run(&matches, &ctx_in(dir.path(), false, false))
             .unwrap();
+    }
+
+    #[test]
+    fn finds_config_and_unknown_keys_in_parent_directory() {
+        let project = tempfile::tempdir().unwrap();
+        let subdirectory = project.path().join("contracts");
+        std::fs::create_dir(&subdirectory).unwrap();
+        let config_path = project.path().join(CONFIG_FILE_NAME);
+        std::fs::write(
+            &config_path,
+            "[project]\nname = \"ancestor-project\"\nnmae = \"typo\"\n",
+        )
+        .unwrap();
+
+        let ctx = ctx_in(&subdirectory, false, false);
+        assert_eq!(
+            ctx.project_config_path.as_deref(),
+            Some(config_path.as_path())
+        );
+        assert_eq!(
+            ctx.config.as_ref().and_then(|config| config.project.name.as_deref()),
+            Some("ancestor-project")
+        );
+        assert_eq!(
+            project_unknown_keys(ctx.project_config_path.as_deref()).unwrap(),
+            vec![String::from("nmae")]
+        );
+
+        let plugin = ConfigPlugin;
+        let matches = plugin.command().get_matches_from(["config"]);
+        plugin.run(&matches, &ctx).unwrap();
     }
 
     #[test]

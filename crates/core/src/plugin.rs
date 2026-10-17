@@ -14,7 +14,9 @@ use crate::error::Result;
 pub struct ForgeContext {
     /// Directory the CLI was invoked from. // cwd provided by caller
     pub cwd: PathBuf,
-    /// Parsed `forge.toml` from `cwd`, when present.
+    /// Resolved project `forge.toml` path, when present.
+    pub project_config_path: Option<PathBuf>,
+    /// Effective project and user configuration, when either is present.
     pub config: Option<ForgeConfig>,
     /// Number of times `-v`/`--verbose` was passed (0 = default, 1 = debug, 2+ = trace).
     pub verbose: u8,
@@ -68,14 +70,16 @@ impl ForgeContext {
         timeout_secs: Option<u64>,
         config_path: Option<PathBuf>,
     ) -> Result<Self> {
-        let project_config = match &config_path {
-            Some(path) => Some(ForgeConfig::load_from_path(path)?),
-            None => ForgeConfig::load_from(&cwd)?,
-        };
+        let project_config_path = config_path.or_else(|| ForgeConfig::find_config_path(&cwd));
+        let project_config = project_config_path
+            .as_deref()
+            .map(ForgeConfig::load_from_path)
+            .transpose()?;
         let user_config = ForgeConfig::load_user_config()?;
         let config = ForgeConfig::load_effective(project_config, user_config);
         Ok(Self {
             cwd,
+            project_config_path,
             config,
             verbose,
             quiet,
