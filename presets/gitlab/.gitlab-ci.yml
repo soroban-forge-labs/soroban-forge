@@ -51,7 +51,9 @@ testnet-deploy:
     - export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     - cargo build --target wasm32v1-none --release
     - |
+      export STELLAR_SECRET_KEY="$STELLAR_DEPLOYER_SECRET"
+      stellar keys add deployer
       stellar contract deploy \
         --wasm "target/wasm32v1-none/release/{{crate_name}}.wasm" \
-        --source-account "$STELLAR_DEPLOYER_SECRET" \
+        --source-account deployer \
         --network testnet

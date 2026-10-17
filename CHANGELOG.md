@@ -202,6 +202,11 @@ forge_tests` inside `src/`
 
 ### Security
 
+- The GitHub and GitLab deploy presets no longer pass the deployer's secret
+  key as a `--source-account` argument, where any process that could list
+  the runner's processes could read it and a `set -x` would echo it. Each
+  preset now hands the key to `stellar keys add` through `STELLAR_SECRET_KEY`
+  and deploys with `--source-account deployer` (#612)
 - `governance` template: `cast_vote` no longer takes a caller-supplied
   `weight`, which let one voter pass any proposal (or subtract votes with a
   negative weight). Each admin-registered member now has exactly one vote,

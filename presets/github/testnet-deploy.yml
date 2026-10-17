@@ -73,9 +73,10 @@ jobs:
       # ci-init-step: testnet-deploy/deploy/deploy-to-testnet
       - name: Deploy to testnet
         env:
-          STELLAR_DEPLOYER_SECRET: ${{ secrets.STELLAR_DEPLOYER_SECRET }}
+          STELLAR_SECRET_KEY: ${{ secrets.STELLAR_DEPLOYER_SECRET }}
         run: |
+          stellar keys add deployer
           stellar contract deploy \
             --wasm "target/wasm32v1-none/release/{{crate_name}}.wasm" \
-            --source-account "$STELLAR_DEPLOYER_SECRET" \
+            --source-account deployer \
             --network testnet
