@@ -14,6 +14,7 @@ permissions:
 
 env:
   STELLAR_CLI_VERSION: v28.0.0
+  STELLAR_CLI_SHA256: 207544486734fccb4df1afc4a7745478f9f1e21688b2f9506f0ef36f60ce3fdc
   NODE_VERSION: "20"
   # The compiler actually used to type-check the generated output, pinned
   # independently of whatever `stellar contract bindings typescript` puts in
@@ -54,9 +55,13 @@ jobs:
         # version. See: https://github.com/stellar/stellar-cli/releases
         run: |
           mkdir -p ~/.local/bin
+          ARCHIVE="/tmp/stellar-cli.tar.gz"
           curl -fsSL \
             "https://github.com/stellar/stellar-cli/releases/download/${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION#v}-$(uname -m)-unknown-linux-gnu.tar.gz" \
-            | tar xz -C ~/.local/bin stellar
+            -o "$ARCHIVE"
+          echo "${STELLAR_CLI_SHA256}  $ARCHIVE" | sha256sum -c
+          tar xz -f "$ARCHIVE" -C ~/.local/bin stellar
+          rm -f "$ARCHIVE"
           chmod +x ~/.local/bin/stellar
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build soroban-forge

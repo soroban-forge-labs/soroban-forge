@@ -19,6 +19,7 @@ concurrency:
 
 env:
   STELLAR_CLI_VERSION: v27.0.0
+  STELLAR_CLI_SHA256: 357bf712f6353c28cd33c794402a3c87231757a5b305e6ef1604365af4fdd556
 
 jobs:
   deploy:
@@ -62,9 +63,13 @@ jobs:
         # See: https://github.com/stellar/stellar-cli/releases
         run: |
           mkdir -p ~/.local/bin
+          ARCHIVE="/tmp/stellar-cli.tar.gz"
           curl -fsSL \
             "https://github.com/stellar/stellar-cli/releases/download/${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION#v}-$(uname -m)-unknown-linux-gnu.tar.gz" \
-            | tar xz -C ~/.local/bin stellar
+            -o "$ARCHIVE"
+          echo "${STELLAR_CLI_SHA256}  $ARCHIVE" | sha256sum -c
+          tar xz -f "$ARCHIVE" -C ~/.local/bin stellar
+          rm -f "$ARCHIVE"
           chmod +x ~/.local/bin/stellar
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # ci-init-step: testnet-deploy/deploy/build-contract

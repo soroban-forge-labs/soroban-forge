@@ -956,8 +956,8 @@ mod tests {
         assert!(contents.contains(
             "rustup toolchain install stable --profile minimal --target wasm32v1-none"
         ));
-        assert!(contents.contains("cargo build --target wasm32v1-none --release"));
-        assert!(contents.contains("cargo test"));
+        assert!(contents.contains("cargo +stable build --target wasm32v1-none --release"));
+        assert!(contents.contains("cargo +stable test"));
         assert!(contents.contains("MAX_WASM_BYTES = '32768'"));
         assert!(contents.contains("target/wasm32v1-none/release/*.wasm"));
         assert!(!contents.contains("{{"));
@@ -1197,6 +1197,66 @@ mod tests {
             steps[release]["with"]["fail_on_unmatched_files"],
             serde_yaml::Value::Bool(true),
             "the release step must fail when an expected file is missing"
+        );
+    }
+
+    /// #613 — the deploy preset must verify the stellar-cli archive checksum
+    /// before extraction. A tampered or truncated download must fail the job
+    /// *before* tar runs, so the deployer secret is never exposed to an
+    /// unverified binary.
+    ///
+    /// Specifically the generated YAML must:
+    /// - declare `STELLAR_CLI_SHA256` alongside `STELLAR_CLI_VERSION`
+    /// - download to a file (not pipe straight into tar)
+    /// - verify with `sha256sum -c` before calling `tar`
+    #[test]
+    fn deploy_preset_verifies_archive_checksum_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        generate(
+            dir.path(),
+            "github",
+            "my-contract",
+            false, // _deploy (ignored — deploy is set via opts)
+            false, // release
+            &GenerateOptions {
+                deploy: true,
+                ..base_opts()
+            },
+            false,
+        )
+        .unwrap();
+        let contents = std::fs::read_to_string(
+            dir.path().join(".github/workflows/testnet-deploy.yml"),
+        )
+        .unwrap();
+
+        // Must declare a pinned checksum variable.
+        assert!(
+            contents.contains("STELLAR_CLI_SHA256:"),
+            "testnet-deploy.yml must declare STELLAR_CLI_SHA256"
+        );
+
+        // The install step must download to a file, verify the checksum, and
+        // only then extract — never pipe curl directly into tar.
+        assert!(
+            !contents.contains("| tar"),
+            "testnet-deploy.yml must not pipe curl directly into tar (checksum would be skipped)"
+        );
+        assert!(
+            contents.contains("sha256sum -c"),
+            "testnet-deploy.yml must verify the downloaded archive with sha256sum -c"
+        );
+
+        // sha256sum -c must appear before tar in the install-stellar-cli step.
+        let sha256_pos = contents
+            .find("sha256sum -c")
+            .expect("sha256sum -c must be present");
+        let tar_pos = contents
+            .find("tar xz")
+            .expect("tar xz must be present");
+        assert!(
+            sha256_pos < tar_pos,
+            "sha256sum -c must precede tar extraction so a mismatch aborts before extraction"
         );
     }
 

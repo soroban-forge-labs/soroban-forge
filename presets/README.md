@@ -57,3 +57,21 @@ cache key, create
 
 The workflow, job, and step IDs correspond to the `ci-init-step` markers in
 the source preset files under `presets/github/`.
+
+### Updating stellar-cli in presets
+
+The testnet deploy preset (`presets/github/testnet-deploy.yml`) installs `stellar-cli`
+from official GitHub releases. To protect secret credentials (such as the deployer key)
+from tampered or truncated downloads, the release archive is verified against a pinned
+SHA-256 checksum before extraction.
+
+When updating `STELLAR_CLI_VERSION`:
+1. Download the release archive for the target version, e.g.:
+   ```sh
+   VERSION="v27.0.0"
+   ARCHIVE="stellar-cli-${VERSION#v}-x86_64-unknown-linux-gnu.tar.gz"
+   curl -fsSLO "https://github.com/stellar/stellar-cli/releases/download/${VERSION}/${ARCHIVE}"
+   sha256sum "$ARCHIVE"
+   ```
+2. Update `STELLAR_CLI_VERSION` and `STELLAR_CLI_SHA256` in `presets/github/testnet-deploy.yml`.
+   Both values must be updated together. A hash mismatch will abort the job before archive extraction.
