@@ -67,7 +67,7 @@ impl DutchAuctionContract {
     /// * `start_price` — starting price in payment tokens at start of auction
     /// * `floor_price` — minimum price floor in payment tokens
     /// * `duration_seconds` — duration over which price decays linearly from `start_price` to `floor_price`
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         seller: Address,
         asset_token: Address,
@@ -77,11 +77,6 @@ impl DutchAuctionContract {
         floor_price: i128,
         duration_seconds: u64,
     ) {
-        seller.require_auth();
-
-        if env.storage().instance().has(&DataKey::Seller) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
         if asset_amount <= 0 {
             panic_with_error!(&env, Error::AssetAmountMustBePositive);
         }

@@ -74,7 +74,7 @@ impl EnglishAuctionContract {
     /// * `min_increment_bps` — minimum bid increment in basis points
     /// * `extension_window_seconds` — anti-sniping window; bids within this
     ///   window of the end extend the auction by `extension_window_seconds`
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         seller: Address,
         asset_token: Address,
@@ -85,10 +85,6 @@ impl EnglishAuctionContract {
         min_increment_bps: u32,
         extension_window_seconds: u64,
     ) {
-        seller.require_auth();
-        if env.storage().instance().has(&DataKey::Seller) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
         if asset_amount <= 0 {
             panic_with_error!(&env, Error::AssetAmountMustBePositive);
         }

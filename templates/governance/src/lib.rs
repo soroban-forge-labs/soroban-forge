@@ -120,11 +120,7 @@ impl GovernanceContract {
     /// * `quorum`        — minimum total votes (for + against) required to execute;
     ///   with one vote per member this is a number of members
     /// * `voting_period` — voting window in ledgers (~5 s per ledger on mainnet)
-    pub fn initialize(env: Env, admin: Address, quorum: i128, voting_period: u32) {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
+    pub fn __constructor(env: Env, admin: Address, quorum: i128, voting_period: u32) {
         if quorum <= 0 {
             panic_with_error!(&env, Error::QuorumMustBePositive);
         }

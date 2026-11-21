@@ -30,9 +30,18 @@ fn setup(
     token.initialize(&token_admin, &7, &"TEST".into(), &"Test Token".into());
     token.mint(depositor, &amount);
 
-    let escrow_id = env.register_contract(None, EscrowContract);
+    let escrow_id = env.register(
+        EscrowContract,
+        (
+            depositor.clone(),
+            recipient.clone(),
+            approver.clone(),
+            token_id.clone(),
+            amount,
+            timeout,
+        ),
+    );
     let escrow = EscrowContractClient::new(env, &escrow_id);
-    escrow.initialize(depositor, recipient, approver, &token_id, &amount, &timeout);
     (escrow, token_id)
 }
 

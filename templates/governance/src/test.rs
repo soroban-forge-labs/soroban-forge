@@ -52,12 +52,11 @@ struct Dao<'a> {
 fn setup<'a>(members: usize) -> (Dao<'a>, std::vec::Vec<Address>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(GovernanceContract, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(GovernanceContract, (admin.clone(), 3i128, 100u32));
     let client = GovernanceContractClient::new(&env, &contract_id);
     let target_id = env.register(MockTargetContract, ());
     let target = MockTargetContractClient::new(&env, &target_id);
-    let admin = Address::generate(&env);
-    client.initialize(&admin, &3, &100);
 
     let mut addrs = std::vec::Vec::new();
     for _ in 0..members {
@@ -255,8 +254,7 @@ fn execute_fails_below_quorum() {
 fn zero_quorum_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, ()));
-    client.initialize(&Address::generate(&env), &0, &100);
+    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, (Address::generate(&env), 0, 100)));
 }
 
 #[test]
@@ -264,8 +262,7 @@ fn zero_quorum_is_rejected() {
 fn negative_quorum_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, ()));
-    client.initialize(&Address::generate(&env), &-1, &100);
+    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, (Address::generate(&env), -1, 100)));
 }
 
 #[test]
@@ -273,6 +270,5 @@ fn negative_quorum_is_rejected() {
 fn zero_voting_period_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, ()));
-    client.initialize(&Address::generate(&env), &3, &0);
+    let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, (Address::generate(&env), 3, 0)));
 }

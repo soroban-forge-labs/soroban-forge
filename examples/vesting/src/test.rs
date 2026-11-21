@@ -34,17 +34,18 @@ fn setup(env: &Env) -> (VestingContractClient<'_>, Tok<'_>, Address, Address, u6
     let cliff_duration = 1000_u64; // 1000 seconds
     let vesting_duration = 4000_u64; // 4000 seconds
 
-    let contract_id = env.register(VestingContract, ());
-    let contract = VestingContractClient::new(env, &contract_id);
-
-    contract.initialize(
-        &admin,
-        &token.address,
-        &beneficiary,
-        &cliff_duration,
-        &vesting_duration,
-        &100_000,
+    let contract_id = env.register(
+        VestingContract,
+        (
+            admin.clone(),
+            token.address.clone(),
+            beneficiary.clone(),
+            cliff_duration,
+            vesting_duration,
+            100_000i128,
+        ),
     );
+    let contract = VestingContractClient::new(env, &contract_id);
 
     (contract, token, admin, beneficiary, start_ts)
 }

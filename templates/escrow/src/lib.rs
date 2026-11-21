@@ -55,7 +55,7 @@ impl EscrowContract {
     /// * `amount`     — token amount to be escrowed
     /// * `timeout`    — absolute ledger sequence after which the depositor may
     ///                  claim a refund via `refund_on_timeout`
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         depositor: Address,
         recipient: Address,
@@ -64,10 +64,6 @@ impl EscrowContract {
         amount: i128,
         timeout: u32,
     ) {
-        depositor.require_auth();
-        if env.storage().instance().has(&DataKey::Depositor) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
         if amount <= 0 {
             panic_with_error!(&env, Error::AmountMustBePositive);
         }

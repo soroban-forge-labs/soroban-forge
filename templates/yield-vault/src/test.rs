@@ -38,9 +38,8 @@ fn setup(env: &Env) -> TestContext<'_> {
     env.mock_all_auths();
 
     let asset = make_token(env);
-    let contract_id = env.register(YieldVaultContract, ());
+    let contract_id = env.register(YieldVaultContract, (asset.address.clone(),));
     let vault = YieldVaultContractClient::new(env, &contract_id);
-    vault.initialize(&asset.address);
 
     let alice = Address::generate(env);
     let bob = Address::generate(env);
@@ -189,14 +188,6 @@ fn test_rounding_favours_vault() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #1)")]
-fn test_cannot_reinitialize() {
-    let env = Env::default();
-    let ctx = setup(&env);
-    ctx.vault.initialize(&ctx.asset.address);
-}
-
-#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_cannot_deposit_zero() {
     let env = Env::default();
@@ -219,9 +210,8 @@ fn test_cannot_add_yield_to_empty_vault() {
     let env = Env::default();
     env.mock_all_auths();
     let asset = make_token(&env);
-    let contract_id = env.register(YieldVaultContract, ());
+    let contract_id = env.register(YieldVaultContract, (asset.address.clone(),));
     let vault = YieldVaultContractClient::new(&env, &contract_id);
-    vault.initialize(&asset.address);
 
     let provider = Address::generate(&env);
     asset.admin.mint(&provider, &1_000);

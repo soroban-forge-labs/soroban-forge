@@ -22,7 +22,7 @@ Under no circumstances does integer truncation favour an individual user over th
 
 ### Entrypoints
 
-- `initialize(env, asset)`: Sets the underlying SEP-41 token address. Can only be called once.
+- `__constructor(env, asset)`: Sets the underlying SEP-41 token address at deploy time, atomically with deployment.
 - `asset(env)`: Returns the address of the underlying asset token.
 - `total_assets(env)`: Returns the total amount of underlying assets managed by the vault.
 - `total_shares(env)`: Returns the total number of vault shares currently minted.
@@ -32,6 +32,10 @@ Under no circumstances does integer truncation favour an individual user over th
 - `deposit(env, from, assets)`: Transfers `assets` from the caller to the vault and mints proportional shares.
 - `withdraw(env, from, shares)`: Burns `shares` from the caller and transfers proportional underlying assets.
 - `add_yield(env, from, yield_amount)`: Deposits additional underlying assets as yield without minting new shares.
+- `transfer(env, from, to, amount)`: Transfers vault shares from the caller to `to`.
+- `approve(env, from, spender, amount)`: Authorizes `spender` to transfer up to `amount` of the caller's shares.
+- `allowance(env, from, spender)`: Returns the amount `spender` may transfer from `from`'s shares.
+- `transfer_from(env, spender, from, to, amount)`: Transfers shares from `from` to `to` using a previously approved allowance.
 
 ## Testing
 
@@ -45,21 +49,14 @@ cargo test
    ```sh
    stellar contract build
    ```
-2. Deploy to Testnet:
+2. Deploy to Testnet, passing the constructor argument (there is no separate
+   initialize step — it runs atomically with deployment):
    ```sh
    stellar contract deploy \
      --wasm target/wasm32-unknown-unknown/release/yield_vault.wasm \
      --source <IDENTITY> \
-     --network testnet
-   ```
-3. Initialize the vault:
-   ```sh
-   stellar contract invoke \
-     --id <VAULT_CONTRACT_ID> \
-     --source <IDENTITY> \
      --network testnet \
-     -- initialize \
-     --asset <ASSET_TOKEN_ADDRESS>
+     -- --asset <ASSET_TOKEN_ADDRESS>
    ```
 
 ## Security

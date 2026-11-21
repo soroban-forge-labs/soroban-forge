@@ -33,17 +33,13 @@ pub struct YieldVaultContract;
 
 #[contractimpl]
 impl YieldVaultContract {
-    /// Initialize the vault with an underlying SEP-41 token.
-    pub fn initialize(env: Env, asset: Address) -> Result<(), VaultError> {
-        if env.storage().instance().has(&DataKey::Asset) {
-            return Err(VaultError::AlreadyInitialized);
-        }
-
+    /// Deploy-time setup with the underlying SEP-41 token. Runs atomically
+    /// with deployment, so there is no window where an attacker could race
+    /// a separate initialize call to pick the vault's asset.
+    pub fn __constructor(env: Env, asset: Address) {
         env.storage().instance().set(&DataKey::Asset, &asset);
         env.storage().instance().set(&DataKey::TotalShares, &0_i128);
         env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
-
-        Ok(())
     }
 
     /// Return the underlying asset token address.

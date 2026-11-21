@@ -10,7 +10,7 @@ Tokens are deposited by an admin and become claimable by a beneficiary over
 time according to a fixed schedule:
 
 1. **Cliff period** — no tokens vest until a configurable duration (in seconds)
-   has elapsed from initialization.
+   has elapsed from deployment.
 2. **Linear release** — after the cliff, tokens vest continuously at a constant
    rate over the remaining vesting duration.
 3. **Claim** — the beneficiary calls `claim` to transfer any newly vested
@@ -29,24 +29,19 @@ stellar contract build     # build the deployable wasm
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/vesting.wasm \
   --source-account <your-identity> \
-  --network testnet
-```
-
-Then initialize and fund:
-
-```sh
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source-account <ADMIN> \
   --network testnet \
-  -- initialize \
-  --admin <ADMIN_ADDRESS> \
+  -- --admin <ADMIN_ADDRESS> \
   --token <TOKEN_ADDRESS> \
   --beneficiary <BENEFICIARY_ADDRESS> \
   --cliff_duration 604800 \
   --vesting_duration 2592000 \
   --total_amount 1000000
+```
 
+The constructor sets up the vesting schedule atomically with deployment, so
+there is no separate initialize step. Then fund it:
+
+```sh
 stellar contract invoke \
   --id <CONTRACT_ID> \
   --source-account <ADMIN> \
@@ -63,3 +58,7 @@ stellar contract invoke \
   --network testnet \
   -- claim
 ```
+
+## Security
+
+This template is a starting point, not audited code. See [security-considerations.md](https://github.com/soroban-forge-labs/soroban-forge/blob/main/docs/security-considerations.md) for what it does and does not protect against.

@@ -55,7 +55,7 @@ impl VestingContract {
     /// * `cliff_duration` — seconds from now until first tokens vest
     /// * `vesting_duration` — seconds from cliff end until fully vested
     /// * `total_amount` — total tokens to vest over the schedule
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         admin: Address,
         token: Address,
@@ -64,12 +64,6 @@ impl VestingContract {
         vesting_duration: u64,
         total_amount: i128,
     ) {
-        admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
-
         if total_amount <= 0 {
             panic_with_error!(&env, Error::TotalAmountMustBePositive);
         }
