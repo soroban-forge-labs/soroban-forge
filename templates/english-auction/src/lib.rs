@@ -1,4 +1,4 @@
-﻿//! English Auction contract - ascending price auction.
+//! English Auction contract — ascending price auction.
 //!
 //! An ascending-price auction where bidders place successively higher bids
 //! within a fixed time window. The highest bidder at auction end wins the asset.
