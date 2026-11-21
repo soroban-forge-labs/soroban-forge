@@ -18,7 +18,21 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    AmountMustBePositive = 2,
+    IntervalMustBePositive = 3,
+    AlreadySubscribed = 4,
+    NotSubscribed = 5,
+    SubscriptionIsNotActive = 6,
+    IntervalHasNotElapsed = 7,
+}
+
 
 #[contracttype]
 pub enum DataKey {
@@ -60,14 +74,14 @@ impl SubscriptionContract {
     /// higher amount.
     pub fn initialize(env: Env, merchant: Address, token: Address, amount: i128, interval: u64) {
         if env.storage().instance().has(&DataKey::Merchant) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         merchant.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(&env, Error::AmountMustBePositive);
         }
         if interval == 0 {
-            panic!("interval must be positive");
+            panic_with_error!(&env, Error::IntervalMustBePositive);
         }
         env.storage().instance().set(&DataKey::Merchant, &merchant);
         env.storage().instance().set(&DataKey::Token, &token);
@@ -84,7 +98,7 @@ impl SubscriptionContract {
 
         if let Some(existing) = Self::subscription_of(&env, &subscriber) {
             if existing.active {
-                panic!("already subscribed");
+                panic_with_error!(&env, Error::AlreadySubscribed);
             }
         }
 
@@ -112,13 +126,13 @@ impl SubscriptionContract {
         Self::merchant(env.clone()).require_auth();
 
         let mut sub =
-            Self::subscription_of(&env, &subscriber).unwrap_or_else(|| panic!("not subscribed"));
+            Self::subscription_of(&env, &subscriber).unwrap_or_else(|| panic_with_error!(&env, Error::NotSubscribed));
         if !sub.active {
-            panic!("subscription is not active");
+            panic_with_error!(&env, Error::SubscriptionIsNotActive);
         }
         let now = env.ledger().timestamp();
         if now < sub.next_charge {
-            panic!("interval has not elapsed");
+            panic_with_error!(&env, Error::IntervalHasNotElapsed);
         }
 
         let amount = Self::pull_payment(&env, &subscriber);
@@ -140,9 +154,9 @@ impl SubscriptionContract {
         subscriber.require_auth();
 
         let mut sub =
-            Self::subscription_of(&env, &subscriber).unwrap_or_else(|| panic!("not subscribed"));
+            Self::subscription_of(&env, &subscriber).unwrap_or_else(|| panic_with_error!(&env, Error::NotSubscribed));
         if !sub.active {
-            panic!("subscription is not active");
+            panic_with_error!(&env, Error::SubscriptionIsNotActive);
         }
         sub.active = false;
         env.storage()
@@ -159,7 +173,7 @@ impl SubscriptionContract {
 
     /// `subscriber`'s state. Panics when they never subscribed.
     pub fn subscription(env: Env, subscriber: Address) -> Subscription {
-        Self::subscription_of(&env, &subscriber).unwrap_or_else(|| panic!("not subscribed"))
+        Self::subscription_of(&env, &subscriber).unwrap_or_else(|| panic_with_error!(&env, Error::NotSubscribed))
     }
 
     /// Whether a charge would succeed right now.

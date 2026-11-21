@@ -8,7 +8,22 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    AssetAmountMustBePositive = 2,
+    PricesMustBePositive = 3,
+    StartPriceMustBeGreaterThanOrEqualToFloorPrice = 4,
+    DurationMustBePositive = 5,
+    AuctionCanOnlyBeFundedWhenPending = 6,
+    AuctionIsNotOpenForPurchase = 7,
+    CanOnlyCancelAnOpenAuction = 8,
+}
+
 
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -65,19 +80,19 @@ impl DutchAuctionContract {
         seller.require_auth();
 
         if env.storage().instance().has(&DataKey::Seller) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         if asset_amount <= 0 {
-            panic!("asset amount must be positive");
+            panic_with_error!(&env, Error::AssetAmountMustBePositive);
         }
         if start_price <= 0 || floor_price <= 0 {
-            panic!("prices must be positive");
+            panic_with_error!(&env, Error::PricesMustBePositive);
         }
         if start_price < floor_price {
-            panic!("start price must be greater than or equal to floor price");
+            panic_with_error!(&env, Error::StartPriceMustBeGreaterThanOrEqualToFloorPrice);
         }
         if duration_seconds == 0 {
-            panic!("duration must be positive");
+            panic_with_error!(&env, Error::DurationMustBePositive);
         }
 
         env.storage().instance().set(&DataKey::Seller, &seller);
@@ -114,7 +129,7 @@ impl DutchAuctionContract {
             .get(&DataKey::State)
             .expect("auction not initialized");
         if state != AuctionState::Pending {
-            panic!("auction can only be funded when pending");
+            panic_with_error!(&env, Error::AuctionCanOnlyBeFundedWhenPending);
         }
 
         let seller: Address = env.storage().instance().get(&DataKey::Seller).unwrap();
@@ -174,7 +189,7 @@ impl DutchAuctionContract {
             .get(&DataKey::State)
             .expect("auction not initialized");
         if state != AuctionState::Open {
-            panic!("auction is not open for purchase");
+            panic_with_error!(&env, Error::AuctionIsNotOpenForPurchase);
         }
 
         let current_price = Self::get_current_price(env.clone());
@@ -220,7 +235,7 @@ impl DutchAuctionContract {
             .get(&DataKey::State)
             .expect("auction not initialized");
         if state != AuctionState::Open {
-            panic!("can only cancel an open auction");
+            panic_with_error!(&env, Error::CanOnlyCancelAnOpenAuction);
         }
 
         let asset_token: Address = env.storage().instance().get(&DataKey::AssetToken).unwrap();

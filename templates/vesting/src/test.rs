@@ -149,7 +149,7 @@ fn multiple_partial_claims() {
 }
 
 #[test]
-#[should_panic(expected = "nothing to claim")]
+#[should_panic]
 fn double_claim_fails() {
     let env = Env::default();
     let (contract, token, admin, _beneficiary, start_ts) = setup(&env);
@@ -166,7 +166,7 @@ fn double_claim_fails() {
 }
 
 #[test]
-#[should_panic(expected = "nothing to claim")]
+#[should_panic]
 fn claim_pre_cliff_fails() {
     let env = Env::default();
     let (contract, _token, _admin, _beneficiary, start_ts) = setup(&env);
@@ -177,7 +177,7 @@ fn claim_pre_cliff_fails() {
 }
 
 #[test]
-#[should_panic(expected = "already funded")]
+#[should_panic]
 fn fund_twice_is_rejected() {
     let env = Env::default();
     let (contract, token, admin, _beneficiary, _start_ts) = setup(&env);

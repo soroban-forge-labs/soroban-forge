@@ -21,7 +21,22 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
+use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, Vec, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    AtLeastOnePayeeIsRequired = 2,
+    PayeesAndSharesMustHaveTheSameLength = 3,
+    ShareMustBePositive = 4,
+    DuplicatePayee = 5,
+    DepositMustBePositive = 6,
+    NotAPayee = 7,
+    NothingToRelease = 8,
+}
+
 
 #[contracttype]
 pub enum DataKey {
@@ -60,13 +75,13 @@ impl PaymentSplitterContract {
     /// `__constructor`) so nobody can front-run the first call.
     pub fn initialize(env: Env, token: Address, payees: Vec<Address>, shares: Vec<u32>) {
         if env.storage().instance().has(&DataKey::Token) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         if payees.is_empty() {
-            panic!("at least one payee is required");
+            panic_with_error!(&env, Error::AtLeastOnePayeeIsRequired);
         }
         if payees.len() != shares.len() {
-            panic!("payees and shares must have the same length");
+            panic_with_error!(&env, Error::PayeesAndSharesMustHaveTheSameLength);
         }
 
         let mut total_shares: u32 = 0;
@@ -74,14 +89,14 @@ impl PaymentSplitterContract {
             let payee = payees.get_unchecked(i);
             let share = shares.get_unchecked(i);
             if share == 0 {
-                panic!("share must be positive");
+                panic_with_error!(&env, Error::ShareMustBePositive);
             }
             if env
                 .storage()
                 .instance()
                 .has(&DataKey::Shares(payee.clone()))
             {
-                panic!("duplicate payee");
+                panic_with_error!(&env, Error::DuplicatePayee);
             }
             env.storage()
                 .instance()
@@ -113,7 +128,7 @@ impl PaymentSplitterContract {
     pub fn deposit(env: Env, from: Address, amount: i128) {
         from.require_auth();
         if amount <= 0 {
-            panic!("deposit must be positive");
+            panic_with_error!(&env, Error::DepositMustBePositive);
         }
 
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
@@ -135,7 +150,7 @@ impl PaymentSplitterContract {
         env.storage()
             .instance()
             .get(&DataKey::Shares(payee))
-            .unwrap_or_else(|| panic!("not a payee"))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotAPayee))
     }
 
     /// Total the payee has already withdrawn.
@@ -169,7 +184,7 @@ impl PaymentSplitterContract {
     pub fn release(env: Env, payee: Address) -> i128 {
         let amount = Self::releasable(env.clone(), payee.clone());
         if amount <= 0 {
-            panic!("nothing to release");
+            panic_with_error!(&env, Error::NothingToRelease);
         }
 
         let released: i128 = Self::released(env.clone(), payee.clone());

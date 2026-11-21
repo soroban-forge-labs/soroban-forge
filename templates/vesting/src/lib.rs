@@ -14,7 +14,19 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    TotalAmountMustBePositive = 2,
+    AlreadyFunded = 3,
+    AlreadyRevoked = 4,
+    NothingToClaim = 5,
+}
+
 
 #[contracttype]
 pub enum DataKey {
@@ -55,11 +67,11 @@ impl VestingContract {
         admin.require_auth();
 
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
 
         if total_amount <= 0 {
-            panic!("total amount must be positive");
+            panic_with_error!(&env, Error::TotalAmountMustBePositive);
         }
 
         let now = env.ledger().timestamp();
@@ -97,7 +109,7 @@ impl VestingContract {
             .get::<_, bool>(&DataKey::Funded)
             .unwrap_or(false)
         {
-            panic!("already funded");
+            panic_with_error!(&env, Error::AlreadyFunded);
         }
         env.storage().instance().set(&DataKey::Funded, &true);
 
@@ -120,7 +132,7 @@ impl VestingContract {
             .get::<_, bool>(&DataKey::Revoked)
             .unwrap_or(false)
         {
-            panic!("already revoked");
+            panic_with_error!(&env, Error::AlreadyRevoked);
         }
 
         let vested = Self::get_vested_amount(env.clone());
@@ -191,7 +203,7 @@ impl VestingContract {
 
         let claimable = Self::get_claimable_amount(env.clone());
         if claimable <= 0 {
-            panic!("nothing to claim");
+            panic_with_error!(&env, Error::NothingToClaim);
         }
 
         let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap();

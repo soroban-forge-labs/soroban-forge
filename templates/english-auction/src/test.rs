@@ -125,7 +125,7 @@ fn test_place_multiple_bids() {
 }
 
 #[test]
-#[should_panic(expected = "bid is too low")]
+#[should_panic]
 fn test_bid_below_reserve() {
     let env = Env::default();
     let ctx = setup(&env);

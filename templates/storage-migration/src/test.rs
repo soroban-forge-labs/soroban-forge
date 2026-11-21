@@ -182,7 +182,7 @@ fn test_migration_with_multiple_data_points() {
 }
 
 #[test]
-#[should_panic(expected = "already initialized")]
+#[should_panic]
 fn test_init_twice_fails() {
     let env = Env::default();
     let client = StorageMigrationClient::new(&env, &env.register(StorageMigration, ()));

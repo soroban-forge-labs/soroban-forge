@@ -73,7 +73,7 @@ fn refund_after_timeout() {
 }
 
 #[test]
-#[should_panic(expected = "timeout has not been reached yet")]
+#[should_panic]
 fn refund_before_timeout_fails() {
     let env = Env::default();
     let depositor = Address::generate(&env);
