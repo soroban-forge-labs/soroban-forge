@@ -46,9 +46,11 @@ fn deposit_and_release() {
     let (escrow, token_id) = setup(&env, &depositor, &recipient, &approver, 500, 1000);
     escrow.deposit();
     assert_eq!(escrow.get_state(), EscrowState::Funded);
+    assert!(!env.events().all().is_empty());
 
     escrow.approve_release();
     assert_eq!(escrow.get_state(), EscrowState::Released);
+    assert!(!env.events().all().is_empty());
 
     let token = token_contract::Client::new(&env, &token_id);
     assert_eq!(token.balance(&recipient), 500);
@@ -67,6 +69,7 @@ fn refund_after_timeout() {
     env.ledger().with_mut(|li| li.sequence_number = 101);
     escrow.refund_on_timeout();
     assert_eq!(escrow.get_state(), EscrowState::Refunded);
+    assert!(!env.events().all().is_empty());
 
     let token = token_contract::Client::new(&env, &token_id);
     assert_eq!(token.balance(&depositor), 300);
