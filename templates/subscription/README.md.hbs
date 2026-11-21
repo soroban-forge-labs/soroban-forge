@@ -24,6 +24,12 @@ Each charge advances the due date by exactly one interval, so a merchant
 cannot bill twice for the same period, and a late charge does not silently
 skip one — two owed periods are collected with two calls.
 
+## Events
+
+- `subscribe` - topics ("subscribe", subscriber)
+- `charge` - topics ("charge", subscriber), data: amount charged
+- `cancel` - topics ("cancel", subscriber)
+
 ## Interface
 
 | function                                       | description                          |
