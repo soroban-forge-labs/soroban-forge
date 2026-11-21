@@ -145,3 +145,42 @@ fn sender_can_cancel_stream() {
     assert_eq!(token.client.balance(&sender), 50_000);
     assert_eq!(contract.get_claimable_amount(), 0);
 }
+
+#[test]
+fn streamed_amount_does_not_overflow_for_huge_grant_over_long_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let start_ts = 1_000_000;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = make_token(&env);
+
+    // A stream near i128::MAX paid out linearly over ~4 years.
+    let huge_amount = i128::MAX - 1;
+    let duration_seconds = 4 * 365 * 24 * 60 * 60_u64; // ~4 years in seconds
+
+    let contract_id = env.register(StreamingContract, ());
+    let contract = StreamingContractClient::new(&env, &contract_id);
+    contract.initialize(
+        &sender,
+        &token.address,
+        &recipient,
+        &duration_seconds,
+        &huge_amount,
+    );
+
+    // Halfway through the stream, roughly half should be streamed. This
+    // calculation used to overflow u128 and trap before the fix.
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + duration_seconds / 2);
+    let streamed = contract.get_streamed_amount();
+    assert!(streamed > 0 && streamed < huge_amount);
+
+    // Fully streamed at the end of the schedule.
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + duration_seconds);
+    assert_eq!(contract.get_streamed_amount(), huge_amount);
+}
