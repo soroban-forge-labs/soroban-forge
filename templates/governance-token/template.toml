@@ -1,0 +1,23 @@
+description = "SEP-41 governance token with vote delegation and checkpointed past-votes lookup"
+
+[[variables]]
+name = "token_name"
+prompt = "Human-readable token name"
+default = "Governance Token"
+
+[[variables]]
+name = "token_symbol"
+prompt = "Ticker symbol"
+default = "GOV"
+
+[[variables]]
+name = "token_decimals"
+prompt = "Decimal places (7 matches XLM)"
+default = "7"
+
+[post_generate]
+hints = [
+  "the constructor takes (admin, decimals, name, symbol) — pass them after `--` at `stellar contract deploy` time",
+  "holders must call `delegate(account, delegatee)` (or self-delegate) to activate voting power checkpoints",
+  "governance contracts should query `get_past_votes(voter, proposal_created_ledger)` to prevent flash-loan and double-vote attacks",
+]

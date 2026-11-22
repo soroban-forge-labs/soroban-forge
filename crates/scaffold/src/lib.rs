@@ -185,6 +185,9 @@ pub fn template_description(name: &str) -> Option<&'static str> {
             "uncollateralized single-transaction loan repaid via a borrower callback",
         ),
         "governance" => Some("DAO governance with one-member-one-vote, quorum, and proposal execution"),
+        "governance-token" => Some(
+            "SEP-41 governance token with vote delegation and checkpointed past-votes lookup",
+        ),
         "hello-world" => Some("minimal greeter contract (recommended starting point)"),
         "lottery" => Some("randomized lottery with ticket purchases and prize pool distribution"),
         "merkle-airdrop" => Some("one-claim-per-address airdrop verified against a merkle root"),
@@ -2351,7 +2354,19 @@ default = "MYT"
     #[test]
     fn bundled_templates_without_a_manifest_report_none() {
         for template in available_templates() {
-            if ["crowdfund", "hello-world", "token"].contains(&template) {
+            if [
+                "access-control",
+                "cross-contract",
+                "crowdfund",
+                "flash-loan",
+                "governance-token",
+                "hello-world",
+                "prediction-market",
+                "storage-migration",
+                "token",
+            ]
+            .contains(&template)
+            {
                 continue;
             }
             assert_eq!(

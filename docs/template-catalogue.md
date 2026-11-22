@@ -17,11 +17,12 @@ scripts/gen-template-catalogue.py
 | [`cross-contract`](#cross-contract) | two-contract workspace demonstrating cross-contract calls with authorization |
 | [`crowdfund`](#crowdfund) | escrow/deadline crowdfunding contract |
 | [`dutch-auction`](#dutch-auction) | descending-price auction with linear price decay and immediate settlement |
-| [`english-auction`](#english-auction) | no description available |
+| [`english-auction`](#english-auction) | an ascending-price auction where bidders place successively higher bids within a fixed time window |
 | [`escrow`](#escrow) | token escrow with approval or timeout-based refund path |
 | [`faucet`](#faucet) | token faucet dispensing a fixed amount per address with a cooldown |
 | [`flash-loan`](#flash-loan) | uncollateralized single-transaction loan repaid via a borrower callback |
 | [`governance`](#governance) | DAO governance with one-member-one-vote, quorum, and proposal execution |
+| [`governance-token`](#governance-token) | SEP-41 governance token with vote delegation and checkpointed past-votes lookup |
 | [`hello-world`](#hello-world) | minimal greeter contract (recommended starting point) |
 | [`lottery`](#lottery) | randomized lottery with ticket purchases and prize pool distribution |
 | [`merkle-airdrop`](#merkle-airdrop) | one-claim-per-address airdrop verified against a merkle root |
@@ -55,7 +56,7 @@ the whole gate. The `mint`/`burn` ledger at the bottom of this file exists
 only to give those roles something real to protect; replace it with your
 own entrypoints.
 
-**Entrypoints:** `set_fee`, `has_role`, `get_role_admin`, `role_member_count`, `grant_role`, `revoke_role`, `renounce_role`, `set_role_admin`, `mint`, `burn`, `balance`, `total_supply`
+**Entrypoints:** `set_fee`, `has_role`, `get_role_admin`, `role_member_count`, `grant_role`, `revoke_role`, `renounce_role`, `set_role_admin`, `mint`, `burn`, `force_burn`, `balance`, `total_supply`
 
 **When to pick it:** you need reusable grant/revoke/has-role primitives with an admin role, to gate entrypoints you add yourself
 
@@ -87,7 +88,7 @@ does not issue a separate share-token contract, keeping the example
 self-contained. The two reserve tokens are any contracts implementing the
 standard Soroban token interface (e.g. Stellar Asset Contracts).
 
-**Entrypoints:** `deposit`, `swap`, `withdraw`, `get_reserves`, `shares`, `total_shares`, `tokens`
+**Entrypoints:** `deposit_with_deadline`, `deposit`, `swap_with_deadline`, `swap`, `withdraw`, `get_reserves`, `shares`, `total_shares`, `tokens`, `get_amount_in`, `get_amount_out`
 
 **When to pick it:** a self-contained two-token constant-product pool, when you don't need a separate LP-share token contract
 
@@ -151,7 +152,12 @@ the current price.
 
 ## english-auction
 
-> **Incomplete template.** `templates/english-auction/` has no `src/` and no `template.toml` — `soroban-forge new` will scaffold it and report success, but the result has no contract to build or test. Tracked as a known gap; do not use this template until it has real source.
+> `templates/english-auction/` has no `template.toml` manifest — variables and post-generate hints for it, if any, are not declared.
+
+An ascending-price auction where bidders place successively higher bids
+within a fixed time window. The highest bidder at auction end wins the asset.
+
+**Entrypoints:** `initialize`, `fund`, `place_bid`, `settle`, `cancel`, `get_highest_bid`, `get_state`, `get_end_time`, `get_min_increment_bps`, `withdraw_refund`
 
 **When to pick it:** **do not use yet** — this template is an unfinished stub (see note above); pick a different auction pattern for now
 
@@ -176,7 +182,7 @@ Token faucet dispensing a fixed amount per address with a cooldown.
 * **Cooldown** — an address must wait `cooldown_seconds` between
   successive claims; claiming before the cooldown elapses panics.
 
-**Entrypoints:** `initialize`, `fund`, `claim`, `next_claim_time`
+**Entrypoints:** `initialize`, `fund`, `withdraw`, `set_params`, `claim`, `next_claim_time`
 
 **When to pick it:** testnet/devnet token distribution with a per-address cooldown, e.g. for demos or QA environments
 
@@ -196,7 +202,12 @@ Read the security caveats in `README.md` before adapting this. Flash loans
 are a well-understood attack primitive as much as a useful one, and most of
 what can go wrong goes wrong in the *contracts around* the pool.
 
-**Entrypoints:** `deposit`, `withdraw`, `flash_loan`, `fee_for`, `balance`, `token`, `fee_bps`, `admin`
+Liquidity is owned, not pooled: every deposit mints LP shares to the
+depositor, and every withdrawal redeems shares at the current share price,
+so fees earned while a depositor held liquidity accrue to them. The `admin`
+is only the initial LP and the fee setter.
+
+**Entrypoints:** `deposit`, `withdraw`, `flash_loan`, `fee_for`, `balance`, `token`, `fee_bps`, `admin`, `shares`, `total_shares`
 
 **When to pick it:** uncollateralized same-transaction borrowing, or as a reference for writing a callback-repaid pool
 
@@ -227,6 +238,23 @@ voted with repeatedly.
 
 **When to pick it:** on-chain DAO decisions by a known set of members, with one vote each, quorum, and automatic execution of the winning proposal
 
+## governance-token
+
+A SEP-41 governance token (`soroban_sdk::token::TokenInterface`) with vote
+delegation and historical ledger checkpoints queried via binary search.
+
+Holders delegate their voting power to a representative (or to themselves)
+with `delegate`. Every mint, transfer, burn, or delegation change updates
+the affected delegates' voting power and appends (or overwrites in the same
+ledger) a [`Checkpoint`] recording `(ledger, votes)`. Governance contracts
+query `get_past_votes(account, proposal_snapshot_ledger)` and
+`get_past_total_supply(proposal_snapshot_ledger)` using binary search so
+tokens acquired or moved after a proposal opens cannot influence that vote.
+
+**Entrypoints:** `mint`, `admin`, `total_supply`, `delegate`, `delegates`, `get_votes`, `get_past_votes`, `get_past_total_supply`, `num_checkpoints`, `checkpoints`
+
+**When to pick it:** token-weighted DAO voting where holders can delegate votes and governance reads past voting power at a proposal's snapshot ledger
+
 ## hello-world
 
 minimal greeter contract (recommended starting point)
@@ -242,7 +270,7 @@ minimal greeter contract (recommended starting point)
 Lottery / raffle using a commit-reveal scheme for randomness.
 
 * **Enter** — during the commit phase, entrants submit a commitment
-  (`sha256(nonce)`) that hides a secret nonce they will reveal later.
+  (`sha256(entrant_xdr || nonce)`) that hides a secret nonce they will reveal later.
 * **Reveal** — during the reveal phase, entrants reveal their nonce; the
   contract checks it hashes to their commitment.
 * **Draw** — after the reveal phase ends, anyone can call `draw`, which
@@ -251,7 +279,24 @@ Lottery / raffle using a commit-reveal scheme for randomness.
   forfeit the draw — this is what makes the scheme resistant to a single
   party biasing the outcome, since no one controls the final seed alone.
 
-**Entrypoints:** `initialize`, `enter`, `reveal`, `draw`, `get_winner`
+### Security & Limitations: Last-Revealer Advantage
+Plain commit-reveal schemes suffer from a known structural limitation:
+the **last participant to reveal can calculate the final seed both with
+and without their nonce before deciding whether to reveal**.
+
+If withholding their reveal produces a winning outcome for themselves or
+a colluding party, they can simply choose not to reveal. Because entrants
+who do not reveal are simply excluded from the draw without penalty, the
+last revealer can steer or bias the outcome.
+
+**When not to use this template:**
+Do not use this plain commit-reveal template for high-value raffles,
+production lotteries, or gaming scenarios where participants have a financial
+incentive to withhold their secret nonce. For high-stakes applications on
+Stellar/Soroban, use a Verifiable Random Function (VRF) oracle instead of
+plain commit-reveal.
+
+**Entrypoints:** `initialize`, `commitment`, `enter`, `reveal`, `draw`, `get_winner`
 
 **When to pick it:** on-chain randomness where no single party (including the drawer) should be able to bias the outcome
 
@@ -277,7 +322,7 @@ Build the same tree off-chain with the `leaf` and pair-hash rules above —
 `leaf` is exposed as an entrypoint so a script can cross-check its own
 hashing against the contract's.
 
-**Entrypoints:** `initialize`, `fund`, `set_root`, `root`, `admin`, `leaf`, `has_claimed`, `claimed_amount`, `verify`, `claim`, `sweep`
+**Entrypoints:** `initialize`, `set_deadline`, `fund`, `set_root`, `root`, `admin`, `leaf`, `has_claimed`, `claimed_amount`, `verify`, `claim`, `sweep`
 
 **When to pick it:** distributing tokens to a large, fixed allowlist without storing every address on-chain
 
@@ -305,7 +350,7 @@ The contract stores a set of ed25519 signer public keys and a threshold
 provided. Operations on the account contract itself (such as
 `set_threshold`) additionally require signatures from *every* signer.
 
-**Entrypoints:** `set_threshold`, `threshold`
+**Entrypoints:** `rotate_signers`, `set_threshold`, `threshold`
 
 **When to pick it:** an account that should require M-of-N co-signers for every outgoing action
 
@@ -316,7 +361,7 @@ provided. Operations on the account contract itself (such as
 A non-fungible token (NFT) contract implementing ownership, per-token
 metadata URIs, admin-gated minting, transfers, and burning.
 
-**Entrypoints:** `admin`, `name`, `symbol`, `owner_of`, `balance_of`, `token_uri`, `mint`, `transfer`, `burn`
+**Entrypoints:** `admin`, `name`, `symbol`, `owner_of`, `balance_of`, `token_uri`, `mint`, `transfer`, `burn`, `approve`, `get_approved`, `set_approval_for_all`, `is_approved_for_all`, `transfer_from`
 
 **When to pick it:** a standalone non-fungible token with per-token metadata and admin-gated minting
 
@@ -329,6 +374,11 @@ NFT Marketplace contract.
 Allows listing, buying, and cancelling NFT sales with a configurable
 protocol fee sent to a treasury address. Built to interact with NFTs
 conforming to the `nft` template's interface.
+
+The protocol fee is **snapshotted into each listing** when it is created,
+and `buy` always uses that stored fee. Changing the fee later only affects
+new listings, so the admin cannot reduce a seller's payout after they
+list. The fee is also capped at `MAX_FEE_BPS` (10%).
 
 **Entrypoints:** `admin`, `treasury`, `fee_bps`, `set_admin`, `set_treasury`, `set_fee_bps`, `list`, `buy`, `cancel`, `get_listing`
 
@@ -405,24 +455,24 @@ proportion to what they staked:
 * **One pool** — YES and NO stakes are escrowed together by the contract.
   A winner is entitled to `stake * total_pool / winning_pool`, so the
   losing side's stakes are what pays the winning side's profit.
+* **Betting close** — the market has a close time (a ledger timestamp)
+  fixed at deploy time. `stake` only works before it and `resolve` only
+  works from it on, so nobody can still buy in once the outcome can be
+  reported. The close instant itself counts as closed.
 * **Oracle** — `resolve` is gated on one address fixed at deploy time.
   Nobody else can report an outcome, and it can only be reported once.
-* **Betting close and deadline** — the market has a close time and a later
-  resolution deadline (ledger timestamps) fixed at deploy time. `stake` only
-  works before the close time; `resolve` only between the close time and the
-  deadline.
-* **Refunds** — if the deadline passes and the oracle never resolved the
-  market (lost key, abandoned market), `refund` lets each participant take
-  back exactly what they staked, on both sides. Stakes are never locked
-  forever.
 * **Pull payments** — nothing is pushed on resolution. Each winner claims
   their own payout, exactly once.
 * **Rounding** — payouts are floor-divided, so up to `winning_pool - 1`
   units can stay behind in the contract as dust.
 
-* **Empty winning side** — if the oracle resolves to a side nobody staked,
-  `claim` refunds each participant their own stake instead of locking the
-  pool.
+* **Refund when nobody wins** — if the winning outcome has no stakes, there
+  is no winner to pay, so `claim` refunds each participant their own stake
+  instead of locking the pool.
+* **Resolution deadline** — the oracle must resolve before a deadline fixed
+  at deploy time (after the close time). If it never does (a lost key, an
+  abandoned market), `refund` returns each participant everything they
+  staked, on both sides. The deadline instant itself counts as expired.
 
 **Entrypoints:** `stake`, `resolve`, `claim`, `refund`, `get_oracle`, `get_token`, `get_close_time`, `get_deadline`, `get_outcome`, `get_pool`, `get_total_pool`, `get_stake`, `has_claimed`
 
@@ -447,7 +497,7 @@ minted to.
 
 proportional reward staking with O(1) acc_reward_per_share accumulator
 
-**Entrypoints:** `deposit`, `withdraw`, `distribute`, `claim`, `get_staked`, `get_total_staked`, `get_acc_reward_per_share`, `get_pending_reward`
+**Entrypoints:** `deposit`, `withdraw`, `distribute`, `claim`, `get_staked`, `get_total_staked`, `get_acc_reward_per_share`, `get_pending_reward`, `get_stake_token`, `get_reward_token`
 
 **When to pick it:** reward-per-share style staking where depositors accrue a proportional share of periodically distributed rewards
 
@@ -478,7 +528,7 @@ pro-rata to elapsed time since the stream started:
   mid-stream; the contract transfers the newly streamed amount since the
   last claim.
 
-**Entrypoints:** `initialize`, `fund`, `get_streamed_amount`, `get_claimable_amount`, `claim`
+**Entrypoints:** `initialize`, `fund`, `cancel`, `get_streamed_amount`, `get_claimable_amount`, `claim`
 
 **When to pick it:** continuous, claimable-anytime payment release over a fixed duration (vesting without a cliff)
 
@@ -512,7 +562,7 @@ in and the merchant pulls the fee once per interval:
 
 timelock controller for delayed execution and cancellation of queued calls
 
-**Entrypoints:** `initialize`, `get_min_delay`, `set_min_delay`, `has_role`, `grant_role`, `revoke_role`, `hash_operation`, `get_operation_state`, `get_operation`, `queue`, `execute`, `cancel`
+**Entrypoints:** `initialize`, `get_min_delay`, `set_min_delay`, `has_role`, `grant_role`, `revoke_role`, `hash_operation`, `hash_batch`, `get_operation_state`, `get_operation`, `queue`, `queue_batch`, `execute`, `execute_batch`, `cancel`
 
 **When to pick it:** any privileged action (upgrades, parameter changes) that must be queued and delayed before it can execute
 
@@ -553,7 +603,7 @@ over time according to a configurable vesting schedule:
 * **Claim** — the beneficiary may call `claim` at any point; the contract
   transfers the newly vested amount since the last claim.
 
-**Entrypoints:** `initialize`, `fund`, `get_vested_amount`, `get_claimable_amount`, `claim`
+**Entrypoints:** `initialize`, `fund`, `revoke`, `get_vested_amount`, `get_claimable_amount`, `claim`
 
 **When to pick it:** token grants that unlock linearly after a cliff, e.g. team or investor allocations
 
