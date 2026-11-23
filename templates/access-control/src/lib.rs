@@ -43,6 +43,8 @@ pub enum Error {
     InvalidAmount = 3,
     /// Not enough balance to burn.
     InsufficientBalance = 4,
+    /// No admin handover is pending.
+    NoPendingAdmin = 5,
 }
 
 #[contracttype]
@@ -55,6 +57,9 @@ pub enum DataKey {
     RoleAdmin(Symbol),
     /// How many addresses currently hold a role.
     RoleCount(Symbol),
+    /// Admin handover in flight: `(proposer, proposed admin)`. Absent when no
+    /// handover is pending.
+    PendingAdmin,
     /// Demo ledger: balance of an address.
     Balance(Address),
     /// Demo ledger: tokens in circulation.
@@ -92,6 +97,35 @@ pub struct RoleAdminChanged {
     #[topic]
     pub role: Symbol,
     pub admin_role: Symbol,
+}
+
+/// `proposer` offered [`ADMIN_ROLE`] to `new_admin`; it takes effect once
+/// `new_admin` accepts.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub proposer: Address,
+    pub new_admin: Address,
+}
+
+/// `new_admin` accepted the handover and now holds [`ADMIN_ROLE`] in place of
+/// `old_admin`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferred {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// The pending handover to `new_admin` was cancelled.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub cancelled_by: Address,
+    pub new_admin: Address,
 }
 
 /// Demo ledger: `amount` was minted to `to`.
@@ -333,6 +367,72 @@ impl AccessControlContract {
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
         RoleAdminChanged { role, admin_role }.publish(&env);
+    }
+
+    /// Step one of a two-step admin handover: offer [`ADMIN_ROLE`] to
+    /// `new_admin`. `caller` must hold [`ADMIN_ROLE`].
+    ///
+    /// Nothing changes until `new_admin` calls `accept_admin`, so a typo in the
+    /// address cannot lock the contract out. Proposing again replaces any
+    /// earlier pending proposal.
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address) {
+        require_role(&env, &caller, &ADMIN_ROLE);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &(caller.clone(), new_admin.clone()));
+        AdminProposed {
+            proposer: caller,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Step two: the proposed admin takes over [`ADMIN_ROLE`] and the proposer
+    /// gives it up. Requires authorization from the pending admin; any other
+    /// address fails with [`Error::Unauthorized`].
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        let (old_admin, pending): (Address, Address) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        if pending != new_admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        // Grant first so the swap can never leave zero admins.
+        grant(&env, &ADMIN_ROLE, &new_admin);
+        revoke(&env, &ADMIN_ROLE, &old_admin);
+        AdminTransferred {
+            old_admin,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Cancel a pending handover. `caller` must hold [`ADMIN_ROLE`].
+    pub fn cancel_admin_proposal(env: Env, caller: Address) {
+        require_role(&env, &caller, &ADMIN_ROLE);
+        let (_, new_admin): (Address, Address) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled {
+            cancelled_by: caller,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// The address currently offered [`ADMIN_ROLE`], if a handover is pending.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<_, (Address, Address)>(&DataKey::PendingAdmin)
+            .map(|(_, pending)| pending)
     }
 
     /// Demo entrypoint gated on [`MINTER_ROLE`] — see `require_role`.
