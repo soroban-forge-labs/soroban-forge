@@ -965,7 +965,7 @@ impl ForgePlugin for IdentityPlugin {
                     });
                     report["secret_key"] = serde_json::Value::String(match revealed.as_deref() {
                         Some(s) => s.to_string(),
-                        None => "[redacted — pass --show-secret to reveal]".into(),
+                        None => "[redacted — pass --reveal-secret to reveal]".into(),
                     });
                     println!("{}", serde_json::to_string_pretty(&report).unwrap());
                 } else if !ctx.quiet {
@@ -975,7 +975,7 @@ impl ForgePlugin for IdentityPlugin {
                     if let Some(secret) = revealed {
                         println!("  secret key: {secret}");
                     } else {
-                        println!("  secret key: [redacted — pass --show-secret to reveal]");
+                        println!("  secret key: [redacted — pass --reveal-secret to reveal]");
                     }
                     println!();
                     println!("fund on testnet: soroban-forge identity fund {name}");
