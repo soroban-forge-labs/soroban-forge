@@ -4,7 +4,9 @@ use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use rand::thread_rng;
 use soroban_sdk::auth::ContractContext;
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::BytesN as _;
+use soroban_sdk::testutils::Ledger as _;
 extern crate std;
 
 use soroban_sdk::{symbol_short, vec, Address, IntoVal};
@@ -215,3 +217,40 @@ fn rotate_signers_replaces_signers_and_threshold() {
     assert_eq!(client.threshold(), 1);
 }
 
+#[test]
+fn instance_ttl_survives_default_ttl_expiry() {
+    const DEFAULT_ENTRY_TTL: u32 = 4_096;
+
+    let env = Env::default();
+    let account = setup(&env, 3, 2);
+    let client = MultisigContractClient::new(&env, &account);
+
+    let ttl = env.as_contract(&account, || env.storage().instance().get_ttl());
+    assert!(ttl > DEFAULT_ENTRY_TTL);
+
+    env.ledger()
+        .with_mut(|li| li.sequence_number += DEFAULT_ENTRY_TTL + 1);
+
+    assert_eq!(client.threshold(), 2);
+
+    let payload = BytesN::random(&env);
+    let signatures = vec![
+        &env,
+        sign(&env, 0, &payload),
+        sign(&env, 1, &payload),
+        sign(&env, 2, &payload),
+    ];
+    env.try_invoke_contract_check_auth::<AccError>(
+        &account,
+        &payload,
+        signatures.into_val(&env),
+        &vec![&env, token_transfer_context(&env)],
+    )
+    .unwrap();
+
+    env.mock_all_auths();
+    let new_signers = generate_keys(&env, 2);
+    client.rotate_signers(&new_signers, &1);
+    assert_eq!(client.threshold(), 1);
+    assert!(env.as_contract(&account, || env.storage().instance().get_ttl()) > DEFAULT_ENTRY_TTL);
+}
