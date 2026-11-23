@@ -2,6 +2,16 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
 
+const LEDGERS_PER_DAY: u32 = 17_280;
+const INSTANCE_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
+const INSTANCE_TTL_EXTEND_TO: u32 = 60 * LEDGERS_PER_DAY;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
 /// State of the escrow.
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -73,12 +83,14 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Pending);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit the escrowed amount into this contract.
     ///
     /// Must be called by the depositor after `initialize`.
     pub fn deposit(env: Env) {
+        extend_instance_ttl(&env);
         let state: EscrowState = env
             .storage()
             .instance()
@@ -106,6 +118,7 @@ impl EscrowContract {
     ///
     /// Must be called by the approver while the escrow is in `Funded` state.
     pub fn approve_release(env: Env) {
+        extend_instance_ttl(&env);
         let state: EscrowState = env
             .storage()
             .instance()
@@ -134,6 +147,7 @@ impl EscrowContract {
     ///
     /// Anyone may call this, but the funds always go back to the depositor.
     pub fn refund_on_timeout(env: Env) {
+        extend_instance_ttl(&env);
         let state: EscrowState = env
             .storage()
             .instance()
@@ -162,6 +176,7 @@ impl EscrowContract {
 
     /// Return the current escrow state.
     pub fn get_state(env: Env) -> EscrowState {
+        extend_instance_ttl(&env);
         env.storage()
             .instance()
             .get(&DataKey::State)
