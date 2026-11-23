@@ -10,6 +10,12 @@ use soroban_sdk::{
     Map,
 };
 
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+pub const BALANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const BALANCE_TTL_THRESHOLD: u32 = BALANCE_TTL - DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -46,17 +52,31 @@ fn is_allowed(env: &Env, addr: &Address) -> bool {
     list.get(addr.clone()).unwrap_or(false)
 }
 
-fn get_balance(env: &Env, addr: &Address) -> i128 {
+fn extend_instance_ttl(env: &Env) {
     env.storage()
-        .persistent()
-        .get(&DataKey::Balance(addr.clone()))
-        .unwrap_or(0)
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
+fn get_balance(env: &Env, addr: &Address) -> i128 {
+    let key = DataKey::Balance(addr.clone());
+    match env.storage().persistent().get::<_, i128>(&key) {
+        Some(balance) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_TTL);
+            balance
+        }
+        None => 0,
+    }
 }
 
 fn set_balance(env: &Env, addr: &Address, amount: i128) {
+    let key = DataKey::Balance(addr.clone());
+    env.storage().persistent().set(&key, &amount);
     env.storage()
         .persistent()
-        .set(&DataKey::Balance(addr.clone()), &amount);
+        .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_TTL);
 }
 
 #[contract]
@@ -71,6 +91,7 @@ impl AllowlistToken {
             .instance()
             .set(&DataKey::Allowlist, &Map::<Address, bool>::new(&env));
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
+        extend_instance_ttl(&env);
     }
 
     /// Add an address to the allowlist. Admin only.
@@ -86,6 +107,7 @@ impl AllowlistToken {
             .unwrap_or(Map::new(&env));
         list.set(addr, true);
         env.storage().instance().set(&DataKey::Allowlist, &list);
+        extend_instance_ttl(&env);
     }
 
     /// Remove an address from the allowlist. Admin only.
@@ -101,6 +123,7 @@ impl AllowlistToken {
             .unwrap_or(Map::new(&env));
         list.set(addr, false);
         env.storage().instance().set(&DataKey::Allowlist, &list);
+        extend_instance_ttl(&env);
     }
 
     /// Check if an address is on the allowlist.
@@ -129,6 +152,7 @@ impl AllowlistToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(supply + amount));
+        extend_instance_ttl(&env);
     }
 
     /// Transfer tokens between two allowlisted addresses.
@@ -149,6 +173,7 @@ impl AllowlistToken {
         }
         set_balance(&env, &from, from_bal - amount);
         set_balance(&env, &to, get_balance(&env, &to) + amount);
+        extend_instance_ttl(&env);
     }
 
     /// Get the balance of an address.
