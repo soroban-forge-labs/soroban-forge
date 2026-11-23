@@ -13,6 +13,19 @@ use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
 };
 
+/// 1 day in ledgers, assuming 5 seconds per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL is extended to 30 days.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which instance storage TTL is extended (29 days).
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -82,6 +95,7 @@ impl PausableContract {
     pub fn __constructor(env: Env, admin: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Paused, &false);
+        extend_instance_ttl(&env);
     }
 
     /// Return the admin address.
@@ -102,6 +116,7 @@ impl PausableContract {
             return Err(Error::AlreadyPaused);
         }
         env.storage().instance().set(&DataKey::Paused, &true);
+        extend_instance_ttl(&env);
         Paused { admin }.publish(&env);
         Ok(())
     }
@@ -114,6 +129,7 @@ impl PausableContract {
             return Err(Error::NotPaused);
         }
         env.storage().instance().set(&DataKey::Paused, &false);
+        extend_instance_ttl(&env);
         Unpaused { admin }.publish(&env);
         Ok(())
     }
@@ -124,6 +140,7 @@ impl PausableContract {
         require_not_paused(&env)?;
         let next = Self::count(env.clone()) + by;
         env.storage().instance().set(&DataKey::Count, &next);
+        extend_instance_ttl(&env);
         Ok(next)
     }
 
@@ -134,6 +151,7 @@ impl PausableContract {
         require_not_paused(&env)?;
         read_admin(&env).require_auth();
         env.storage().instance().set(&DataKey::Count, &0u32);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
