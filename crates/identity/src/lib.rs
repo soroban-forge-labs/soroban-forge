@@ -1,10 +1,22 @@
 //! # soroban-forge-identity
 //!
-//! `soroban-forge identity generate|import|list|show|fund|balance|remove` — manage
-//! test keypairs and fund them via friendbot on testnet.
+//! `soroban-forge identity generate|import|list|show|fund|balance|remove|migrate`
+//! — manage test keypairs and fund them via friendbot on testnet.
 //!
 //! Identities are stored as a JSON file at
 //! `~/.config/soroban-forge/identities.json`.
+//!
+//! ## Secret backends (#616)
+//!
+//! By default the secret key lives in `identities.json` alongside the public
+//! key (file backend, mode `0600` on Unix). Setting
+//! `[identity] backend = "keychain"` in `forge.toml` (or user config) moves
+//! the secret to the OS keychain (macOS Keychain, Windows Credential Manager,
+//! Secret Service on Linux); the JSON file then holds only the name and
+//! public key. `identity migrate --to-keychain` / `--to-file` switches an
+//! existing store between the two.
+
+mod secret;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -14,11 +26,22 @@ use clap::{Arg, ArgMatches, Command};
 use serde::{Deserialize, Serialize};
 use soroban_forge_core::{ForgeContext, ForgeError, ForgePlugin, Result};
 
+pub use secret::{FileStore, MemoryStore, SecretBackend, SecretStore};
+#[cfg(feature = "keychain")]
+pub use secret::KeychainStore;
+#[cfg(not(feature = "keychain"))]
+pub use secret::KeychainStoreDisabled as KeychainStore;
+
 /// A stored test identity.
+///
+/// `secret_key` is `None` when the backend is the OS keychain — the JSON file
+/// then contains only the name and public key. When `None`, callers must use
+/// [`resolve_secret`] to obtain the secret from the active backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub public_key: String,
-    pub secret_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub funded_on: Vec<String>,
 }
@@ -46,10 +69,6 @@ pub fn store_path() -> Result<PathBuf> {
 }
 
 /// Load the identity store from disk, or return a default empty one.
-///
-/// Safe to call on its own for a read (`list`, `show`). A load whose result is
-/// mutated and saved back belongs inside [`update_store`], which holds the
-/// store lock across the whole sequence.
 pub fn load_store(path: &PathBuf) -> Result<IdentityStore> {
     if !path.is_file() {
         return Ok(IdentityStore::default());
@@ -63,12 +82,8 @@ pub fn load_store(path: &PathBuf) -> Result<IdentityStore> {
 }
 
 /// Save the identity store to disk, creating parent directories as needed.
-///
-/// Writes through [`soroban_forge_core::atomic::write_atomic`] (#470): a crash
-/// or disk-full error partway through must not leave `identities.json`
-/// truncated, because the next `load_store` would then fail to parse and every
-/// stored identity would be lost. On Unix, the replacement file is created
-/// with mode `0600` so secret keys are never written with broader permissions.
+/// Writes through [`soroban_forge_core::atomic::write_atomic`] (#470) and
+/// applies mode `0600` on Unix.
 pub fn save_store(path: &PathBuf, store: &IdentityStore) -> Result<()> {
     let json = serde_json::to_string_pretty(store)
         .map_err(|e| ForgeError::Other(format!("serializing identity store: {e}")))?;
@@ -80,17 +95,7 @@ pub fn save_store(path: &PathBuf, store: &IdentityStore) -> Result<()> {
 }
 
 /// Read the store, let `f` mutate it, and save it back — all with the store
-/// lock held, so a concurrent writer cannot interleave.
-///
-/// Every mutation of `identities.json` goes through here. Calling
-/// `load_store` -> mutate -> `save_store` directly is a lost-update race: two
-/// parallel `identity generate` runs both load the same store, each insert
-/// their own identity, and the second save discards the first — which reported
-/// success and printed a public key that is no longer stored. See
-/// [`soroban_forge_core::lock`] for why the lock is a sibling lock file.
-///
-/// The store is saved only if `f` succeeds, so a rejected mutation (an
-/// existing name without `--force`, say) leaves the file untouched.
+/// lock held.
 pub fn update_store<T>(
     path: &PathBuf,
     f: impl FnOnce(&mut IdentityStore) -> Result<T>,
@@ -103,18 +108,96 @@ pub fn update_store<T>(
     })
 }
 
-/// Generate a new keypair and store it under `name`, returning the stored
-/// identity (`identity generate`).
+// ---------------------------------------------------------------------------
+// Backend selection
+// ---------------------------------------------------------------------------
+
+/// Read the active secret backend from `ctx.config`.
 ///
-/// A name collision is an [`ForgeError::AlreadyExists`] unless `force`. The
-/// collision check and the write share one lock, so two parallel generates
-/// both end up in the store instead of one silently replacing the other.
-pub fn generate_identity(path: &PathBuf, name: &str, force: bool) -> Result<Identity> {
-    generate_identity_with(path, name, force, || Ok(generate_keypair()))
+/// `ctx.config` is `None` when no `forge.toml` exists — that is the historical
+/// file backend. An unrecognized value is a hard error (see
+/// [`SecretBackend::parse`]) so a typo cannot silently downgrade to plaintext.
+pub fn active_backend(ctx: &ForgeContext) -> Result<SecretBackend> {
+    let raw = ctx
+        .config
+        .as_ref()
+        .and_then(|config| config.identity.backend.as_deref());
+    SecretBackend::parse(raw)
 }
 
-/// Derive and store a Stellar identity from a BIP-39 mnemonic using the
-/// Stellar Ed25519 path `m/44'/148'/index'`.
+/// Instantiate the [`SecretStore`] for `backend`.
+///
+/// The keychain backend requires the `keychain` feature (on by default); with
+/// the feature off it returns a clear "not compiled in" error rather than
+/// silently falling back to the file backend.
+pub fn secret_store(backend: SecretBackend) -> Box<dyn SecretStore> {
+    match backend {
+        SecretBackend::File => Box::new(FileStore),
+        SecretBackend::Keychain => Box::new(KeychainStore::new()),
+    }
+}
+
+/// Read the secret for `name` from `store`.
+///
+/// In file mode the secret lives on [`Identity::secret_key`]; in keychain
+/// mode it lives in the OS keychain. Callers should prefer this over reading
+/// `secret_key` directly.
+pub fn resolve_secret(
+    name: &str,
+    store: &IdentityStore,
+    backend: SecretBackend,
+) -> Result<String> {
+    match backend {
+        SecretBackend::File => store
+            .identities
+            .get(name)
+            .ok_or_else(|| identity_not_found(name))?
+            .secret_key
+            .clone()
+            .ok_or_else(|| {
+                ForgeError::InvalidArgument(format!(
+                    "identity `{name}` has no stored secret; it was migrated to the OS keychain. \
+                     Set `[identity] backend = \"keychain\"` or run `soroban-forge identity migrate --to-file`."
+                ))
+            }),
+        SecretBackend::Keychain => secret_store(backend).get(name),
+    }
+}
+
+/// Read the secret for `name` for handing off to `stellar` (`deploy`,
+/// `invoke`). Same as [`resolve_secret`] but loads the store itself.
+///
+/// This is the entry point the `deploy` and `invoke` crates use (issue #616,
+/// "deploy/invoke key hand-off"). With `backend = "keychain"` it returns the
+/// secret fetched from the OS keychain so callers can pass `--source <S...>`
+/// to `stellar`; with `"file"` the caller should keep passing the identity
+/// *name* (see the `--source` handling in `deploy`/`invoke`).
+pub fn resolve_secret_for_handoff(name: &str, ctx: &ForgeContext) -> Result<String> {
+    let backend = active_backend(ctx)?;
+    let path = store_path()?;
+    let store = load_store(&path)?;
+    resolve_secret(name, &store, backend)
+}
+
+fn identity_not_found(name: &str) -> ForgeError {
+    ForgeError::InvalidArgument(format!(
+        "identity `{name}` not found (use `soroban-forge identity list` to see available identities)"
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Keypair generation / derivation
+// ---------------------------------------------------------------------------
+
+/// Generate a new keypair and store it under `name` (file backend), returning
+/// the stored identity. Used by unit tests and `generate`.
+pub fn generate_identity(path: &PathBuf, name: &str, force: bool) -> Result<Identity> {
+    generate_identity_with(path, name, force, SecretBackend::File, || {
+        Ok(generate_keypair())
+    })
+}
+
+/// Derive and store a Stellar identity from a BIP-39 mnemonic (file backend).
 pub fn generate_identity_from_mnemonic(
     path: &PathBuf,
     name: &str,
@@ -122,23 +205,49 @@ pub fn generate_identity_from_mnemonic(
     mnemonic: &str,
     index: u32,
 ) -> Result<Identity> {
-    generate_identity_with(path, name, force, || derive_keypair_from_mnemonic(mnemonic, index))
+    generate_identity_with(path, name, force, SecretBackend::File, || {
+        derive_keypair_from_mnemonic(mnemonic, index)
+    })
+}
+
+/// Generate into an explicit backend. The returned `Identity.secret_key` is
+/// `None` in keychain mode — the secret was written to the keychain.
+pub fn generate_identity_into(
+    path: &PathBuf,
+    name: &str,
+    force: bool,
+    backend: SecretBackend,
+    mnemonic: Option<(&str, u32)>,
+) -> Result<Identity> {
+    generate_identity_with(path, name, force, backend, || match mnemonic {
+        Some((phrase, index)) => derive_keypair_from_mnemonic(phrase, index),
+        None => Ok(generate_keypair()),
+    })
 }
 
 fn generate_identity_with(
     path: &PathBuf,
     name: &str,
     force: bool,
+    backend: SecretBackend,
     derive: impl FnOnce() -> Result<(String, String)>,
 ) -> Result<Identity> {
+    let store_impl = secret_store(backend);
     update_store(path, |store| {
         if store.identities.contains_key(name) && !force {
             return Err(ForgeError::AlreadyExists(PathBuf::from(name)));
         }
         let (public_key, secret_key) = derive()?;
+        let stored_secret = match backend {
+            SecretBackend::File => Some(secret_key.clone()),
+            SecretBackend::Keychain => {
+                store_impl.set(name, &secret_key)?;
+                None
+            }
+        };
         let identity = Identity {
             public_key,
-            secret_key,
+            secret_key: stored_secret,
             funded_on: Vec::new(),
         };
         store.identities.insert(name.to_string(), identity.clone());
@@ -146,25 +255,28 @@ fn generate_identity_with(
     })
 }
 
-fn remove_identity(path: &PathBuf, name: &str) -> Result<()> {
+/// Remove `name` from the store and (in keychain mode) from the keychain.
+pub fn remove_identity(path: &PathBuf, name: &str, backend: SecretBackend) -> Result<()> {
+    let store_impl = secret_store(backend);
     update_store(path, |store| {
         if store.identities.remove(name).is_none() {
-            return Err(ForgeError::InvalidArgument(format!(
-                "identity `{name}` not found (use `soroban-forge identity list` to see available identities)"
-            )));
+            return Err(identity_not_found(name));
         }
         if store.default.as_deref() == Some(name) {
             store.default = None;
+        }
+        if backend == SecretBackend::Keychain {
+            store_impl.delete(name)?;
         }
         Ok(())
     })
 }
 
+// ---------------------------------------------------------------------------
+// forge.toml identity section
+// ---------------------------------------------------------------------------
+
 /// Persist the active identity choice into `forge.toml` in `cwd`.
-///
-/// If the file does not exist it is created with just the `[identity]` section.
-/// If it exists the `[identity]` section is patched (or appended) without
-/// disturbing any other content.
 pub fn write_identity_to_forge_toml(cwd: &std::path::Path, name: &str) -> Result<()> {
     let path = cwd.join("forge.toml");
 
@@ -181,12 +293,6 @@ pub fn write_identity_to_forge_toml(cwd: &std::path::Path, name: &str) -> Result
 }
 
 /// Patch (or append) the `[identity]` section in raw `forge.toml` text.
-///
-/// Rules:
-/// - If an `[identity]` section (or `identity.default = ...` / `identity = { ... }`)
-///   already exists, the `default = …` key within it is replaced (or inserted
-///   if missing). Other keys and comments in the document are preserved.
-/// - If no `[identity]` section exists, one is appended.
 pub fn patch_forge_toml_identity(existing: &str, name: &str) -> String {
     use toml_edit::{value, DocumentMut, Item, Table};
 
@@ -215,6 +321,10 @@ pub fn patch_forge_toml_identity(existing: &str, name: &str) -> String {
     result
 }
 
+// ---------------------------------------------------------------------------
+// Keypair generation / validation
+// ---------------------------------------------------------------------------
+
 /// Generate a new Stellar keypair and return `(public_key, secret_key)` as
 /// Stellar-encoded strings (`G...` / `S...`).
 pub fn generate_keypair() -> (String, String) {
@@ -232,10 +342,6 @@ pub fn generate_keypair() -> (String, String) {
 }
 
 /// Derive a Stellar keypair from a BIP-39 mnemonic and account index.
-///
-/// Uses BIP-39's empty passphrase and SLIP-0010 hardened Ed25519 derivation
-/// along Stellar's standard `m/44'/148'/index'` path. The input phrase is
-/// never included in returned errors.
 pub fn derive_keypair_from_mnemonic(mnemonic: &str, index: u32) -> Result<(String, String)> {
     use bip39::Mnemonic;
     use ed25519_dalek::SigningKey;
@@ -287,10 +393,6 @@ pub fn derive_keypair_from_mnemonic(mnemonic: &str, index: u32) -> Result<(Strin
 }
 
 /// Derive the public key (`G...`) from a Stellar secret key (`S...`) (#421).
-///
-/// Rejects anything that is not a well-formed ed25519 secret-seed strkey
-/// (wrong prefix, bad base32, bad length or checksum). The error never echoes
-/// the input, so a mistyped secret does not end up in logs or scrollback.
 pub fn public_key_from_secret(secret: &str) -> Result<String> {
     use ed25519_dalek::SigningKey;
     use stellar_strkey::ed25519::{PrivateKey, PublicKey};
@@ -304,40 +406,55 @@ pub fn public_key_from_secret(secret: &str) -> Result<String> {
     Ok(PublicKey(signing_key.verifying_key().to_bytes()).to_string())
 }
 
-/// Add an existing keypair to `store` under `name` (#421).
-///
-/// Validates the secret and derives its public key; a name collision is an
-/// [`ForgeError::AlreadyExists`] unless `force`, exactly like `generate`.
+/// Add an existing keypair to `store` under `name` (file backend, #421).
 pub fn import_identity(
     store: &mut IdentityStore,
     name: &str,
     secret: &str,
     force: bool,
 ) -> Result<Identity> {
+    import_identity_into(store, name, secret, force, SecretBackend::File)
+}
+
+/// Add an existing keypair into an explicit backend. In keychain mode the
+/// secret goes to the keychain and `Identity.secret_key` stays `None`.
+pub fn import_identity_into(
+    store: &mut IdentityStore,
+    name: &str,
+    secret: &str,
+    force: bool,
+    backend: SecretBackend,
+) -> Result<Identity> {
     if store.identities.contains_key(name) && !force {
         return Err(ForgeError::AlreadyExists(PathBuf::from(name)));
     }
     let public_key = public_key_from_secret(secret)?;
+    let trimmed = secret.trim().to_string();
+    let stored_secret = match backend {
+        SecretBackend::File => Some(trimmed),
+        SecretBackend::Keychain => {
+            secret_store(backend).set(name, &trimmed)?;
+            None
+        }
+    };
     let identity = Identity {
         public_key,
-        secret_key: secret.trim().to_string(),
-        // Unrelated to locking: `funded_on` (#287) and `import_identity`
-        // (#421) landed in separate branches and the merge left this
-        // initializer without the new field, so the crate did not compile.
+        secret_key: stored_secret,
         funded_on: Vec::new(),
     };
     store.identities.insert(name.to_string(), identity.clone());
     Ok(identity)
 }
 
-/// Text shown by `identity show` (#422). The secret key is printed only when
-/// `reveal_secret` is set; otherwise it is masked, consistent with
-/// `generate` and `list`.
-pub fn format_show(name: &str, identity: &Identity, reveal_secret: bool) -> String {
-    let secret = if reveal_secret {
-        identity.secret_key.as_str()
-    } else {
-        "[redacted — pass --reveal-secret to reveal]"
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
+
+/// Text shown by `identity show` (#422).
+pub fn format_show(name: &str, identity: &Identity, secret: Option<&str>) -> String {
+    let secret = match secret {
+        Some(s) => s,
+        None => "[redacted — pass --reveal-secret to reveal]",
     };
     format!(
         "identity `{name}`\n  public key: {}\n  secret key: {secret}\n",
@@ -346,13 +463,13 @@ pub fn format_show(name: &str, identity: &Identity, reveal_secret: bool) -> Stri
 }
 
 /// JSON shown by `identity show --json` (#422); `secret_key` only on request.
-pub fn show_json(name: &str, identity: &Identity, reveal_secret: bool) -> serde_json::Value {
+pub fn show_json(name: &str, identity: &Identity, secret: Option<&str>) -> serde_json::Value {
     let mut report = serde_json::json!({
         "name": name,
         "public_key": identity.public_key,
     });
-    if reveal_secret {
-        report["secret_key"] = serde_json::Value::String(identity.secret_key.clone());
+    if let Some(secret) = secret {
+        report["secret_key"] = serde_json::Value::String(secret.to_string());
     }
     report
 }
@@ -372,7 +489,10 @@ fn read_secret_line(mut reader: impl std::io::BufRead) -> Result<String> {
     Ok(secret)
 }
 
-/// GET `url`, bounded by `timeout` when one is set (`--timeout`).
+// ---------------------------------------------------------------------------
+// Friendbot / balance (unchanged)
+// ---------------------------------------------------------------------------
+
 fn http_get(
     url: &str,
     timeout: Option<Duration>,
@@ -384,37 +504,18 @@ fn http_get(
     request.call()
 }
 
-/// Friendbot host for a network passphrase.
-///
-/// Testnet and futurenet each run their own friendbot deployment, and the
-/// futurenet one is a different host — `friendbot.stellar.org` is testnet-only
-/// (#471). Sending a futurenet account to the testnet friendbot either funds an
-/// account on the wrong network or fails outright, despite the error message
-/// below claiming futurenet is supported.
-///
-/// Returns `None` for a passphrase this crate does not know, so the caller can
-/// refuse rather than silently default to testnet.
 fn friendbot_host_for(passphrase: &str) -> Option<&'static str> {
     if passphrase.contains("Public Global Stellar Network") {
-        // Mainnet — no friendbot exists at all.
         None
     } else if passphrase.contains("Future Network") {
         Some("https://friendbot-futurenet.stellar.org")
     } else if passphrase.contains("Test SDF Network") {
         Some("https://friendbot.stellar.org")
     } else {
-        // Standalone/local networks run their own friendbot; this crate has no
-        // way to guess its host, and guessing testnet would fund the wrong
-        // network.
         None
     }
 }
 
-/// Build the friendbot request URL for a network, or `None` when the network
-/// has no known friendbot.
-///
-/// Split out from [`fund_friendbot`] so the URL construction — which is the
-/// part that was wrong in #471 — is testable without making a network call.
 pub fn friendbot_url(public_key: &str, network_passphrase: Option<&str>) -> Option<String> {
     let passphrase = network_passphrase?;
     let host = friendbot_host_for(passphrase)?;
@@ -443,19 +544,11 @@ impl FundingOutcome {
     }
 }
 
-/// Fund a Stellar testnet/futurenet account via friendbot.
-/// Returns whether this request newly funded the account or found it already funded.
-///
-/// The friendbot host is chosen from the effective network passphrase (#471):
-/// testnet and futurenet have separate deployments. Mainnet, and any passphrase
-/// this crate does not recognize, is refused rather than silently funded on
-/// testnet. The request is bounded by `timeout` when set (`--timeout`).
 pub fn fund_friendbot(
     public_key: &str,
     network_passphrase: Option<&str>,
     timeout: Option<Duration>,
 ) -> Result<FundingOutcome> {
-    // #287 — refuse to run on mainnet
     let Some(passphrase) = network_passphrase else {
         return Err(ForgeError::InvalidArgument(
             "friendbot funding needs a known network passphrase; \
@@ -478,7 +571,6 @@ pub fn fund_friendbot(
 
     log::debug!("requesting friendbot: {url}");
     let response = http_get(&url, timeout).map_err(|e| {
-        // Surface actionable error messages (#287)
         ForgeError::Other(format!(
             "friendbot request failed: {e}\n  \
              hint: check your network connection, or the account may already be funded"
@@ -527,7 +619,6 @@ fn parse_friendbot_response(body: &str) -> Result<FundingOutcome> {
     )))
 }
 
-/// Extract the native XLM balance from a Horizon account JSON response.
 fn parse_native_balance(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     parse_native_balance_value(&v)
@@ -588,7 +679,6 @@ fn resolve_balance_network_name<'a>(
 }
 
 /// Format the identity list for display.
-/// Secret keys are always masked here — use `--show-secret` to reveal them.
 pub fn format_list(store: &IdentityStore) -> String {
     if store.identities.is_empty() {
         return "no identities stored. Use `soroban-forge identity generate <name>` to create one.\n".to_string();
@@ -611,6 +701,64 @@ pub fn format_list(store: &IdentityStore) -> String {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Migration
+// ---------------------------------------------------------------------------
+
+/// Move every stored secret from `from` to `to`, then rewrite the store to
+/// match the target backend.
+///
+/// Steps, all under the store lock:
+/// 1. Load the store.
+/// 2. For every identity, read its secret from `from` (file: the JSON field;
+///    keychain: the keychain entry) and write it into `to`.
+/// 3. Update `Identity.secret_key` so it is present iff `to == File`.
+/// 4. On `to == Keychain`, delete the keychain entry for identities whose
+///    file secret was replaced (i.e. none — the source is the JSON file).
+///    On `to == File`, delete the keychain entry so a stray copy cannot
+///    outlive the migration.
+/// 5. Save the store.
+///
+/// Returns the list of migrated identity names.
+pub fn migrate_store(path: &PathBuf, from: SecretBackend, to: SecretBackend) -> Result<Vec<String>> {
+    if from == to {
+        return Ok(Vec::new());
+    }
+    let from_store = secret_store(from);
+    let to_store = secret_store(to);
+    update_store(path, |store| {
+        let mut migrated = Vec::new();
+        for (name, identity) in store.identities.iter_mut() {
+            let secret = match from {
+                SecretBackend::File => identity.secret_key.clone().ok_or_else(|| {
+                    ForgeError::InvalidArgument(format!(
+                        "identity `{name}` has no secret in file backend to migrate"
+                    ))
+                })?,
+                SecretBackend::Keychain => from_store.get(name)?,
+            };
+            to_store.set(name, &secret)?;
+            identity.secret_key = match to {
+                SecretBackend::File => Some(secret),
+                SecretBackend::Keychain => None,
+            };
+            migrated.push(name.clone());
+        }
+        // Drop the old copy in the keychain when moving *into* the file
+        // backend, so a stray keychain entry cannot outlive the migration.
+        if to == SecretBackend::File {
+            for name in &migrated {
+                from_store.delete(name)?;
+            }
+        }
+        Ok(migrated)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Plugin
+// ---------------------------------------------------------------------------
 
 /// The `identity` subcommand.
 pub struct IdentityPlugin;
@@ -652,7 +800,6 @@ impl ForgePlugin for IdentityPlugin {
                             .requires("from-mnemonic")
                             .help("Hardened Stellar account derivation index (default: 0)"),
                     )
-                    // #288 — explicit opt-in to showing secret keys
                     .arg(
                         Arg::new("show-secret")
                             .long("show-secret")
@@ -712,7 +859,6 @@ impl ForgePlugin for IdentityPlugin {
             .subcommand(
                 Command::new("list")
                     .about("List all stored identities (public keys only)")
-                    // #288 — explicit opt-in to showing secret keys
                     .arg(
                         Arg::new("show-secret")
                             .long("show-secret")
@@ -728,7 +874,6 @@ impl ForgePlugin for IdentityPlugin {
                             .help("Name of the identity to fund")
                             .required(true),
                     )
-                    // #287 — allow passing an explicit network passphrase to guard mainnet
                     .arg(
                         Arg::new("network-passphrase")
                             .long("network-passphrase")
@@ -770,47 +915,65 @@ impl ForgePlugin for IdentityPlugin {
                             .required(true),
                     ),
             )
+            .subcommand(
+                Command::new("migrate")
+                    .about("Move stored secrets between the file and OS-keychain backends")
+                    .arg(
+                        Arg::new("to-keychain")
+                            .long("to-keychain")
+                            .action(clap::ArgAction::SetTrue)
+                            .conflicts_with("to-file")
+                            .help("Move every stored secret into the OS keychain"),
+                    )
+                    .arg(
+                        Arg::new("to-file")
+                            .long("to-file")
+                            .action(clap::ArgAction::SetTrue)
+                            .conflicts_with("to-keychain")
+                            .help("Move every stored secret back into identities.json"),
+                    )
+                    .arg_required_else_help(true),
+            )
     }
 
     fn run(&self, matches: &ArgMatches, ctx: &ForgeContext) -> Result<()> {
         let path = store_path()?;
+        let backend = active_backend(ctx)?;
 
         match matches.subcommand() {
             Some(("generate", sub)) => {
                 let name = sub.get_one::<String>("name").unwrap();
                 let force = sub.get_flag("force");
-                // #288 — only show secret key when explicitly requested
                 let show_secret = sub.get_flag("show-secret");
-                let identity = match sub.get_one::<String>("from-mnemonic") {
-                    Some(mnemonic) => generate_identity_from_mnemonic(
-                        &path,
-                        name,
-                        force,
-                        mnemonic,
-                        sub.get_one::<u32>("index").copied().unwrap_or(0),
-                    )?,
-                    None => generate_identity(&path, name, force)?,
+                let mnemonic = sub
+                    .get_one::<String>("from-mnemonic")
+                    .map(|m| (m.as_str(), sub.get_one::<u32>("index").copied().unwrap_or(0)));
+                let identity =
+                    generate_identity_into(&path, name, force, backend, mnemonic)?;
+
+                let revealed = if show_secret {
+                    Some(resolve_secret(name, &load_store(&path)?, backend)?)
+                } else {
+                    None
                 };
-                let (public_key, secret_key) = (identity.public_key, identity.secret_key);
 
                 if ctx.json {
-                    // #288 — never emit secret key in JSON output unless --show-secret
                     let mut report = serde_json::json!({
                         "name": name,
-                        "public_key": public_key,
+                        "public_key": identity.public_key,
+                        "backend": backend.as_str(),
                     });
-                    if show_secret {
-                        report["secret_key"] = serde_json::Value::String(secret_key.clone());
-                    } else {
-                        report["secret_key"] = serde_json::Value::String("[redacted — pass --show-secret to reveal]".into());
-                    }
+                    report["secret_key"] = serde_json::Value::String(match revealed.as_deref() {
+                        Some(s) => s.to_string(),
+                        None => "[redacted — pass --show-secret to reveal]".into(),
+                    });
                     println!("{}", serde_json::to_string_pretty(&report).unwrap());
                 } else if !ctx.quiet {
                     println!("generated identity `{name}`");
-                    println!("  public key: {public_key}");
-                    // #288 — mask secret key by default
-                    if show_secret {
-                        println!("  secret key: {secret_key}");
+                    println!("  public key: {}", identity.public_key);
+                    println!("  backend: {}", backend.as_str());
+                    if let Some(secret) = revealed {
+                        println!("  secret key: {secret}");
                     } else {
                         println!("  secret key: [redacted — pass --show-secret to reveal]");
                     }
@@ -827,21 +990,22 @@ impl ForgePlugin for IdentityPlugin {
                     Some(secret) => secret.clone(),
                     None => read_secret_line(std::io::stdin().lock())?,
                 };
-
-                let identity =
-                    update_store(&path, |store| import_identity(store, name, &secret, force))?;
+                let identity = update_store(&path, |store| {
+                    import_identity_into(store, name, &secret, force, backend)
+                })?;
 
                 if ctx.json {
-                    // Never echo the secret back; the caller already has it.
                     let report = serde_json::json!({
                         "name": name,
                         "public_key": identity.public_key,
                         "imported": true,
+                        "backend": backend.as_str(),
                     });
                     println!("{}", serde_json::to_string_pretty(&report).unwrap());
                 } else if !ctx.quiet {
                     println!("imported identity `{name}`");
                     println!("  public key: {}", identity.public_key);
+                    println!("  backend: {}", backend.as_str());
                 }
                 Ok(())
             }
@@ -851,20 +1015,22 @@ impl ForgePlugin for IdentityPlugin {
                 let reveal_secret = sub.get_flag("reveal-secret");
                 let store = load_store(&path)?;
                 let identity = store.identities.get(name.as_str()).ok_or_else(|| {
-                    ForgeError::InvalidArgument(format!(
-                        "identity `{name}` not found (use `soroban-forge identity list` to see available identities)"
-                    ))
+                    identity_not_found(name)
                 })?;
+
+                let secret = if reveal_secret {
+                    Some(resolve_secret(name, &store, backend)?)
+                } else {
+                    None
+                };
 
                 if ctx.json {
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(&show_json(name, identity, reveal_secret)).unwrap()
+                        serde_json::to_string_pretty(&show_json(name, identity, secret.as_deref())).unwrap()
                     );
                 } else if !ctx.quiet || reveal_secret {
-                    // An explicit --reveal-secret is honoured even with --quiet:
-                    // the secret is the whole point of the invocation.
-                    print!("{}", format_show(name, identity, reveal_secret));
+                    print!("{}", format_show(name, identity, secret.as_deref()));
                 }
                 Ok(())
             }
@@ -874,10 +1040,20 @@ impl ForgePlugin for IdentityPlugin {
                 let store = load_store(&path)?;
                 if ctx.json {
                     if show_secret {
-                        // Full store including secrets
-                        println!("{}", serde_json::to_string_pretty(&store.identities).unwrap());
+                        let mut out = serde_json::Map::new();
+                        for (name, id) in &store.identities {
+                            let secret = resolve_secret(name, &store, backend)?;
+                            out.insert(
+                                name.clone(),
+                                serde_json::json!({
+                                    "public_key": id.public_key,
+                                    "funded_on": id.funded_on,
+                                    "secret_key": secret,
+                                }),
+                            );
+                        }
+                        println!("{}", serde_json::to_string_pretty(&out).unwrap());
                     } else {
-                        // #288 — omit secret keys from JSON output
                         let public_only: BTreeMap<&str, serde_json::Value> = store
                             .identities
                             .iter()
@@ -887,6 +1063,7 @@ impl ForgePlugin for IdentityPlugin {
                                     serde_json::json!({
                                         "public_key": v.public_key,
                                         "funded_on": v.funded_on,
+                                        "backend": backend.as_str(),
                                     }),
                                 )
                             })
@@ -895,10 +1072,10 @@ impl ForgePlugin for IdentityPlugin {
                     }
                 } else if !ctx.quiet {
                     if show_secret && !store.identities.is_empty() {
-                        // Show full list including secrets
                         println!("stored identities:\n");
                         let name_width = store.identities.keys().map(|k| k.len()).max().unwrap_or(0);
                         for (name, id) in &store.identities {
+                            let secret = resolve_secret(name, &store, backend)?;
                             let funded_suffix = if id.funded_on.is_empty() {
                                 String::new()
                             } else {
@@ -908,7 +1085,7 @@ impl ForgePlugin for IdentityPlugin {
                                 "  {:<width$}  pub: {}  secret: {}{}",
                                 name,
                                 id.public_key,
-                                id.secret_key,
+                                secret,
                                 funded_suffix,
                                 width = name_width
                             );
@@ -922,10 +1099,13 @@ impl ForgePlugin for IdentityPlugin {
 
             Some(("remove", sub)) => {
                 let name = sub.get_one::<String>("name").unwrap();
-                remove_identity(&path, name)?;
+                remove_identity(&path, name, backend)?;
 
                 if ctx.json {
-                    println!("{}", serde_json::json!({ "name": name, "removed": true }));
+                    println!(
+                        "{}",
+                        serde_json::json!({ "name": name, "removed": true, "backend": backend.as_str() })
+                    );
                 } else if !ctx.quiet {
                     println!("removed identity `{name}`");
                 }
@@ -936,9 +1116,7 @@ impl ForgePlugin for IdentityPlugin {
                 let name = sub.get_one::<String>("name").unwrap();
                 update_store(&path, |store| {
                     if !store.identities.contains_key(name.as_str()) {
-                        return Err(ForgeError::InvalidArgument(format!(
-                            "identity `{name}` not found (use `soroban-forge identity list` to see available identities)"
-                        )));
+                        return Err(identity_not_found(name));
                     }
                     store.default = Some(name.clone());
                     Ok(())
@@ -957,26 +1135,21 @@ impl ForgePlugin for IdentityPlugin {
             }
 
             Some(("fund", sub)) => {
-                // #287 — refuse in offline mode
                 if ctx.offline {
                     return Err(ForgeError::InvalidArgument(
                         "friendbot funding is unavailable in offline mode".into(),
                     ));
                 }
                 let name = sub.get_one::<String>("name").unwrap();
-                // #287 — accept passphrase to guard against mainnet runs
                 let network_passphrase = sub
                     .get_one::<String>("network-passphrase")
                     .map(String::as_str);
-
-                // Also check via forge.toml / context config
                 let config_passphrase = ctx
                     .config
                     .as_ref()
                     .and_then(|c| c.network.passphrase.as_deref());
                 let effective_passphrase = network_passphrase.or(config_passphrase);
 
-                // #287 — refuse on mainnet
                 if let Some(passphrase) = effective_passphrase {
                     if passphrase.contains("Public Global Stellar Network") {
                         return Err(ForgeError::InvalidArgument(
@@ -985,16 +1158,10 @@ impl ForgePlugin for IdentityPlugin {
                     }
                 }
 
-                // Read-only, so no lock: the store is locked further down, for
-                // the write-back after friendbot answers. Holding it across an
-                // HTTP call would block every other identity command for the
-                // duration of the request.
                 let store = load_store(&path)?;
                 let pubkey = {
                     let id = store.identities.get(name.as_str()).ok_or_else(|| {
-                        ForgeError::InvalidArgument(format!(
-                            "identity `{name}` not found (use `soroban-forge identity list` to see available identities)"
-                        ))
+                        identity_not_found(name)
                     })?;
                     id.public_key.clone()
                 };
@@ -1008,13 +1175,8 @@ impl ForgePlugin for IdentityPlugin {
                     println!("funding `{name}` ({pubkey}) via {net_name} friendbot...");
                 }
 
-                // #287 — fund_friendbot now returns the balance
                 let outcome = fund_friendbot(&pubkey, effective_passphrase, ctx.timeout())?;
 
-                // Re-read under the lock rather than reusing the copy loaded
-                // before the request: another command may have written the
-                // store while friendbot was answering, and that write must not
-                // be rolled back by this one.
                 update_store(&path, |store| {
                     if let Some(id) = store.identities.get_mut(name.as_str()) {
                         if !id.funded_on.iter().any(|n| n == net_name) {
@@ -1093,9 +1255,7 @@ impl ForgePlugin for IdentityPlugin {
 
                 let store = load_store(&path)?;
                 let identity = store.identities.get(name.as_str()).ok_or_else(|| {
-                    ForgeError::InvalidArgument(format!(
-                        "identity `{name}` not found (use `soroban-forge identity list` to see available identities)"
-                    ))
+                    identity_not_found(name)
                 })?;
                 let balance = fetch_native_balance(
                     &identity.public_key,
@@ -1117,6 +1277,48 @@ impl ForgePlugin for IdentityPlugin {
                 Ok(())
             }
 
+            Some(("migrate", sub)) => {
+                let to = if sub.get_flag("to-keychain") {
+                    SecretBackend::Keychain
+                } else if sub.get_flag("to-file") {
+                    SecretBackend::File
+                } else {
+                    return Err(ForgeError::InvalidArgument(
+                        "pass --to-keychain or --to-file".into(),
+                    ));
+                };
+                let from = match to {
+                    SecretBackend::Keychain => SecretBackend::File,
+                    SecretBackend::File => SecretBackend::Keychain,
+                };
+                let migrated = migrate_store(&path, from, to)?;
+
+                if ctx.json {
+                    let report = serde_json::json!({
+                        "from": from.as_str(),
+                        "to": to.as_str(),
+                        "migrated": migrated,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                } else if !ctx.quiet {
+                    if migrated.is_empty() {
+                        println!("no identities to migrate");
+                    } else {
+                        println!(
+                            "migrated {} identit{} from {} to {}",
+                            migrated.len(),
+                            if migrated.len() == 1 { "y" } else { "ies" },
+                            from.as_str(),
+                            to.as_str(),
+                        );
+                        for name in &migrated {
+                            println!("  {name}");
+                        }
+                    }
+                }
+                Ok(())
+            }
+
             _ => Err(ForgeError::InvalidArgument(
                 "unknown identity subcommand".into(),
             )),
@@ -1125,939 +1327,4 @@ impl ForgePlugin for IdentityPlugin {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generate_keypair_produces_valid_stellar_keys() {
-        let (public, secret) = generate_keypair();
-        assert!(public.starts_with('G'), "public key should start with G: {public}");
-        assert!(secret.starts_with('S'), "secret key should start with S: {secret}");
-        assert_eq!(public.len(), 56, "Stellar public keys are 56 chars");
-        assert_eq!(secret.len(), 56, "Stellar secret keys are 56 chars");
-    }
-
-    #[test]
-    fn generate_keypair_is_unique() {
-        let (pub1, _) = generate_keypair();
-        let (pub2, _) = generate_keypair();
-        assert_ne!(pub1, pub2, "two generated keypairs should differ");
-    }
-
-    #[test]
-    fn mnemonic_derivation_is_reproducible_and_indexed() {
-        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-        let first = derive_keypair_from_mnemonic(mnemonic, 0).unwrap();
-        let repeated = derive_keypair_from_mnemonic(mnemonic, 0).unwrap();
-        let next_index = derive_keypair_from_mnemonic(mnemonic, 1).unwrap();
-
-        assert_eq!(first, repeated);
-        assert_ne!(first, next_index);
-        assert_eq!(public_key_from_secret(&first.1).unwrap(), first.0);
-    }
-
-    #[test]
-    fn mnemonic_derivation_rejects_invalid_phrase_and_index() {
-        assert!(derive_keypair_from_mnemonic("not a valid mnemonic", 0).is_err());
-        assert!(derive_keypair_from_mnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", 1 << 31).is_err());
-    }
-
-    #[test]
-    fn store_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("identities.json");
-
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity {
-                public_key: "GABC".into(),
-                secret_key: "SABC".into(),
-                funded_on: Vec::new(),
-            },
-        );
-        save_store(&path, &store).unwrap();
-
-        let loaded = load_store(&path).unwrap();
-        assert_eq!(loaded.identities.len(), 1);
-        assert_eq!(loaded.identities["alice"].public_key, "GABC");
-    }
-
-    #[test]
-    fn load_missing_file_returns_empty_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("does-not-exist.json");
-        let store = load_store(&path).unwrap();
-        assert!(store.identities.is_empty());
-    }
-
-    #[test]
-    fn remove_identity_updates_store_and_rejects_missing_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("identities.json");
-        let mut store = IdentityStore::default();
-        for name in ["alice", "bob"] {
-            store.identities.insert(
-                name.into(),
-                Identity {
-                    public_key: format!("G{name}"),
-                    secret_key: format!("S{name}"),
-                    funded_on: Vec::new(),
-                },
-            );
-        }
-        save_store(&path, &store).unwrap();
-
-        remove_identity(&path, "alice").unwrap();
-
-        let updated = load_store(&path).unwrap();
-        assert!(!updated.identities.contains_key("alice"));
-        assert_eq!(updated.identities["bob"].public_key, "Gbob");
-
-        let error = remove_identity(&path, "carol").unwrap_err();
-        assert!(error.to_string().contains("identity `carol` not found"));
-    }
-
-    #[test]
-    fn format_list_empty() {
-        let store = IdentityStore::default();
-        assert!(format_list(&store).contains("no identities stored"));
-    }
-
-    #[test]
-    fn format_list_shows_names_and_public_keys() {
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity {
-                public_key: "GAAA".into(),
-                secret_key: "SAAA".into(),
-                funded_on: Vec::new(),
-            },
-        );
-        store.identities.insert(
-            "bob".into(),
-            Identity {
-                public_key: "GBBB".into(),
-                secret_key: "SBBB".into(),
-                funded_on: Vec::new(),
-            },
-        );
-        let output = format_list(&store);
-        assert!(output.contains("alice"));
-        assert!(output.contains("GAAA"));
-        assert!(output.contains("bob"));
-        assert!(output.contains("GBBB"));
-        // #288 — Secret keys must NOT appear in the list output
-        assert!(!output.contains("SAAA"), "secret key must not appear in format_list output");
-        assert!(!output.contains("SBBB"), "secret key must not appear in format_list output");
-    }
-
-    // #288 — secret keys must never appear in output unless --show-secret is passed
-    #[test]
-    fn generate_output_does_not_contain_secret_without_show_secret() {
-        use soroban_forge_core::ForgeContext;
-
-        let dir = tempfile::tempdir().unwrap();
-        // We can't easily capture stdout, but we can verify the plugin builds
-        // and the show_secret flag is wired up.
-        let plugin = IdentityPlugin;
-        let cmd = plugin.command();
-        let sub = cmd
-            .find_subcommand("generate")
-            .expect("generate subcommand exists");
-        let has_show_secret = sub
-            .get_arguments()
-            .any(|a| a.get_long() == Some("show-secret"));
-        assert!(has_show_secret, "generate must have --show-secret flag");
-    }
-
-    // #288 — list must have --show-secret flag
-    #[test]
-    fn list_subcommand_has_show_secret_flag() {
-        let plugin = IdentityPlugin;
-        let cmd = plugin.command();
-        let sub = cmd
-            .find_subcommand("list")
-            .expect("list subcommand exists");
-        let has_show_secret = sub
-            .get_arguments()
-            .any(|a| a.get_long() == Some("show-secret"));
-        assert!(has_show_secret, "list must have --show-secret flag");
-    }
-
-    // #329 — --timeout bounds a slow HTTP call instead of hanging forever
-    #[test]
-    fn http_get_is_bounded_by_timeout() {
-        // A server that accepts the connection but never responds.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/", listener.local_addr().unwrap());
-        let _accepter = std::thread::spawn(move || {
-            let held = listener.accept();
-            std::thread::sleep(Duration::from_secs(10));
-            drop(held);
-        });
-
-        let started = std::time::Instant::now();
-        let result = http_get(&url, Some(Duration::from_millis(300)));
-        assert!(result.is_err(), "a silent server must trip the timeout");
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "request was not bounded by the timeout: {:?}",
-            started.elapsed()
-        );
-    }
-
-    // #471 — the friendbot host is chosen per network, not hardcoded to testnet
-    #[test]
-    fn friendbot_host_is_chosen_per_network() {
-        // Testnet and futurenet run separate friendbot deployments.
-        assert_eq!(
-            friendbot_host_for("Test SDF Network ; September 2015"),
-            Some("https://friendbot.stellar.org")
-        );
-        assert_eq!(
-            friendbot_host_for("Test SDF Future Network ; October 2022"),
-            Some("https://friendbot-futurenet.stellar.org")
-        );
-    }
-
-    #[test]
-    fn friendbot_host_is_none_for_mainnet_and_unknown_networks() {
-        assert_eq!(friendbot_host_for("Public Global Stellar Network ; September 2015"), None);
-        // An unrecognized/custom passphrase must not silently fall back to the
-        // testnet friendbot — that would fund an account on the wrong network.
-        assert_eq!(friendbot_host_for("Standalone Network ; February 2017"), None);
-        assert_eq!(friendbot_host_for("Some Custom Network"), None);
-    }
-
-    #[test]
-    fn fund_friendbot_uses_the_futurenet_host_for_a_futurenet_passphrase() {
-        // The bug in #471 was that this request went to friendbot.stellar.org
-        // (testnet) regardless of the passphrase. Assert on the URL the
-        // function actually builds, without making the request.
-        let url = friendbot_url(
-            "GABC",
-            Some("Test SDF Future Network ; October 2022"),
-        )
-        .expect("futurenet should resolve to a friendbot host");
-        assert!(
-            url.starts_with("https://friendbot-futurenet.stellar.org/"),
-            "futurenet must use its own friendbot host, got {url}"
-        );
-        assert!(
-            !url.contains("//friendbot.stellar.org"),
-            "futurenet must not use the testnet friendbot, got {url}"
-        );
-    }
-
-    #[test]
-    fn friendbot_already_funded_response_is_classified_from_fixture() {
-        let body = r#"{"detail":"Account already funded."}"#;
-        let outcome = parse_friendbot_response(body).unwrap();
-
-        assert_eq!(
-            outcome,
-            FundingOutcome::AlreadyFunded { balance_xlm: None }
-        );
-        assert_eq!(outcome.status(), "already_funded");
-    }
-
-    #[test]
-    fn friendbot_account_response_is_classified_as_newly_funded() {
-        let body = r#"{"balances":[{"asset_type":"native","balance":"10000.0000000"}]}"#;
-        let outcome = parse_friendbot_response(body).unwrap();
-
-        assert_eq!(
-            outcome,
-            FundingOutcome::Funded {
-                balance_xlm: "10000.0000000".into()
-            }
-        );
-        assert_eq!(outcome.status(), "funded");
-    }
-
-    #[test]
-    fn friendbot_unrecognized_success_body_is_an_error() {
-        let result = parse_friendbot_response(r#"{"detail":"temporarily unavailable"}"#);
-        let error = result.unwrap_err().to_string();
-        assert!(error.contains("temporarily unavailable"), "{error}");
-    }
-
-    #[test]
-    fn fund_friendbot_refuses_a_custom_passphrase() {
-        // Not mainnet, but not a network with a known friendbot either: the
-        // error must say so rather than defaulting to testnet.
-        let result = fund_friendbot("GABC", Some("Standalone Network ; February 2017"), None);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("Standalone Network"),
-            "error should name the unrecognized passphrase: {msg}"
-        );
-    }
-
-    #[test]
-    fn fund_friendbot_requires_a_passphrase() {
-        let result = fund_friendbot("GABC", None, None);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("passphrase"),
-            "error should explain a passphrase is needed: {msg}"
-        );
-    }
-
-    // #470 — a crash mid-write must not corrupt the identity store
-    #[test]
-    fn save_store_replaces_the_file_atomically() {
-        let dir = std::env::temp_dir().join(format!("sf-identity-470-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("identities.json");
-
-        // Write a store with one identity, then a larger one, then a smaller
-        // one. A truncate-and-write would risk a reader seeing a prefix of the
-        // new content; an atomic rename cannot.
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity { public_key: "GALICE".into(), secret_key: "SALICE".into(), funded_on: Vec::new() },
-        );
-        save_store(&path, &store).unwrap();
-        let first = std::fs::read_to_string(&path).unwrap();
-
-        store.identities.insert(
-            "bob".into(),
-            Identity { public_key: "GBOB".into(), secret_key: "SBOB".into(), funded_on: Vec::new() },
-        );
-        save_store(&path, &store).unwrap();
-
-        store.identities.remove("alice");
-        save_store(&path, &store).unwrap();
-
-        // Whatever the write sequence, the file always parses and holds exactly
-        // what was last written.
-        let loaded = load_store(&path).unwrap();
-        assert_eq!(loaded.identities.len(), 1);
-        assert!(loaded.identities.contains_key("bob"));
-        assert_ne!(std::fs::read_to_string(&path).unwrap(), first);
-
-        // No temporary file left behind for the next run to trip over.
-        let names: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .collect();
-        assert_eq!(names, vec!["identities.json".to_string()], "stray files: {names:?}");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn save_store_restricts_identity_file_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("identities.json");
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity {
-                public_key: "GALICE".into(),
-                secret_key: "SALICE".into(),
-                funded_on: Vec::new(),
-            },
-        );
-
-        save_store(&path, &store).unwrap();
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o666);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        save_store(&path, &store).unwrap();
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn a_failed_save_leaves_the_previous_store_readable() {
-        // The property the issue is really about: whatever goes wrong, the
-        // previously saved identities are still there afterwards.
-        let dir = std::env::temp_dir().join(format!("sf-identity-470b-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let path = dir.join("identities.json");
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity { public_key: "GALICE".into(), secret_key: "SALICE".into(), funded_on: Vec::new() },
-        );
-        save_store(&path, &store).unwrap();
-        let before = std::fs::read_to_string(&path).unwrap();
-
-        // Make the destination directory read-only so the temporary file cannot
-        // be created; the rename therefore never happens.
-        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
-        let readonly = perms.clone();
-        perms.set_readonly(true);
-        std::fs::set_permissions(&dir, perms).unwrap();
-
-        let mut updated = store.clone();
-        updated.identities.insert(
-            "bob".into(),
-            Identity { public_key: "GBOB".into(), secret_key: "SBOB".into(), funded_on: Vec::new() },
-        );
-        let result = save_store(&path, &updated);
-
-        // Restore permissions before asserting, so the temp dir can be removed.
-        std::fs::set_permissions(&dir, readonly).unwrap();
-
-        if result.is_err() {
-            // The write was refused, and the store on disk is untouched.
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
-            assert_eq!(load_store(&path).unwrap().identities.len(), 1);
-        }
-        // On a platform where a read-only directory is not enforced (or when
-        // running as root), the write simply succeeded — the store still parses.
-        assert!(load_store(&path).is_ok());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn two_concurrent_generates_both_end_up_in_the_store() {
-        // The lost-update race: without the store lock, both writers load the
-        // same (empty) store, each insert their own identity, and the second
-        // save overwrites the first — so one of the two identities is missing
-        // afterwards even though both commands reported success.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("identities.json");
-
-        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let workers: Vec<_> = ["alice", "bob"]
-            .into_iter()
-            .map(|name| {
-                let path = path.clone();
-                let start = std::sync::Arc::clone(&start);
-                std::thread::spawn(move || {
-                    // Line both writers up so they really do contend.
-                    start.wait();
-                    generate_identity(&path, name, false)
-                })
-            })
-            .collect();
-
-        let generated: Vec<Identity> = workers
-            .into_iter()
-            .map(|w| {
-                w.join()
-                    .expect("generate panicked")
-                    .expect("generate failed")
-            })
-            .collect();
-
-        let store = load_store(&path).unwrap();
-        assert_eq!(
-            store.identities.keys().collect::<Vec<_>>(),
-            vec!["alice", "bob"],
-            "a concurrent generate was overwritten: {:?}",
-            store.identities.keys().collect::<Vec<_>>()
-        );
-        // Each command's reported public key is the one actually stored, so
-        // neither run printed a key it then lost.
-        for (name, identity) in ["alice", "bob"].into_iter().zip(&generated) {
-            assert_eq!(store.identities[name].public_key, identity.public_key);
-            assert_eq!(store.identities[name].secret_key, identity.secret_key);
-        }
-    }
-
-    #[test]
-    fn many_concurrent_writers_all_end_up_in_the_store() {
-        // Two writers can race benignly on a lucky schedule; eight generating
-        // at once will not. Also covers the store file going from absent to
-        // present under contention, which is how a parallel script starts.
-        const WRITERS: usize = 8;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("identities.json");
-
-        let start = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
-        let workers: Vec<_> = (0..WRITERS)
-            .map(|i| {
-                let path = path.clone();
-                let start = std::sync::Arc::clone(&start);
-                std::thread::spawn(move || {
-                    start.wait();
-                    generate_identity(&path, &format!("id-{i}"), false)
-                })
-            })
-            .collect();
-        for worker in workers {
-            worker
-                .join()
-                .expect("generate panicked")
-                .expect("generate failed");
-        }
-
-        let store = load_store(&path).unwrap();
-        assert_eq!(
-            store.identities.len(),
-            WRITERS,
-            "stored: {:?}",
-            store.identities.keys()
-        );
-        for i in 0..WRITERS {
-            assert!(
-                store.identities.contains_key(&format!("id-{i}")),
-                "identity id-{i} was overwritten by a concurrent writer"
-            );
-        }
-    }
-
-    #[test]
-    fn a_rejected_generate_leaves_the_store_and_the_lock_untouched() {
-        // A name collision must not write anything — and must release the
-        // lock, or every later identity command would block on it.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("identities.json");
-        let first = generate_identity(&path, "alice", false).unwrap();
-
-        let err = generate_identity(&path, "alice", false).unwrap_err();
-        assert!(matches!(err, ForgeError::AlreadyExists(_)), "{err:?}");
-
-        let store = load_store(&path).unwrap();
-        assert_eq!(store.identities.len(), 1);
-        assert_eq!(store.identities["alice"].public_key, first.public_key);
-        assert!(
-            !soroban_forge_core::lock::lock_path(&path).exists(),
-            "the store was left locked after a rejected generate"
-        );
-
-        // --force replaces it, as before.
-        let forced = generate_identity(&path, "alice", true).unwrap();
-        assert_ne!(forced.public_key, first.public_key);
-        assert_eq!(
-            load_store(&path).unwrap().identities["alice"].public_key,
-            forced.public_key
-        );
-    }
-
-    // #287 — fund refuses on mainnet passphrase
-    #[test]
-    fn fund_friendbot_refuses_mainnet_passphrase() {
-        let result = fund_friendbot(
-            "GABC",
-            Some("Public Global Stellar Network ; September 2015"),
-            None,
-        );
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("mainnet"), "error should mention mainnet: {msg}");
-    }
-
-    // #287 — fund allows testnet passphrase (would make network call, test only guards the refusal)
-    #[test]
-    fn fund_friendbot_allows_testnet_passphrase_guard() {
-        // We cannot make real network calls in unit tests. We verify that the
-        // mainnet guard does NOT fire for a testnet passphrase. The ureq call
-        // will fail (no network in CI) but the error won't be about mainnet.
-        let result = fund_friendbot("GABC", Some("Test SDF Network ; September 2015"), None);
-        match &result {
-            Err(e) => {
-                let msg = e.to_string();
-                assert!(
-                    !msg.contains("mainnet"),
-                    "testnet passphrase should not trigger mainnet refusal: {msg}"
-                );
-            }
-            Ok(_) => {} // real network available — fine
-        }
-    }
-
-    #[test]
-    fn identity_command_has_subcommands() {
-        let plugin = IdentityPlugin;
-        let cmd = plugin.command();
-        let sub_names: Vec<&str> = cmd
-            .get_subcommands()
-            .map(|s| s.get_name())
-            .collect();
-        assert!(sub_names.contains(&"generate"));
-        assert!(sub_names.contains(&"list"));
-        assert!(sub_names.contains(&"fund"));
-        assert!(sub_names.contains(&"balance"));
-        assert!(sub_names.contains(&"remove"));
-        assert!(sub_names.contains(&"use"));
-    }
-
-    #[test]
-    fn balance_command_resolves_cli_network_over_config_and_default() {
-        let matches = IdentityPlugin
-            .command()
-            .try_get_matches_from(["identity", "balance", "alice", "--network", "futurenet"])
-            .unwrap();
-        let (_, args) = matches.subcommand().unwrap();
-        assert_eq!(args.get_one::<String>("network").map(String::as_str), Some("futurenet"));
-        assert_eq!(
-            resolve_balance_network_name(Some("futurenet"), Some("testnet"), Some("mainnet")),
-            "futurenet"
-        );
-        assert_eq!(
-            resolve_balance_network_name(None, Some("testnet"), Some("mainnet")),
-            "testnet"
-        );
-        assert_eq!(
-            resolve_balance_network_name(None, None, Some("mainnet")),
-            "mainnet"
-        );
-        assert_eq!(resolve_balance_network_name(None, None, None), "testnet");
-    }
-
-    #[test]
-    fn balance_subcommand_refuses_offline() {
-        use soroban_forge_core::ForgeContext;
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = ForgeContext::with_options(
-            dir.path().to_path_buf(),
-            0,
-            false,
-            false,
-            false,
-            true,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let matches = IdentityPlugin
-            .command()
-            .try_get_matches_from(["identity", "balance", "alice", "--network", "testnet"])
-            .unwrap();
-
-        let error = IdentityPlugin.run(&matches, &ctx).unwrap_err().to_string();
-        assert!(error.contains("offline"), "expected offline refusal, got: {error}");
-    }
-
-    #[test]
-    fn generate_command_accepts_mnemonic_and_index() {
-        let matches = IdentityPlugin
-            .command()
-            .try_get_matches_from([
-                "identity",
-                "generate",
-                "ci",
-                "--from-mnemonic",
-                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-                "--index",
-                "3",
-            ])
-            .unwrap();
-        let (_, generate) = matches.subcommand().unwrap();
-        assert_eq!(
-            generate.get_one::<String>("from-mnemonic").map(String::as_str),
-            Some("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
-        );
-        assert_eq!(generate.get_one::<u32>("index"), Some(&3));
-
-        assert!(IdentityPlugin
-            .command()
-            .try_get_matches_from(["identity", "generate", "random"])
-            .is_ok());
-    }
-
-    // #428 — funded marker is recorded in store and displayed in format_list
-    #[test]
-    fn funded_marker_recorded_and_displayed() {
-        let mut store = IdentityStore::default();
-        let id = Identity {
-            public_key: "GALICE".into(),
-            secret_key: "SALICE".into(),
-            funded_on: vec!["testnet".into()],
-        };
-        store.identities.insert("alice".into(), id);
-
-        let list_output = format_list(&store);
-        assert!(list_output.contains("alice"));
-        assert!(list_output.contains("GALICE"));
-        assert!(list_output.contains("funded: testnet"), "list must show funded marker: {list_output}");
-    }
-
-    // #427 — identity use sets default in store and writes forge.toml
-    #[test]
-    fn identity_use_sets_default_and_writes_forge_toml() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store_file = tmp.path().join("identities.json");
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity {
-                public_key: "GALICE".into(),
-                secret_key: "SALICE".into(),
-                funded_on: Vec::new(),
-            },
-        );
-        save_store(&store_file, &store).unwrap();
-
-        // Test patching forge.toml
-        write_identity_to_forge_toml(tmp.path(), "alice").unwrap();
-        let toml_content = std::fs::read_to_string(tmp.path().join("forge.toml")).unwrap();
-        assert!(toml_content.contains("[identity]"));
-        assert!(toml_content.contains("default = \"alice\""));
-
-        // Test updating default in store
-        store.default = Some("alice".into());
-        save_store(&store_file, &store).unwrap();
-
-        let loaded = load_store(&store_file).unwrap();
-        assert_eq!(loaded.default.as_deref(), Some("alice"));
-    }
-
-    // #427 — removing the default identity clears the default marker
-    #[test]
-    fn identity_remove_clears_default() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store_file = tmp.path().join("identities.json");
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity {
-                public_key: "GALICE".into(),
-                secret_key: "SALICE".into(),
-                funded_on: Vec::new(),
-            },
-        );
-        store.default = Some("alice".into());
-        save_store(&store_file, &store).unwrap();
-
-        remove_identity(&store_file, "alice").unwrap();
-
-        let loaded = load_store(&store_file).unwrap();
-        assert!(!loaded.identities.contains_key("alice"));
-        assert!(loaded.default.is_none());
-    }
-
-    // #427 — patch_forge_toml_identity replaces existing default key cleanly
-    #[test]
-    fn test_patch_forge_toml_identity() {
-        let existing = "[project]\nname = \"demo\"\n\n[identity]\ndefault = \"bob\"\n";
-        let patched = patch_forge_toml_identity(existing, "alice");
-        assert!(patched.contains("[project]"));
-        assert!(patched.contains("default = \"alice\""));
-        assert!(!patched.contains("default = \"bob\""));
-    }
-
-    // #287 — fund refuses offline
-    #[test]
-    fn fund_subcommand_refuses_offline() {
-        use soroban_forge_core::ForgeContext;
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = ForgeContext::with_options(
-            dir.path().to_path_buf(),
-            0,
-            false,
-            false,
-            false,
-            true, // offline = true
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let plugin = IdentityPlugin;
-        let cmd = plugin.command();
-        let matches = cmd
-            .try_get_matches_from(["identity", "fund", "alice"])
-            .unwrap();
-        let result = plugin.run(&matches, &ctx);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("offline"), "error should mention offline: {msg}");
-    }
-
-    // ---- identity import (#421) ----
-
-    #[test]
-    fn import_derives_the_public_key_from_a_valid_secret() {
-        let (public, secret) = generate_keypair();
-        assert_eq!(public_key_from_secret(&secret).unwrap(), public);
-        // Surrounding whitespace (e.g. from a CI secret) is tolerated.
-        assert_eq!(public_key_from_secret(&format!("  {secret}\n")).unwrap(), public);
-
-        let mut store = IdentityStore::default();
-        let imported = import_identity(&mut store, "ci", &format!("{secret}\n"), false).unwrap();
-        assert_eq!(imported.public_key, public);
-        assert_eq!(imported.secret_key, secret);
-        assert_eq!(store.identities["ci"].public_key, public);
-    }
-
-    #[test]
-    fn import_rejects_malformed_secret_keys_without_echoing_them() {
-        let (public, secret) = generate_keypair();
-        let mut corrupted = secret.clone();
-        // Flip the last character so the strkey checksum no longer matches.
-        let last = corrupted.pop().unwrap();
-        corrupted.push(if last == 'A' { 'B' } else { 'A' });
-        let lowercase = secret.to_lowercase();
-
-        for bad in [
-            "",
-            "SABC",
-            "not-a-key",
-            public.as_str(), // a public key is not a secret key
-            corrupted.as_str(),
-            lowercase.as_str(),
-        ] {
-            let mut store = IdentityStore::default();
-            let err = import_identity(&mut store, "ci", bad, false).unwrap_err();
-            let msg = err.to_string();
-            assert!(msg.contains("not a valid Stellar secret key"), "{bad:?}: {msg}");
-            if !bad.is_empty() {
-                assert!(!msg.contains(bad), "error must not echo the input: {msg}");
-            }
-            assert!(store.identities.is_empty(), "nothing stored for {bad:?}");
-        }
-    }
-
-    #[test]
-    fn import_respects_force_like_generate() {
-        let (_, first) = generate_keypair();
-        let (second_public, second) = generate_keypair();
-        let mut store = IdentityStore::default();
-        import_identity(&mut store, "deployer", &first, false).unwrap();
-
-        let err = import_identity(&mut store, "deployer", &second, false).unwrap_err();
-        assert!(matches!(err, ForgeError::AlreadyExists(_)), "{err}");
-        assert_eq!(store.identities["deployer"].secret_key, first, "existing identity untouched");
-
-        import_identity(&mut store, "deployer", &second, true).unwrap();
-        assert_eq!(store.identities["deployer"].public_key, second_public);
-    }
-
-    #[test]
-    fn import_checks_the_name_before_validating_the_secret() {
-        // Same order as generate: a collision without --force is reported
-        // even if the secret is also bad.
-        let (_, secret) = generate_keypair();
-        let mut store = IdentityStore::default();
-        import_identity(&mut store, "x", &secret, false).unwrap();
-        assert!(matches!(
-            import_identity(&mut store, "x", "garbage", false),
-            Err(ForgeError::AlreadyExists(_))
-        ));
-    }
-
-    #[test]
-    fn import_subcommand_requires_exactly_one_secret_source() {
-        let cmd = || IdentityPlugin.command();
-        assert!(cmd().try_get_matches_from(["identity", "import", "ci"]).is_err());
-        assert!(cmd()
-            .try_get_matches_from(["identity", "import", "ci", "--secret", "S", "--secret-stdin"])
-            .is_err());
-        let m = cmd()
-            .try_get_matches_from(["identity", "import", "ci", "--secret", "SXYZ", "--force"])
-            .unwrap();
-        let (name, sub) = m.subcommand().unwrap();
-        assert_eq!(name, "import");
-        assert_eq!(sub.get_one::<String>("secret").map(String::as_str), Some("SXYZ"));
-        assert!(sub.get_flag("force"));
-        assert!(cmd()
-            .try_get_matches_from(["identity", "import", "ci", "--secret-stdin"])
-            .is_ok());
-    }
-
-    #[test]
-    fn secret_can_be_read_from_stdin() {
-        let (_, secret) = generate_keypair();
-        let input = format!("{secret}\nignored second line\n");
-        assert_eq!(read_secret_line(input.as_bytes()).unwrap(), secret);
-        assert!(read_secret_line("\n".as_bytes()).is_err());
-    }
-
-    // ---- identity show --reveal-secret (#422) ----
-
-    #[test]
-    fn show_prints_the_secret_only_when_explicitly_requested() {
-        let (public, secret) = generate_keypair();
-        let id = Identity {
-            public_key: public.clone(),
-            secret_key: secret.clone(),
-            funded_on: Vec::new(),
-        };
-
-        let hidden = format_show("alice", &id, false);
-        assert!(hidden.contains(&public), "{hidden}");
-        assert!(!hidden.contains(&secret), "secret leaked without --reveal-secret: {hidden}");
-        assert!(hidden.contains("--reveal-secret"), "{hidden}");
-
-        let revealed = format_show("alice", &id, true);
-        assert!(revealed.contains(&secret), "{revealed}");
-
-        let json_hidden = show_json("alice", &id, false);
-        assert!(json_hidden.get("secret_key").is_none(), "{json_hidden}");
-        assert_eq!(json_hidden["public_key"], public);
-        assert_eq!(show_json("alice", &id, true)["secret_key"], secret);
-    }
-
-    #[test]
-    fn list_never_prints_secrets_by_default() {
-        let (public, secret) = generate_keypair();
-        let mut store = IdentityStore::default();
-        store.identities.insert(
-            "alice".into(),
-            Identity {
-                public_key: public.clone(),
-                secret_key: secret.clone(),
-                funded_on: Vec::new(),
-            },
-        );
-        let out = format_list(&store);
-        assert!(out.contains(&public));
-        assert!(!out.contains(&secret));
-    }
-
-    #[test]
-    fn show_subcommand_has_an_opt_in_reveal_flag() {
-        let m = IdentityPlugin
-            .command()
-            .try_get_matches_from(["identity", "show", "alice"])
-            .unwrap();
-        let (name, sub) = m.subcommand().unwrap();
-        assert_eq!(name, "show");
-        assert!(!sub.get_flag("reveal-secret"), "secret must be hidden by default");
-
-        let m = IdentityPlugin
-            .command()
-            .try_get_matches_from(["identity", "show", "alice", "--reveal-secret"])
-            .unwrap();
-        assert!(m.subcommand().unwrap().1.get_flag("reveal-secret"));
-    }
-
-    #[test]
-    fn patch_forge_toml_identity_handles_comments_dotted_keys_inline_tables_and_quotes() {
-        let with_comment = "[identity] # active identity\ndefault = \"alice\"\n";
-        let out = patch_forge_toml_identity(with_comment, "bob");
-        let doc: toml_edit::DocumentMut = out.parse().expect("must be valid TOML");
-        assert_eq!(doc["identity"]["default"].as_str(), Some("bob"));
-        assert!(out.contains("# active identity"), "{out}");
-
-        let dotted = "identity.default = \"alice\"\n";
-        let out_dotted = patch_forge_toml_identity(dotted, "bob");
-        let doc_dotted: toml_edit::DocumentMut = out_dotted.parse().expect("must be valid TOML");
-        assert_eq!(doc_dotted["identity"]["default"].as_str(), Some("bob"));
-
-        let inline = "identity = { default = \"alice\" }\n";
-        let out_inline = patch_forge_toml_identity(inline, "bob\"quoted");
-        let doc_inline: toml_edit::DocumentMut = out_inline.parse().expect("must be valid TOML");
-        assert_eq!(
-            doc_inline["identity"]["default"].as_str(),
-            Some("bob\"quoted")
-        );
-    }
-}
+mod tests;
