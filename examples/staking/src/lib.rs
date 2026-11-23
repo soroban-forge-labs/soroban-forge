@@ -7,6 +7,12 @@ use soroban_sdk::{
 
 const SCALE: i128 = 1_000_000_000_000_000_000;
 
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -72,29 +78,53 @@ fn set_total_staked(env: &Env, val: i128) {
 }
 
 fn read_staked(env: &Env, user: &Address) -> i128 {
-    env.storage()
+    let key = DataKey::Staked(user.clone());
+    let val = env
+        .storage()
         .persistent()
-        .get(&DataKey::Staked(user.clone()))
-        .unwrap_or(0)
+        .get(&key)
+        .unwrap_or(0);
+    if val > 0 {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+    }
+    val
 }
 
 fn write_staked(env: &Env, user: &Address, val: i128) {
+    let key = DataKey::Staked(user.clone());
     env.storage()
         .persistent()
-        .set(&DataKey::Staked(user.clone()), &val);
+        .set(&key, &val);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
 fn reward_debt(env: &Env, user: &Address) -> i128 {
-    env.storage()
+    let key = DataKey::RewardDebt(user.clone());
+    let val = env
+        .storage()
         .persistent()
-        .get(&DataKey::RewardDebt(user.clone()))
-        .unwrap_or(0)
+        .get(&key)
+        .unwrap_or(0);
+    if val > 0 {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+    }
+    val
 }
 
 fn set_reward_debt(env: &Env, user: &Address, val: i128) {
+    let key = DataKey::RewardDebt(user.clone());
     env.storage()
         .persistent()
-        .set(&DataKey::RewardDebt(user.clone()), &val);
+        .set(&key, &val);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
 fn pending(env: &Env, user: &Address) -> i128 {
@@ -155,6 +185,9 @@ impl StakingContract {
 
     pub fn deposit(env: Env, user: Address, amount: i128) {
         user.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -179,6 +212,9 @@ impl StakingContract {
 
     pub fn withdraw(env: Env, user: Address, amount: i128) {
         user.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -207,6 +243,9 @@ impl StakingContract {
 
     pub fn distribute(env: Env, amount: i128) {
         admin(&env).require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         let total = total_staked(&env);
         if total == 0 {
             panic_with_error!(&env, Error::NoStakers);
@@ -231,6 +270,9 @@ impl StakingContract {
 
     pub fn claim(env: Env, user: Address) -> i128 {
         user.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         let amt = _claim(&env, &user);
         if amt == 0 {
             panic_with_error!(&env, Error::NoRewards);
