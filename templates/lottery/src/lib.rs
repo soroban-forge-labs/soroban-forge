@@ -33,6 +33,12 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
 
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -98,6 +104,9 @@ impl LotteryContract {
     /// passed to `reveal` later. Must be called before the commit deadline.
     pub fn enter(env: Env, entrant: Address, commitment: BytesN<32>) {
         entrant.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 
         let now = env.ledger().timestamp();
         let commit_deadline: u64 = env
@@ -133,6 +142,9 @@ impl LotteryContract {
     /// commitment submitted in `enter`.
     pub fn reveal(env: Env, entrant: Address, nonce: BytesN<32>) {
         entrant.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 
         let now = env.ledger().timestamp();
         let commit_deadline: u64 = env
@@ -178,6 +190,10 @@ impl LotteryContract {
     /// seed is derived by XOR-ing every revealed nonce together, so no
     /// single entrant controls the outcome.
     pub fn draw(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+        
         let now = env.ledger().timestamp();
         let reveal_deadline: u64 = env
             .storage()
