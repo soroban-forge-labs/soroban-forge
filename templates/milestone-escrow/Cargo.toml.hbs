@@ -1,0 +1,18 @@
+[package]
+name = "{{project_name}}"
+version = "0.1.0"
+edition = "{{edition}}"
+authors = ["{{author}}"]
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = "{{sdk_version}}"
+
+[dev-dependencies]
+soroban-sdk = { version = "{{sdk_version}}", features = ["testutils"] }
+
+# soroban-forge:partial:release-profile
