@@ -15,6 +15,10 @@ use soroban_sdk::{
     BytesN, Env, Vec,
 };
 
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL_EXTEND_TO - DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -71,6 +75,7 @@ impl MultisigContract {
             .instance()
             .set(&DataKey::SignerCnt, &signers.len());
         env.storage().instance().set(&DataKey::Threshold, &threshold);
+        extend_instance_ttl(&env);
     }
 
     /// Atomically replace the signer set and threshold.
@@ -108,6 +113,7 @@ impl MultisigContract {
         env.storage()
             .instance()
             .set(&DataKey::Threshold, &new_threshold);
+        extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("rotate"), env.current_contract_address()),
@@ -131,6 +137,7 @@ impl MultisigContract {
             panic_with_error(&env, AccError::InvalidThreshold);
         }
         env.storage().instance().set(&DataKey::Threshold, &threshold);
+        extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("thresh"), env.current_contract_address()),
@@ -218,6 +225,12 @@ fn authenticate(
         );
     }
     Ok(())
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
 fn panic_with_error(env: &Env, err: AccError) -> ! {
