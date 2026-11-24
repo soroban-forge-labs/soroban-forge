@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 /// State of the escrow.
 #[contracttype]
@@ -100,6 +100,9 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Funded);
+
+        env.events()
+            .publish((symbol_short!("deposit"), depositor), amount);
     }
 
     /// Release funds to the recipient.
@@ -128,6 +131,9 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Released);
+
+        env.events()
+            .publish((symbol_short!("release"), recipient), amount);
     }
 
     /// Refund the depositor after the timeout has passed.
@@ -158,6 +164,9 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Refunded);
+
+        env.events()
+            .publish((symbol_short!("refund"), depositor), amount);
     }
 
     /// Return the current escrow state.
