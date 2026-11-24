@@ -178,10 +178,22 @@ impl StreamingContract {
             return total_amount;
         }
 
-        // Linear interpolation: total * (now - start) / (end - start)
+        // Linear interpolation: total * (now - start) / (end - start), computed
+        // without multiplying the (up to i128) total_amount by elapsed directly,
+        // since that product can exceed u128::MAX for large grants over long
+        // durations. Split into a whole-unit term and a remainder term, where
+        // the remainder term only multiplies two u64-derived values together.
         let elapsed = now - start;
         let duration = end - start;
-        (total_amount as u128 * elapsed as u128 / duration as u128) as i128
+        let total_u128 = total_amount as u128;
+        let whole = total_u128 / duration as u128;
+        let remainder = total_u128 % duration as u128;
+        let streamed = whole
+            .checked_mul(elapsed as u128)
+            .and_then(|v| remainder.checked_mul(elapsed as u128).map(|r| (v, r)))
+            .and_then(|(v, r)| v.checked_add(r / duration as u128))
+            .unwrap_or_else(|| panic!("streamed amount calculation overflowed"));
+        streamed as i128
     }
 
     /// Return the amount the recipient can currently claim

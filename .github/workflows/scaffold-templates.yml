@@ -34,6 +34,25 @@ jobs:
         run: |
           templates=$(./target/release/soroban-forge new --list-templates --json | jq -c '[.[].name]')
           echo "templates=$templates" >> "$GITHUB_OUTPUT"
+      - name: Verify newly-added templates ship a lockfile
+        # A scaffolded project without a Cargo.lock.hbs resolves dependency
+        # versions at build time, so it can break without any change in
+        # this repo. access-control, cross-contract, flash-loan and
+        # prediction-market previously shipped none; keep them covered.
+        # NOTE: several other templates (amm, atomic-swap, vesting, ...)
+        # are also missing a lockfile today — see the repo-wide audit this
+        # fix surfaced. They are intentionally excluded here so this gate
+        # does not fail on pre-existing, unrelated gaps; broadening it to
+        # all templates is tracked separately.
+        run: |
+          missing=0
+          for name in access-control cross-contract flash-loan prediction-market; do
+            if [[ ! -f "templates/${name}/Cargo.lock.hbs" ]]; then
+              echo "::error::templates/${name} has no Cargo.lock.hbs"
+              missing=1
+            fi
+          done
+          exit "$missing"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: soroban-forge-bin

@@ -117,3 +117,41 @@ fn swap_fails_with_zero_amount() {
         &50,
     );
 }
+
+#[test]
+#[should_panic]
+fn swap_fails_when_party_a_equals_party_b() {
+    let env = Env::default();
+    let (swap, token_a, token_b, alice, _bob) = setup(&env);
+
+    token_a.admin.mint(&alice, &1000);
+    token_b.admin.mint(&alice, &500);
+
+    swap.swap(
+        &alice,
+        &alice,
+        &token_a.address,
+        &token_b.address,
+        &100,
+        &50,
+    );
+}
+
+#[test]
+#[should_panic]
+fn swap_fails_when_token_a_equals_token_b() {
+    let env = Env::default();
+    let (swap, token_a, _token_b, alice, bob) = setup(&env);
+
+    token_a.admin.mint(&alice, &1000);
+    token_a.admin.mint(&bob, &500);
+
+    swap.swap(
+        &alice,
+        &bob,
+        &token_a.address,
+        &token_a.address,
+        &100,
+        &50,
+    );
+}
