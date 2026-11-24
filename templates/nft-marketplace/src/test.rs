@@ -1,7 +1,8 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{
     contract, contractimpl, token::StellarAssetClient, token::TokenClient, Address, Env, String,
 };
@@ -475,4 +476,19 @@ fn test_set_fee_bps_accepts_cap_and_rejects_above_it() {
 fn test_constructor_rejects_fee_above_cap() {
     let env = Env::default();
     setup(&env, MAX_FEE_BPS + 1);
+}
+
+#[test]
+fn test_instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let ctx = setup(&env, 250);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    ctx.marketplace.set_fee_bps(&500);
+    assert_eq!(ctx.marketplace.fee_bps(), 500);
+
+    let ttl = env.as_contract(&ctx.marketplace_id, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

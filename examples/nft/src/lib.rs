@@ -13,6 +13,11 @@ pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Threshold to trigger TTL extension.
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage TTL (30 days): admin and collection metadata are bumped on
+/// every state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold to trigger instance TTL extension.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -42,6 +47,12 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 #[contract]
 pub struct NftContract;
 
@@ -56,6 +67,7 @@ impl NftContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Name, &name);
         env.storage().instance().set(&DataKey::Symbol, &symbol);
+        extend_instance_ttl(&env);
     }
 
     /// Return the admin address.
@@ -113,6 +125,7 @@ impl NftContract {
     pub fn mint(env: Env, to: Address, token_id: u32, uri: String) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         let owner_key = DataKey::Owner(token_id);
         if env.storage().persistent().has(&owner_key) {
@@ -138,6 +151,7 @@ impl NftContract {
     /// Requires `from` authorization.
     pub fn transfer(env: Env, from: Address, to: Address, token_id: u32) {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         let owner = Self::owner_of(env.clone(), token_id);
         if owner != from {
@@ -169,6 +183,7 @@ impl NftContract {
     /// Requires `from` authorization.
     pub fn burn(env: Env, from: Address, token_id: u32) {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         let owner = Self::owner_of(env.clone(), token_id);
         if owner != from {
@@ -196,6 +211,7 @@ impl NftContract {
     pub fn approve(env: Env, to: Address, token_id: u32) {
         let owner = Self::owner_of(env.clone(), token_id);
         owner.require_auth();
+        extend_instance_ttl(&env);
 
         let key = DataKey::Approved(token_id);
         env.storage().persistent().set(&key, &to);
@@ -220,6 +236,7 @@ impl NftContract {
     pub fn set_approval_for_all(env: Env, operator: Address, approved: bool) {
         let caller = env.invoker();
         caller.require_auth();
+        extend_instance_ttl(&env);
 
         let key = DataKey::ApprovedForAll(caller.clone(), operator);
         if approved {
@@ -245,6 +262,7 @@ impl NftContract {
     /// Requires authorization from either the owner or an approved operator.
     /// Clears single-token approval after successful transfer.
     pub fn transfer_from(env: Env, from: Address, to: Address, token_id: u32) {
+        extend_instance_ttl(&env);
         let owner = Self::owner_of(env.clone(), token_id);
         let caller = env.invoker();
 
