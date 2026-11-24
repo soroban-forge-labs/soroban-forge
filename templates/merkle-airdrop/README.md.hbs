@@ -37,6 +37,9 @@ against the contract's before publishing a root.
 | `has_claimed(claimant)`             | whether that address already claimed           |
 | `set_root(root)`                    | admin replaces the root (e.g. a second round)  |
 | `sweep()`                           | admin reclaims what is left after the window   |
+| `propose_admin(new_admin)`          | admin nominates a successor (emits `adm_prop`) |
+| `accept_admin()`                    | pending admin takes over (emits `adm_acc`)     |
+| `cancel_admin_proposal()`           | admin withdraws the nomination (`adm_canc`)    |
 
 Claim markers are written to persistent storage and their TTL is extended as
 they are created, so a claimant cannot get a second payout by waiting for the
