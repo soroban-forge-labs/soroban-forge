@@ -1,5 +1,6 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env, String};
 
 fn setup(env: &Env) -> (NftContractClient<'_>, Address) {
@@ -300,4 +301,20 @@ fn owner_can_transfer_from_own_token() {
     assert_eq!(nft.owner_of(&1), bob);
     assert_eq!(nft.balance_of(&alice), 0);
     assert_eq!(nft.balance_of(&bob), 1);
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (nft, _admin) = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    let alice = Address::generate(&env);
+    nft.mint(&alice, &1, &String::from_str(&env, "ipfs://token-1"));
+    assert_eq!(nft.owner_of(&1), alice);
+
+    let ttl = env.as_contract(&nft.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }
