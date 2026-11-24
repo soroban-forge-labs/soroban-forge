@@ -11,6 +11,18 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
 
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage (admin and faucet settings) is bumped to this many ledgers
+/// on every state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -58,12 +70,14 @@ impl FaucetContract {
         env.storage()
             .instance()
             .set(&DataKey::CooldownSeconds, &cooldown_seconds);
+        extend_instance(&env);
     }
 
     /// Deposit tokens into the faucet.
     ///
     /// Must be called by the `admin`; may be called repeatedly to top up.
     pub fn fund(env: Env, amount: i128) {
+        extend_instance(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
 
@@ -73,6 +87,7 @@ impl FaucetContract {
     }
 
     pub fn withdraw(env: Env, amount: i128) {
+        extend_instance(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if amount <= 0 {
@@ -83,6 +98,7 @@ impl FaucetContract {
     }
 
     pub fn set_params(env: Env, amount_per_claim: i128, cooldown_seconds: u64) {
+        extend_instance(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if amount_per_claim <= 0 {
@@ -102,6 +118,7 @@ impl FaucetContract {
     /// last `cooldown_seconds`.
     pub fn claim(env: Env, to: Address) -> i128 {
         to.require_auth();
+        extend_instance(&env);
 
         let now = env.ledger().timestamp();
         let cooldown: u64 = env

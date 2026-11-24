@@ -22,6 +22,12 @@ linearly decays to a `floor_price` over a configured `duration_seconds`:
 4. **Cancel** — If no buyer has purchased yet, the seller can cancel the
    auction and reclaim their asset.
 
+## Events
+
+- `fund` — published when the seller funds the auction. Data: asset amount.
+- `buy` — published when `buy` settles the auction, keyed by buyer. Data: price paid.
+- `cancel` — published when `cancel` returns the asset to the seller. Data: asset amount.
+
 ## Develop
 
 ```sh

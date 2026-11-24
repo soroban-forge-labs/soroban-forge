@@ -1,6 +1,6 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Bytes, BytesN, Env};
+use soroban_sdk::{Address, Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal};
 
 fn setup(env: &Env) -> (UpgradeableContractClient<'_>, Address) {
     env.mock_all_auths();
@@ -24,11 +24,56 @@ fn constructor_sets_admin() {
 }
 
 #[test]
+fn version_starts_at_one() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    assert_eq!(client.version(), 1);
+}
+
+#[test]
 fn admin_can_upgrade() {
     let env = Env::default();
     let (client, _admin) = setup(&env);
     let wasm_hash = test_wasm_hash(&env);
     client.upgrade(&wasm_hash);
+}
+
+#[test]
+fn upgrade_emits_event_with_new_wasm_hash() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let wasm_hash = test_wasm_hash(&env);
+
+    client.upgrade(&wasm_hash);
+
+    let events = env.events().all();
+    let mut found = false;
+    for event in events.iter() {
+        let (_contract, topics, data) = event;
+        // The first topic is the event name symbol.
+        if let Some(topic) = topics.get(0) {
+            let name: Result<Symbol, _> = topic.try_into_val(&env);
+            if let Ok(name) = name {
+                if name == Symbol::new(&env, "Upgraded") {
+                    let emitted_hash: BytesN<32> = data.try_into_val(&env).unwrap();
+                    assert_eq!(emitted_hash, wasm_hash);
+                    found = true;
+                }
+            }
+        }
+    }
+    assert!(found, "expected an Upgraded event to be published");
+}
+
+#[test]
+fn upgrade_bumps_version() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let wasm_hash = test_wasm_hash(&env);
+
+    assert_eq!(client.version(), 1);
+    client.upgrade(&wasm_hash);
+    assert_eq!(client.version(), 2);
 }
 
 #[test]

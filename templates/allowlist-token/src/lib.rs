@@ -6,15 +6,19 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
-    Map,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
+    Env, String,
 };
 
-pub const DAY_IN_LEDGERS: u32 = 17_280;
+const DAY_IN_LEDGERS: u32 = 17280;
+const BALANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
+const BALANCE_LIFETIME_THRESHOLD: u32 = BALANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+const ALLOWANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
+const ALLOWANCE_LIFETIME_THRESHOLD: u32 = ALLOWANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+/// Instance entry (admin, metadata, total supply) lives 30 days and is bumped
+/// whenever it drops below 29 days, so it is never archived while in use.
 pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
 pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
-pub const BALANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
-pub const BALANCE_TTL_THRESHOLD: u32 = BALANCE_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,28 +32,60 @@ pub enum Error {
     InvalidAmount = 3,
     /// Insufficient balance.
     InsufficientBalance = 4,
+    /// Arithmetic overflow.
+    Overflow = 5,
+    /// Insufficient allowance.
+    InsufficientAllowance = 6,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
-    Allowlist,
+    Name,
+    Symbol,
+    Decimals,
+    Allowed(Address),
     Balance(Address),
+    Allowance(Address, Address),
     TotalSupply,
 }
 
-fn get_admin(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Admin).unwrap()
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Mint {
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
 }
 
-fn is_allowed(env: &Env, addr: &Address) -> bool {
-    let list: Map<Address, bool> = env
-        .storage()
-        .instance()
-        .get(&DataKey::Allowlist)
-        .unwrap_or(Map::new(env));
-    list.get(addr.clone()).unwrap_or(false)
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Transfer {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Burn {
+    #[topic]
+    pub from: Address,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approve {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub spender: Address,
+    pub amount: i128,
+    pub live_until_ledger: u32,
 }
 
 fn extend_instance_ttl(env: &Env) {
@@ -58,13 +94,25 @@ fn extend_instance_ttl(env: &Env) {
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 }
 
+fn get_admin(env: &Env) -> Address {
+    env.storage().instance().get(&DataKey::Admin).unwrap()
+}
+
+fn is_allowed(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Allowed(addr.clone()))
+        .unwrap_or(false)
+}
+
 fn get_balance(env: &Env, addr: &Address) -> i128 {
     let key = DataKey::Balance(addr.clone());
     match env.storage().persistent().get::<_, i128>(&key) {
         Some(balance) => {
+            // Reads keep an existing balance alive; missing entries are not created.
             env.storage()
                 .persistent()
-                .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_TTL);
+                .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
             balance
         }
         None => 0,
@@ -72,11 +120,79 @@ fn get_balance(env: &Env, addr: &Address) -> i128 {
 }
 
 fn set_balance(env: &Env, addr: &Address, amount: i128) {
-    let key = DataKey::Balance(addr.clone());
-    env.storage().persistent().set(&key, &amount);
     env.storage()
         .persistent()
-        .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_TTL);
+        .set(&DataKey::Balance(addr.clone()), &amount);
+    env.storage().persistent().extend_ttl(
+        &DataKey::Balance(addr.clone()),
+        BALANCE_LIFETIME_THRESHOLD,
+        BALANCE_BUMP_AMOUNT,
+    );
+}
+
+fn get_allowance(env: &Env, from: &Address, spender: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Allowance(from.clone(), spender.clone()))
+        .unwrap_or(0)
+}
+
+fn set_allowance(env: &Env, from: &Address, spender: &Address, amount: i128, live_until: u32) {
+    env.storage().persistent().set(
+        &DataKey::Allowance(from.clone(), spender.clone()),
+        &amount,
+    );
+    env.storage().persistent().extend_ttl(
+        &DataKey::Allowance(from.clone(), spender.clone()),
+        ALLOWANCE_LIFETIME_THRESHOLD,
+        ALLOWANCE_BUMP_AMOUNT,
+    );
+    Approve {
+        from: from.clone(),
+        spender: spender.clone(),
+        amount,
+        live_until_ledger: live_until,
+    }
+    .publish(env);
+}
+
+fn get_total_supply(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalSupply)
+        .unwrap_or(0)
+}
+
+fn set_total_supply(env: &Env, amount: i128) {
+    env.storage().instance().set(&DataKey::TotalSupply, &amount);
+}
+
+fn check_amount(env: &Env, amount: i128) {
+    if amount <= 0 {
+        panic_with_error!(env, Error::InvalidAmount);
+    }
+}
+
+fn check_allowed(env: &Env, addr: &Address) {
+    if !is_allowed(env, addr) {
+        panic_with_error!(env, Error::NotAllowed);
+    }
+}
+
+fn spend_balance(env: &Env, from: &Address, amount: i128) {
+    let from_bal = get_balance(env, from);
+    if from_bal < amount {
+        panic_with_error!(env, Error::InsufficientBalance);
+    }
+    set_balance(env, from, from_bal - amount);
+}
+
+fn receive_balance(env: &Env, to: &Address, amount: i128) {
+    let to_bal = get_balance(env, to);
+    let new_bal = to_bal
+        .checked_add(amount)
+        .unwrap_or_else(|| panic_with_error!(env, Error::Overflow));
+    set_balance(env, to, new_bal);
 }
 
 #[contract]
@@ -84,12 +200,18 @@ pub struct AllowlistToken;
 
 #[contractimpl]
 impl AllowlistToken {
-    /// Initialize the token with an admin.
-    pub fn __constructor(env: Env, admin: Address) {
+    /// Initialize the token with an admin and metadata.
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+    ) {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::Allowlist, &Map::<Address, bool>::new(&env));
+        env.storage().instance().set(&DataKey::Name, &name);
+        env.storage().instance().set(&DataKey::Symbol, &symbol);
+        env.storage().instance().set(&DataKey::Decimals, &decimals);
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
         extend_instance_ttl(&env);
     }
@@ -100,13 +222,14 @@ impl AllowlistToken {
         if admin != get_admin(&env) {
             panic_with_error!(&env, Error::NotAdmin);
         }
-        let mut list: Map<Address, bool> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or(Map::new(&env));
-        list.set(addr, true);
-        env.storage().instance().set(&DataKey::Allowlist, &list);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allowed(addr.clone()), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Allowed(addr),
+            BALANCE_LIFETIME_THRESHOLD,
+            BALANCE_BUMP_AMOUNT,
+        );
         extend_instance_ttl(&env);
     }
 
@@ -116,13 +239,9 @@ impl AllowlistToken {
         if admin != get_admin(&env) {
             panic_with_error!(&env, Error::NotAdmin);
         }
-        let mut list: Map<Address, bool> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or(Map::new(&env));
-        list.set(addr, false);
-        env.storage().instance().set(&DataKey::Allowlist, &list);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Allowed(addr));
         extend_instance_ttl(&env);
     }
 
@@ -137,43 +256,117 @@ impl AllowlistToken {
         if admin != get_admin(&env) {
             panic_with_error!(&env, Error::NotAdmin);
         }
-        if amount <= 0 {
-            panic_with_error!(&env, Error::InvalidAmount);
-        }
-        if !is_allowed(&env, &to) {
-            panic_with_error!(&env, Error::NotAllowed);
-        }
-        set_balance(&env, &to, get_balance(&env, &to) + amount);
-        let supply: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(supply + amount));
+        check_amount(&env, amount);
+        check_allowed(&env, &to);
+        receive_balance(&env, &to, amount);
+        let supply = get_total_supply(&env)
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+        set_total_supply(&env, supply);
+        extend_instance_ttl(&env);
+        Mint { to, amount }.publish(&env);
+    }
+
+    /// Returns the number of decimals used to get the token's user representation.
+    pub fn decimals(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::Decimals).unwrap()
+    }
+
+    /// Returns the name of the token.
+    pub fn name(env: Env) -> String {
+        env.storage().instance().get(&DataKey::Name).unwrap()
+    }
+
+    /// Returns the symbol of the token.
+    pub fn symbol(env: Env) -> String {
+        env.storage().instance().get(&DataKey::Symbol).unwrap()
+    }
+
+    /// Returns the amount of tokens that `spender` is allowed to spend on behalf of `from`.
+    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        get_allowance(&env, &from, &spender)
+    }
+
+    /// Approve `spender` to spend up to `amount` tokens on behalf of `from`.
+    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, live_until_ledger: u32) {
+        from.require_auth();
+        check_amount(&env, amount);
+        check_allowed(&env, &from);
+        check_allowed(&env, &spender);
+        set_allowance(&env, &from, &spender, amount, live_until_ledger);
         extend_instance_ttl(&env);
     }
 
     /// Transfer tokens between two allowlisted addresses.
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
-        if amount <= 0 {
-            panic_with_error!(&env, Error::InvalidAmount);
-        }
-        if !is_allowed(&env, &from) {
-            panic_with_error!(&env, Error::NotAllowed);
-        }
-        if !is_allowed(&env, &to) {
-            panic_with_error!(&env, Error::NotAllowed);
-        }
-        let from_bal = get_balance(&env, &from);
-        if from_bal < amount {
-            panic_with_error!(&env, Error::InsufficientBalance);
-        }
-        set_balance(&env, &from, from_bal - amount);
-        set_balance(&env, &to, get_balance(&env, &to) + amount);
+        check_amount(&env, amount);
+        check_allowed(&env, &from);
+        check_allowed(&env, &to);
+        spend_balance(&env, &from, amount);
+        receive_balance(&env, &to, amount);
         extend_instance_ttl(&env);
+        Transfer {
+            from,
+            to,
+            amount,
+        }
+        .publish(&env);
+    }
+
+    /// Transfer tokens from `from` to `to` using the caller's allowance.
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
+        spender.require_auth();
+        check_amount(&env, amount);
+        check_allowed(&env, &from);
+        check_allowed(&env, &to);
+        let allowance = get_allowance(&env, &from, &spender);
+        if allowance < amount {
+            panic_with_error!(&env, Error::InsufficientAllowance);
+        }
+        set_allowance(&env, &from, &spender, allowance - amount, 0);
+        spend_balance(&env, &from, amount);
+        receive_balance(&env, &to, amount);
+        extend_instance_ttl(&env);
+        Transfer {
+            from,
+            to,
+            amount,
+        }
+        .publish(&env);
+    }
+
+    /// Burn tokens from `from`. Caller must be `from`.
+    pub fn burn(env: Env, from: Address, amount: i128) {
+        from.require_auth();
+        check_amount(&env, amount);
+        check_allowed(&env, &from);
+        spend_balance(&env, &from, amount);
+        let supply = get_total_supply(&env)
+            .checked_sub(amount)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+        set_total_supply(&env, supply);
+        extend_instance_ttl(&env);
+        Burn { from, amount }.publish(&env);
+    }
+
+    /// Burn tokens from `from` using the caller's allowance.
+    pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
+        spender.require_auth();
+        check_amount(&env, amount);
+        check_allowed(&env, &from);
+        let allowance = get_allowance(&env, &from, &spender);
+        if allowance < amount {
+            panic_with_error!(&env, Error::InsufficientAllowance);
+        }
+        set_allowance(&env, &from, &spender, allowance - amount, 0);
+        spend_balance(&env, &from, amount);
+        let supply = get_total_supply(&env)
+            .checked_sub(amount)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+        set_total_supply(&env, supply);
+        extend_instance_ttl(&env);
+        Burn { from, amount }.publish(&env);
     }
 
     /// Get the balance of an address.
@@ -183,10 +376,7 @@ impl AllowlistToken {
 
     /// Get the total supply.
     pub fn total_supply(env: Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap_or(0)
+        get_total_supply(&env)
     }
 }
 

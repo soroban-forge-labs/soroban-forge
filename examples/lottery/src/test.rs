@@ -58,6 +58,8 @@ fn entry_reveal_and_draw_picks_a_revealed_winner() {
 
     assert!(winner == alice || winner == bob || winner == carol);
     assert_eq!(contract.get_winner(), winner);
+    // 3 enter + 3 reveal + 1 draw events published.
+    assert_eq!(env.events().all().len(), 7);
 }
 
 #[test]

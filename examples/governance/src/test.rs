@@ -5,7 +5,7 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, vec,
-    testutils::{Address as _, Ledger},
+    testutils::{storage::Instance as _, Address as _, Ledger},
     Address, Env, IntoVal, Symbol,
 };
 
@@ -275,4 +275,21 @@ fn zero_voting_period_is_rejected() {
     env.mock_all_auths();
     let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, ()));
     client.initialize(&Address::generate(&env), &3, &0);
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let (dao, _) = setup(0);
+
+    // Well past the default instance TTL, but within the extended one.
+    dao.env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    let member = Address::generate(&dao.env);
+    dao.client.add_member(&member);
+    assert_eq!(dao.client.member_count(), 1);
+
+    let ttl = dao
+        .env
+        .as_contract(&dao.client.address, || dao.env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

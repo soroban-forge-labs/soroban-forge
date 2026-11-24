@@ -2,6 +2,14 @@
 
 English-auction contract template scaffold for iterative bids, minimum increments, and seller settlement flow.
 
+## Events
+
+- `fund` — published when the seller funds the auction. Data: asset amount.
+- `bid` — published when `place_bid` records a new highest bid, keyed by bidder. Data: bid amount.
+- `settle` — published when `settle` closes the auction, keyed by the winning bidder. Data: winning bid.
+- `cancel` — published when `cancel` returns the asset to the seller. Data: asset amount.
+- `refund` — published when `withdraw_refund` pays out an outbid bidder's refund. Data: refund amount.
+
 ## Security
 
 This template is a starting point, not audited code. See [security-considerations.md](https://github.com/soroban-forge-labs/soroban-forge/blob/main/docs/security-considerations.md) for what it does and does not protect against.
