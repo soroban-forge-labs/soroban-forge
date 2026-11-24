@@ -595,7 +595,7 @@ fn admin_handover_emits_events() {
     let env = Env::default();
     let (staking, _token, _admin, alice, _bob) = setup(&env);
     staking.propose_admin(&alice);
-    assert!(!env.events().all().is_empty());
+    assert!(!env.events().all().events().is_empty());
     staking.accept_admin();
-    assert!(!env.events().all().is_empty());
+    assert!(!env.events().all().events().is_empty());
 }
