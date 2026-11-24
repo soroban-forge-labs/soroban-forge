@@ -32,6 +32,15 @@ Missing pledge reads return zero without creating entries. Inactive state
 can still archive and require restoration. See the generated crowdfund
 README for lifetime limits and the regression tests past the default TTL.
 
+The `flash-loan` template keeps its settings and share total in instance
+storage and one persistent entry per depositor's LP shares. Every
+state-changing call renews the instance, and share entries are renewed on
+write and on hot-path reads (`shares`), using the same named 29-day threshold
+and 30-day extension constants. A share read for a non-depositor returns zero
+and creates no entry. Idle state can still archive after its extended
+lifetime, and renewal cannot restore an entry that already has; see the
+generated flash-loan README.
+
 ## Variables
 
 Template files (and file names) may contain `{{variable}}` placeholders.

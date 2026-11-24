@@ -80,10 +80,32 @@ depositor's redemption value grows while their liquidity is deployed.
   withdraw, keep the `admin` field but gate `deposit` on it instead of issuing
   shares — see caveat 6.
 
+## Storage lifetime
+
+Soroban archives storage entries whose TTL runs out, and an archived entry is
+unreadable until someone restores it. This pool keeps its own state alive:
+
+- the pool settings and `TotalShares` live in instance storage, renewed on
+  construction and on every `deposit`, `withdraw` and `flash_loan` call;
+- each depositor's LP shares live in their own persistent entry, renewed both
+  when the pool writes it (`deposit`, `withdraw`) and when it reads it
+  (`shares`, and the read inside a deposit or withdrawal).
+
+`TTL_THRESHOLD` and `TTL_EXTEND_TO` are named ledger constants: an entry with
+less than 29 days of life left is extended back to 30 days, assuming
+five-second ledger closes. Reading `shares` for an address that never
+deposited returns zero and creates no entry.
+
+Renewal happens on use, not on a schedule: renewal cannot resurrect an entry
+that has already been archived, and a pool nobody calls for ~30 days will
+still archive. The tests record lifetimes *before* advancing past the
+network's default TTL, then run a loan, a withdrawal and share reads, so the
+SDK's test-only auto-restoration cannot mask a lapsed entry.
+
 ## Develop
 
 ```sh
-cargo test                 # 19 unit tests, including both borrower outcomes
+cargo test                 # 23 unit tests, including both borrower outcomes
 stellar contract build     # build the deployable wasm
 ```
 
