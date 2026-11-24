@@ -27,6 +27,11 @@ pub const VOTE_WEIGHT: i128 = 1;
 pub const DAY_IN_LEDGERS: u32 = 17_280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage (admin, quorum, voting period, counters) is bumped to this
+/// many ledgers on every state-changing call so the contract is not archived
+/// while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 /// A governance proposal.
 #[contracttype]
@@ -70,6 +75,12 @@ pub enum DataKey {
 
 #[contract]
 pub struct GovernanceContract;
+
+fn extend_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 fn admin(env: &Env) -> Address {
     env.storage()
@@ -118,12 +129,14 @@ impl GovernanceContract {
             .set(&DataKey::VotingPeriod, &voting_period);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::MemberCount, &0u32);
+        extend_instance(&env);
     }
 
     /// Register `member` as a voter (admin only). Members may vote on
     /// proposals created from this ledger onwards.
     pub fn add_member(env: Env, member: Address) {
         admin(&env).require_auth();
+        extend_instance(&env);
         let key = DataKey::MemberSince(member);
         if env.storage().persistent().has(&key) {
             panic!("already a member");
@@ -144,6 +157,7 @@ impl GovernanceContract {
     /// already cast stay counted.
     pub fn remove_member(env: Env, member: Address) {
         admin(&env).require_auth();
+        extend_instance(&env);
         let key = DataKey::MemberSince(member);
         if !env.storage().persistent().has(&key) {
             panic!("not a member");
@@ -181,6 +195,7 @@ impl GovernanceContract {
         args: Vec<Val>,
     ) -> u64 {
         proposer.require_auth();
+        extend_instance(&env);
         if !Self::is_member(env.clone(), proposer.clone()) {
             panic!("only members can create proposals");
         }
@@ -224,6 +239,7 @@ impl GovernanceContract {
     /// caller, so it cannot be inflated or negative.
     pub fn cast_vote(env: Env, voter: Address, proposal_id: u64, in_favour: bool) {
         voter.require_auth();
+        extend_instance(&env);
 
         // Prevent double-voting.
         let voted_key = DataKey::Voted(proposal_id, voter.clone());
@@ -270,6 +286,7 @@ impl GovernanceContract {
     /// 2. Total votes meet or exceed the configured quorum.
     /// 3. Votes in favour exceed votes against.
     pub fn execute_proposal(env: Env, proposal_id: u64) {
+        extend_instance(&env);
         let prop_key = DataKey::Proposal(proposal_id);
         let mut proposal: Proposal = env
             .storage()
