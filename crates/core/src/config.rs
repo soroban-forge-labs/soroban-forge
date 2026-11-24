@@ -9,7 +9,7 @@
 //! default_template = "hello-world"
 //!
 //! User defaults are read from `~/.config/soroban-forge/config.toml` and may
-//! set `[network]`, `[identity] default`, and `[scaffold]` values.
+//! set `[network]`, `[identity] default`/`backend`, and `[scaffold]` values.
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -73,6 +73,18 @@ pub struct ScaffoldConfig {
 pub struct IdentityConfig {
     /// Default source identity for commands that sign transactions.
     pub default: Option<String>,
+    /// Where identity secret keys are stored (#616).
+    ///
+    /// `"file"` (default) keeps the historical behaviour: the secret lives in
+    /// `identities.json` next to the public key, protected by file mode `0600`.
+    /// `"keychain"` moves it to the OS keychain (macOS Keychain, Windows
+    /// Credential Manager, Secret Service on Linux); `identities.json` then
+    /// holds only the name and public key.
+    ///
+    /// Kept as a raw string here so `soroban-forge-core` does not depend on
+    /// `soroban-forge-identity`; the identity crate parses it via
+    /// `soroban_forge_identity::SecretBackend::parse`.
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
@@ -135,6 +147,7 @@ impl ForgeConfig {
             .passphrase
             .or(user.network.passphrase);
         effective.identity.default = project.identity.default.or(user.identity.default);
+        effective.identity.backend = project.identity.backend.or(user.identity.backend);
         Some(effective)
     }
 
@@ -273,11 +286,7 @@ max_size = 65536
 
     /// #258: every key `ForgeConfig` parses must have a row in
     /// `docs/configuration.md`'s forge.toml reference table, so the two
-    /// never drift apart the way `[optimize] max-size` (parsed by a
-    /// completely separate struct in `soroban-forge-optimize`, see that
-    /// crate's own `every_key_is_documented` test) had until this table
-    /// existed at all. Add a new field to `ForgeConfig` above? Add its key
-    /// here, and to the table.
+    /// never drift apart.
     #[test]
     fn every_config_key_is_documented() {
         let docs_path =
@@ -298,6 +307,7 @@ max_size = 65536
             "[network] passphrase",
             "[bindings.ts] output",
             "[identity] default",
+            "[identity] backend",
         ];
         for key in keys {
             let needle = format!("`{key}`");
@@ -307,6 +317,30 @@ max_size = 65536
                  update its forge.toml reference table"
             );
         }
+    }
+
+    #[test]
+    fn identity_backend_parses_from_config() {
+        let config: ForgeConfig =
+            toml::from_str("[identity]\nbackend = \"keychain\"\n").unwrap();
+        assert_eq!(config.identity.backend.as_deref(), Some("keychain"));
+    }
+
+    #[test]
+    fn identity_backend_merges_with_user_config() {
+        let user: ForgeConfig =
+            toml::from_str("[identity]\nbackend = \"keychain\"\n").unwrap();
+        let project: ForgeConfig = toml::from_str("").unwrap();
+        let effective = ForgeConfig::load_effective(Some(project), Some(user)).unwrap();
+        assert_eq!(effective.identity.backend.as_deref(), Some("keychain"));
+
+        // Project wins over user when both set it.
+        let user: ForgeConfig =
+            toml::from_str("[identity]\nbackend = \"keychain\"\n").unwrap();
+        let project: ForgeConfig =
+            toml::from_str("[identity]\nbackend = \"file\"\n").unwrap();
+        let effective = ForgeConfig::load_effective(Some(project), Some(user)).unwrap();
+        assert_eq!(effective.identity.backend.as_deref(), Some("file"));
     }
 }
 
@@ -331,7 +365,7 @@ pub fn unknown_keys(raw: &str) -> std::result::Result<Vec<String>, toml::de::Err
                 "network",
                 &mut strays,
             ),
-            "identity" => collect_strays(value, &["default"], "identity", &mut strays),
+            "identity" => collect_strays(value, &["default", "backend"], "identity", &mut strays),
             "defaults" => {
                 collect_strays(
                     value,
@@ -374,10 +408,6 @@ fn collect_strays(value: &toml::Value, known: &[&str], prefix: &str, out: &mut V
 
 /// Render the effective configuration as forge.toml-shaped text, with
 /// defaults filled in for anything unset.
-///
-/// `config` is the loaded file (or `None` when no forge.toml exists) — the
-/// output is identical in shape either way, which is the point: this shows
-/// the configuration commands actually run with.
 pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
     let config = config.clone().unwrap_or_default();
     let mut out = String::new();
@@ -402,8 +432,6 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
     out.push_str("\n[scaffold]\n");
     match &config.scaffold.default_template {
         Some(t) => out.push_str(&format!("default_template = \"{t}\"\n")),
-        // Keep in sync with DEFAULT_TEMPLATE in soroban-forge-scaffold; core
-        // cannot depend on scaffold without a dependency cycle.
         None => out.push_str("default_template = \"hello-world\"  # default\n"),
     }
     out.push_str("\n[defaults]\n");
@@ -438,6 +466,10 @@ pub fn resolved_report(config: &Option<ForgeConfig>) -> String {
         Some(identity) => out.push_str(&format!("default = \"{identity}\"\n")),
         None => out.push_str("# default = (unset)\n"),
     }
+    match &config.identity.backend {
+        Some(backend) => out.push_str(&format!("backend = \"{backend}\"\n")),
+        None => out.push_str("backend = \"file\"  # default\n"),
+    }
     out.push_str("\n[defaults.ci-init]\n");
     match config.defaults.ci_init.max_size {
         Some(max_size) => out.push_str(&format!("max_size = {max_size}\n")),
@@ -469,6 +501,7 @@ mod resolved_tests {
         assert!(report.contains("update_check = true"));
         assert!(report.contains("[bindings.ts]"));
         assert!(report.contains("# output = (unset"));
+        assert!(report.contains("backend = \"file\"  # default"));
     }
 
     #[test]
@@ -484,13 +517,14 @@ mod resolved_tests {
     #[test]
     fn full_config_shows_configured_values() {
         let config: ForgeConfig = toml::from_str(
-            "[project]\nname = \"demo\"\nauthors = [\"Ada\"]\n[scaffold]\ndefault_template = \"token\"\n[defaults]\nupdate_check = true\n[identity]\ndefault = \"alice\"\n",
+            "[project]\nname = \"demo\"\nauthors = [\"Ada\"]\n[scaffold]\ndefault_template = \"token\"\n[defaults]\nupdate_check = true\n[identity]\ndefault = \"alice\"\nbackend = \"keychain\"\n",
         )
         .unwrap();
         let report = resolved_report(&Some(config));
         assert!(report.contains("authors = [\"Ada\"]"));
         assert!(report.contains("default_template = \"token\"\n"));
         assert!(report.contains("default = \"alice\"\n"));
+        assert!(report.contains("backend = \"keychain\"\n"));
         assert!(!report.contains("  # default"));
     }
 
@@ -539,7 +573,7 @@ mod resolved_tests {
     #[test]
     fn valid_keys_produce_no_warnings() {
         let strays = unknown_keys(
-            "[project]\nname = \"demo\"\nauthors = []\n[scaffold]\ndefault_template = \"token\"\n[identity]\ndefault = \"alice\"\n",
+            "[project]\nname = \"demo\"\nauthors = []\n[scaffold]\ndefault_template = \"token\"\n[identity]\ndefault = \"alice\"\nbackend = \"keychain\"\n",
         )
         .unwrap();
         assert!(strays.is_empty());
@@ -571,5 +605,11 @@ mod resolved_tests {
     fn valid_bindings_ts_output_produces_no_warnings() {
         let strays = unknown_keys("[bindings.ts]\noutput = \"custom/dir\"\n").unwrap();
         assert!(strays.is_empty());
+    }
+
+    #[test]
+    fn identity_backend_unknown_key_is_flagged() {
+        let strays = unknown_keys("[identity]\ndefault = \"alice\"\nbakend = \"keychain\"\n").unwrap();
+        assert_eq!(strays, vec!["identity.bakend"]);
     }
 }
