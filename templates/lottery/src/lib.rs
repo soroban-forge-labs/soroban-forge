@@ -31,7 +31,9 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Vec,
+};
 
 #[contracttype]
 pub enum DataKey {
@@ -122,8 +124,10 @@ impl LotteryContract {
         env.storage().instance().set(&key, &commitment);
 
         let mut entrants: Vec<Address> = env.storage().instance().get(&DataKey::Entrants).unwrap();
-        entrants.push_back(entrant);
+        entrants.push_back(entrant.clone());
         env.storage().instance().set(&DataKey::Entrants, &entrants);
+
+        env.events().publish((symbol_short!("enter"), entrant), ());
     }
 
     /// Reveal the nonce behind a prior commitment.
@@ -170,6 +174,9 @@ impl LotteryContract {
         }
 
         env.storage().instance().set(&revealed_key, &nonce);
+
+        env.events()
+            .publish((symbol_short!("reveal"), entrant), ());
     }
 
     /// Draw the winner from the entrants who successfully revealed.
@@ -220,6 +227,9 @@ impl LotteryContract {
 
         env.storage().instance().set(&DataKey::Winner, &winner);
         env.storage().instance().set(&DataKey::Drawn, &true);
+
+        env.events()
+            .publish((symbol_short!("draw"),), winner.clone());
 
         winner
     }

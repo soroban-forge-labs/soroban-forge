@@ -120,6 +120,8 @@ fn full_release_after_end() {
     let claimed = contract.claim();
     assert_eq!(claimed, 100_000);
     assert_eq!(token.client.balance(&beneficiary), 100_000);
+    // fund + claim events published so far.
+    assert_eq!(env.events().all().len(), 2);
 }
 
 #[test]
@@ -197,6 +199,8 @@ fn admin_can_revoke_unvested_tokens() {
     let revoked = contract.revoke();
     assert_eq!(revoked, 50_000);
     assert_eq!(token.client.balance(&admin), 50_000);
+    // fund + revoke events published so far.
+    assert_eq!(env.events().all().len(), 2);
 
     let claimed = contract.claim();
     assert_eq!(claimed, 50_000);

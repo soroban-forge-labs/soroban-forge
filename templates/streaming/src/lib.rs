@@ -13,7 +13,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 #[contracttype]
 pub enum DataKey {
@@ -105,6 +105,9 @@ impl StreamingContract {
 
         let client = token::Client::new(&env, &token);
         client.transfer(&sender, &env.current_contract_address(), &total_amount);
+
+        env.events()
+            .publish((symbol_short!("fund"), sender), total_amount);
     }
 
     /// Cancel the stream as the sender, settling any unclaimed streamed tokens
@@ -154,6 +157,9 @@ impl StreamingContract {
                 client.transfer(&contract_addr, &sender, &sender_refund);
             }
         }
+
+        env.events()
+            .publish((symbol_short!("cancel"), sender), (recipient_due, sender_refund));
 
         (recipient_due, sender_refund)
     }
@@ -207,6 +213,9 @@ impl StreamingContract {
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token);
         client.transfer(&env.current_contract_address(), &recipient, &claimable);
+
+        env.events()
+            .publish((symbol_short!("claim"), recipient), claimable);
 
         claimable
     }

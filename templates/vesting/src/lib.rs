@@ -14,7 +14,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 #[contracttype]
 pub enum DataKey {
@@ -106,6 +106,9 @@ impl VestingContract {
 
         let client = token::Client::new(&env, &token);
         client.transfer(&admin, &env.current_contract_address(), &total_amount);
+
+        env.events()
+            .publish((symbol_short!("fund"), admin), total_amount);
     }
 
     /// Revoke unvested tokens and return them to the `admin`, leaving already
@@ -146,6 +149,9 @@ impl VestingContract {
             let client = token::Client::new(&env, &token);
             client.transfer(&env.current_contract_address(), &admin, &unvested);
         }
+
+        env.events()
+            .publish((symbol_short!("revoke"), admin), unvested);
 
         unvested
     }
@@ -206,6 +212,9 @@ impl VestingContract {
             &beneficiary,
             &claimable,
         );
+
+        env.events()
+            .publish((symbol_short!("claim"), beneficiary), claimable);
 
         claimable
     }

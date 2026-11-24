@@ -80,6 +80,8 @@ fn post_stream_claims_full_amount() {
     let claimed = contract.claim();
     assert_eq!(claimed, 100_000);
     assert_eq!(token.client.balance(&recipient), 100_000);
+    // fund (in setup) + claim events published so far.
+    assert_eq!(env.events().all().len(), 2);
 }
 
 #[test]
@@ -144,4 +146,6 @@ fn sender_can_cancel_stream() {
     assert_eq!(token.client.balance(&recipient), 50_000);
     assert_eq!(token.client.balance(&sender), 50_000);
     assert_eq!(contract.get_claimable_amount(), 0);
+    // fund (in setup) + cancel events published so far.
+    assert_eq!(env.events().all().len(), 2);
 }
