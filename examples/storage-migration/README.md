@@ -94,18 +94,18 @@ pub fn get_counter(env: Env) -> u32 {
 ```rust
 pub fn init(env: Env, counter: u32, name: String) {
     migrate_if_needed(&env);  // <-- Automatic migration
-    env.storage().instance().set(&DataKey::CounterV2, &counter);
-    env.storage().instance().set(&DataKey::NameV2, &name);
+    env.storage().persistent().set(&DataKey::CounterV2, &counter);
+    env.storage().persistent().set(&DataKey::NameV2, &name);
 }
 
 pub fn get_counter(env: Env) -> u32 {
     migrate_if_needed(&env);  // <-- Automatic migration
-    env.storage().instance().get(&DataKey::CounterV2).unwrap_or(0)
+    env.storage().persistent().get(&DataKey::CounterV2).unwrap_or(0)
 }
 
 pub fn get_name(env: Env) -> String {
     migrate_if_needed(&env);  // <-- Automatic migration
-    env.storage().instance().get(&DataKey::NameV2).unwrap_or(String::from_str(&env, "unknown"))
+    env.storage().persistent().get(&DataKey::NameV2).unwrap_or(String::from_str(&env, "unknown"))
 }
 ```
 
@@ -164,7 +164,7 @@ When migrating data structures, always copy old data into new keys:
 ```rust
 fn migrate_v1_to_v2(env: &Env) {
     let v1_value = env.storage().instance().get(&DataKey::OldKey).unwrap_or(default);
-    env.storage().instance().set(&DataKey::NewKey, &v1_value);
+    env.storage().persistent().set(&DataKey::NewKey, &v1_value);
 }
 ```
 
