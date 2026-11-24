@@ -601,6 +601,20 @@ pub fn resolve_source_identity(
     default_identity_from_store()
 }
 
+/// Resolve the secret for `source` when the active backend is the OS keychain.
+///
+/// With backend = "file" the caller keeps passing `--source <name>` and
+/// stellar looks the identity up itself; with backend = "keychain" the secret
+/// is fetched from the OS keychain and handed to stellar as `--source <S...>`
+/// (issue #616, "deploy/invoke key hand-off").
+pub fn resolve_source_secret(source: &str, ctx: &soroban_forge_core::ForgeContext) -> Option<String> {
+    let backend = soroban_forge_identity::active_backend(ctx).ok()?;
+    if backend != soroban_forge_identity::SecretBackend::Keychain {
+        return None;
+    }
+    soroban_forge_identity::resolve_secret_for_handoff(source, ctx).ok()
+}
+
 /// Return the closest locally managed identity name, if the source looks like
 /// a near miss. This is advisory only: identities managed by stellar-cli must
 /// still be allowed through to the underlying command.
@@ -1084,8 +1098,8 @@ impl ForgePlugin for DeployPlugin {
         if dry_run {
             let wasm_path = build_if_needed(&dir, wasm_override.as_deref())?;
             let args = match upgrade_contract_id {
-                Some(contract_id) => build_upgrade_args(contract_id, &wasm_path, &source, &network)?,
-                None => build_deploy_args_with_constructor(&wasm_path, &source, &network, &constructor_args)?,
+                Some(contract_id) => build_upgrade_args(contract_id, &wasm_path, &source_for_stellar, &network)?,
+                None => build_deploy_args_with_constructor(&wasm_path, &source_for_stellar, &network, &constructor_args)?,
             };
             let command_line = format_dry_run_command("stellar", &args);
             if ctx.json {
@@ -1127,7 +1141,7 @@ impl ForgePlugin for DeployPlugin {
         let contract_id = deploy_with_output(
             &dir,
             wasm_override.as_deref(),
-            &source,
+            &source_for_stellar,
             &network,
             &constructor_args,
             ctx.timeout(),

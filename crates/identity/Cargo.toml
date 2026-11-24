@@ -7,6 +7,15 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["keychain"]
+# The OS-keychain backend (#616). Disable for environments where the
+# platform keychain is unavailable (headless Linux CI without a Secret
+# Service, cross-compiles without D-Bus, …). With the feature off, the
+# `[identity] backend = "keychain"` config value still parses, but any
+# attempt to use it returns a clear "not compiled in" error.
+keychain = ["dep:keyring"]
+
 [dependencies]
 soroban-forge-core.workspace = true
 soroban-forge-network.workspace = true
@@ -14,6 +23,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
+thiserror.workspace = true
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 stellar-strkey = "0.0.13"
 bip39 = "2.2"
@@ -23,6 +33,7 @@ rand = "0.8"
 dirs = "6"
 ureq = "2"
 toml_edit = "0.22"
+keyring = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

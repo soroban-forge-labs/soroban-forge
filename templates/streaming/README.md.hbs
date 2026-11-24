@@ -13,6 +13,12 @@ from the `streaming` template.
    tokens to their address, pro-rata to elapsed time. Can be called multiple
    times, including mid-stream.
 
+## Events
+
+- `fund` - topics ("fund", sender), data: amount funded
+- `claim` - topics ("claim", recipient), data: amount claimed
+- `cancel` - topics ("cancel", sender), data: (recipient_due, sender_refund)
+
 ## Develop
 
 ```sh

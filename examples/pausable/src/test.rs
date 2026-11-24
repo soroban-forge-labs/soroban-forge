@@ -1,5 +1,6 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{Address, Env, IntoVal};
 
 fn setup(env: &Env) -> (PausableContractClient<'_>, Address) {
@@ -96,4 +97,62 @@ fn unpausing_an_unpaused_contract_is_rejected() {
     let (client, _admin) = setup(&env);
 
     assert_eq!(client.try_unpause(), Err(Ok(Error::NotPaused)));
+}
+
+#[test]
+fn storage_ttl_extended_on_state_changes() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+
+    // Constructor extended instance TTL to 30 days
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+    });
+
+    // Advance ledger past the default TTL (4095 ledgers) to 10,000 ledgers
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + 10_000);
+
+    // The contract instance survives and guarded functions still work
+    assert_eq!(client.increment(&5), 5);
+    assert_eq!(client.count(), 5);
+
+    // Advance ledger past the extension threshold (more than 1 day in ledgers)
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + DAY_IN_LEDGERS + 10);
+
+    // Verify remaining TTL dropped below threshold
+    env.as_contract(&client.address, || {
+        assert!(env.storage().instance().get_ttl() < INSTANCE_TTL_THRESHOLD);
+    });
+
+    // Calling pause re-extends instance TTL back to INSTANCE_TTL
+    client.pause();
+    assert!(client.is_paused());
+
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+    });
+
+    // Advance past threshold again and test unpause
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + DAY_IN_LEDGERS + 10);
+
+    client.unpause();
+    assert!(!client.is_paused());
+
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+    });
+
+    // Advance past threshold again and test reset
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + DAY_IN_LEDGERS + 10);
+
+    client.reset();
+    assert_eq!(client.count(), 0);
+
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+    });
 }

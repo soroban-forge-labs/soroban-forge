@@ -14,6 +14,10 @@ use soroban_sdk::{contract, contracterror, contractimpl, panic_with_error, token
 pub enum Error {
     /// A supplied amount was zero or negative.
     InvalidAmount = 1,
+    /// `party_a` and `party_b` were the same address.
+    SameParty = 2,
+    /// `token_a` and `token_b` were the same token.
+    SameToken = 3,
 }
 
 #[contract]
@@ -37,6 +41,12 @@ impl AtomicSwap {
     ) {
         if amount_a <= 0 || amount_b <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
+        }
+        if party_a == party_b {
+            panic_with_error!(&env, Error::SameParty);
+        }
+        if token_a == token_b {
+            panic_with_error!(&env, Error::SameToken);
         }
 
         // Both parties must authorize this specific swap.

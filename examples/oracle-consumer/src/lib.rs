@@ -15,6 +15,19 @@ use soroban_sdk::{
     Env, Symbol,
 };
 
+/// 1 day in ledgers, assuming 5 seconds per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL is extended to 30 days.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which instance storage TTL is extended (29 days).
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 /// A single price observation, matching the shape returned by Reflector's
 /// `lastprice`.
 #[contracttype]
@@ -77,11 +90,13 @@ impl OracleConsumerContract {
         env.storage()
             .instance()
             .set(&DataKey::MaxPriceAge, &max_price_age);
+        extend_instance_ttl(&env);
     }
 
     /// Fetch the latest price for the configured asset from the oracle.
     /// Panics if the oracle has no price data available.
     pub fn get_price(env: Env) -> i128 {
+        extend_instance_ttl(&env);
         let oracle: Address = env.storage().instance().get(&DataKey::Oracle).unwrap();
         let asset: Symbol = env.storage().instance().get(&DataKey::Asset).unwrap();
 

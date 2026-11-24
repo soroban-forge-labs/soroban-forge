@@ -107,6 +107,7 @@ fn test_place_bid_at_reserve_price() {
     let (bidder, bid) = ctx.contract.get_highest_bid();
     assert_eq!(bidder, Some(ctx.bidder1.clone()));
     assert_eq!(bid, ctx.reserve_price);
+    assert!(!env.events().all().is_empty());
 }
 
 #[test]
@@ -151,6 +152,7 @@ fn test_settle_after_auction_ends() {
     ctx.contract.settle();
 
     assert_eq!(ctx.contract.get_state(), AuctionState::Settled);
+    assert!(!env.events().all().is_empty());
 }
 
 #[test]
@@ -221,6 +223,7 @@ fn test_cancel_ended_auction_without_bids() {
         ctx.asset_amount
     );
     assert_eq!(ctx.asset_token.client.balance(&ctx.contract_address), 0);
+    assert!(!env.events().all().is_empty());
 }
 
 #[test]
@@ -281,6 +284,7 @@ fn test_refund_fails_does_not_block_new_bid() {
 
     // Bidder1 should have a refund available
     contract.withdraw_refund(&bidder1);
+    assert!(!env.events().all().is_empty());
 }
 
 #[test]

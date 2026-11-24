@@ -7,7 +7,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 /// Ledgers per day, assuming ~5s per ledger.
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -165,6 +165,9 @@ impl EnglishAuctionContract {
             .instance()
             .set(&DataKey::State, &AuctionState::Open);
         extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("fund"), seller), asset_amount);
     }
 
     /// Place a bid on the auction.
@@ -261,6 +264,9 @@ impl EnglishAuctionContract {
                 .set(&DataKey::Duration, &new_duration);
         }
         extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("bid"), bidder), bid_amount);
     }
 
     /// Close the auction and settle with the highest bidder.
@@ -307,6 +313,9 @@ impl EnglishAuctionContract {
                     .instance()
                     .set(&DataKey::State, &AuctionState::Settled);
                 extend_instance_ttl(&env);
+
+                env.events()
+                    .publish((symbol_short!("settle"), highest_bidder), highest_bid);
             }
             None => {
                 panic!("no bids placed, cannot settle");
@@ -340,6 +349,9 @@ impl EnglishAuctionContract {
             .instance()
             .set(&DataKey::State, &AuctionState::Canceled);
         extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("cancel"), seller), asset_amount);
     }
 
     /// Get the current highest bid and bidder.
@@ -407,6 +419,9 @@ impl EnglishAuctionContract {
             &refund_amount,
         );
         extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("refund"), bidder), refund_amount);
     }
 }
 
