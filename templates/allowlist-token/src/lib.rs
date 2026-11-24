@@ -36,6 +36,8 @@ pub enum Error {
     Overflow = 5,
     /// Insufficient allowance.
     InsufficientAllowance = 6,
+    /// No admin handover is pending.
+    NoPendingAdmin = 7,
 }
 
 #[contracttype]
@@ -46,9 +48,38 @@ pub enum DataKey {
     Symbol,
     Decimals,
     Allowed(Address),
+    /// Address offered the admin role, awaiting `accept_admin`.
+    PendingAdmin,
     Balance(Address),
     Allowance(Address, Address),
     TotalSupply,
+}
+
+/// `admin` offered the admin role to `new_admin`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// `new_admin` accepted the handover and replaced `old_admin`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferred {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// The pending handover to `new_admin` was cancelled by `admin`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
 }
 
 #[contractevent]
@@ -214,6 +245,60 @@ impl AllowlistToken {
         env.storage().instance().set(&DataKey::Decimals, &decimals);
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
         extend_instance_ttl(&env);
+    }
+
+    /// Step one of a two-step admin handover. Current admin only.
+    ///
+    /// Nothing changes until `new_admin` calls `accept_admin`, so a mistyped
+    /// address cannot lock the admin out. Proposing again replaces any
+    /// earlier pending proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        extend_instance_ttl(&env);
+        AdminProposed { admin, new_admin }.publish(&env);
+    }
+
+    /// Step two: the pending admin takes over. Requires authorization from
+    /// the address named in `propose_admin`.
+    pub fn accept_admin(env: Env) {
+        let new_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        new_admin.require_auth();
+        let old_admin = get_admin(&env);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        extend_instance_ttl(&env);
+        AdminTransferred {
+            old_admin,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Cancel a pending handover. Current admin only.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        let new_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        extend_instance_ttl(&env);
+        AdminProposalCancelled { admin, new_admin }.publish(&env);
+    }
+
+    /// The address offered the admin role, if a handover is pending.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// Add an address to the allowlist. Admin only.

@@ -2,8 +2,10 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::storage::Instance as _;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env};
+use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{
+    testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env, IntoVal,
+};
 
 struct Tok<'a> {
     address: Address,
@@ -123,6 +125,88 @@ fn an_attacker_cannot_reinitialize_to_drain_the_faucet() {
     assert_eq!(token.client.balance(&attacker), 100);
 }
 
+// --- two-step admin handover -------------------------------------------------
+
+#[test]
+fn propose_then_accept_hands_over_admin() {
+    let env = Env::default();
+    let (contract, token, _admin, _start_ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+    assert_eq!(contract.pending_admin(), Some(new_admin.clone()));
+
+    contract.accept_admin();
+    assert_eq!(contract.pending_admin(), None);
+
+    // The new admin can now withdraw the faucet's funds.
+    contract.withdraw(&400);
+    assert_eq!(token.client.balance(&new_admin), 400);
+}
+
+#[test]
+fn propose_and_accept_publish_events() {
+    let env = Env::default();
+    let (contract, _token, _admin, _start_ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+    assert!(!env.events().all().events().is_empty());
+    contract.accept_admin();
+    assert!(!env.events().all().events().is_empty());
+}
+
+#[test]
+fn cancel_clears_pending_admin() {
+    let env = Env::default();
+    let (contract, token, admin, _start_ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+    contract.cancel_admin_proposal();
+    assert_eq!(contract.pending_admin(), None);
+
+    // The original admin is untouched.
+    contract.withdraw(&100);
+    assert_eq!(token.client.balance(&admin), 100);
+}
+
+#[test]
+#[should_panic(expected = "no pending admin")]
+fn accept_after_cancel_fails() {
+    let env = Env::default();
+    let (contract, _token, _admin, _start_ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+    contract.cancel_admin_proposal();
+    contract.accept_admin();
+}
+
+#[test]
+#[should_panic(expected = "Auth")]
+fn non_pending_address_cannot_accept() {
+    let env = Env::default();
+    let (contract, _token, _admin, _start_ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+
+    // Only the stranger authorizes; the contract requires `new_admin`.
+    env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &contract.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    contract.accept_admin();
+}
+
+#[test]
 #[test]
 fn instance_storage_outlives_the_default_ttl() {
     let env = Env::default();

@@ -1,6 +1,7 @@
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Events as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
@@ -326,4 +327,81 @@ fn storage_survives_default_ttl_expiry() {
             }) > DEFAULT_ENTRY_TTL
         );
     }
+}
+
+// --- two-step admin handover -------------------------------------------------
+
+#[test]
+fn propose_then_accept_hands_over_admin() {
+    let env = Env::default();
+    let (client, admin, alice, bob) = setup(&env);
+
+    client.propose_admin(&alice);
+    assert_eq!(client.pending_admin(), Some(alice.clone()));
+
+    client.accept_admin();
+    assert_eq!(client.pending_admin(), None);
+
+    // Alice is the admin now and can mint; the old admin cannot.
+    client.add_to_allowlist(&alice, &bob);
+    client.mint(&alice, &bob, &10);
+    assert_eq!(client.balance(&bob), 10);
+    assert!(client.try_mint(&admin, &bob, &10).is_err());
+}
+
+#[test]
+fn propose_and_accept_publish_events() {
+    let env = Env::default();
+    let (client, _admin, alice, _bob) = setup(&env);
+
+    client.propose_admin(&alice);
+    assert!(!env.events().all().events().is_empty());
+    client.accept_admin();
+    assert!(!env.events().all().events().is_empty());
+}
+
+#[test]
+fn cancel_clears_pending_admin() {
+    let env = Env::default();
+    let (client, admin, alice, bob) = setup(&env);
+
+    client.propose_admin(&alice);
+    client.cancel_admin_proposal();
+    assert_eq!(client.pending_admin(), None);
+
+    // The original admin is untouched.
+    client.add_to_allowlist(&admin, &bob);
+    assert!(client.is_allowed(&bob));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn accept_after_cancel_fails() {
+    let env = Env::default();
+    let (client, _admin, alice, _bob) = setup(&env);
+
+    client.propose_admin(&alice);
+    client.cancel_admin_proposal();
+    client.accept_admin();
+}
+
+#[test]
+#[should_panic(expected = "Error(Auth")]
+fn non_pending_address_cannot_accept() {
+    let env = Env::default();
+    let (client, _admin, alice, bob) = setup(&env);
+
+    client.propose_admin(&alice);
+
+    // Only bob authorizes; the contract requires alice's authorization.
+    env.mock_auths(&[MockAuth {
+        address: &bob,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.accept_admin();
 }

@@ -1,7 +1,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{token::StellarAssetClient, token::TokenClient, Address, Env};
 
 struct Tok<'a> {
@@ -163,4 +163,28 @@ fn sep41_transfer_and_allowance_work_on_wrapped_balance() {
     contract.unwrap(&bob, &300);
     assert_eq!(contract.balance(&bob), 0);
     assert_eq!(token.client.balance(&bob), 300);
+}
+
+#[test]
+fn instance_ttl_is_extended_by_state_changing_calls() {
+    let env = Env::default();
+    let (contract, token) = setup(&env);
+
+    let user = Address::generate(&env);
+    token.admin.mint(&user, &1_000);
+
+    // Each hop is far beyond the default instance TTL, so the contract
+    // instance is only alive because the previous call extended it.
+    let hop = BALANCE_TTL - 100;
+    for _ in 0..3 {
+        // The underlying SAC is a separate contract; keep it alive too.
+        env.as_contract(&token.address, || {
+            env.storage().instance().extend_ttl(hop * 2, hop * 2);
+        });
+        env.ledger().with_mut(|li| li.sequence_number += hop);
+        contract.wrap(&user, &100);
+    }
+
+    assert_eq!(contract.total_supply(), 300);
+    assert_eq!(contract.balance_of(&user), 300);
 }
