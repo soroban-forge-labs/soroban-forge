@@ -1,5 +1,6 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{token::StellarAssetClient, token::TokenClient, Address, Env};
 
 /// A registered Stellar Asset Contract plus a client to mint with.
@@ -256,3 +257,21 @@ fn get_amount_out_with_zero_input_panics() {
     pool.get_amount_out(&false, &0);
 }
 
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (pool, token_a, token_b, alice) = setup(&env);
+    token_a.admin.mint(&alice, &1_000);
+    token_b.admin.mint(&alice, &4_000);
+    let minted = pool.deposit(&alice, &1_000, &1_000, &4_000, &4_000);
+
+    // Past the default instance TTL (4096 ledgers), within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 50_000);
+
+    let (out_a, out_b) = pool.withdraw(&alice, &(minted / 2), &1, &1);
+    assert_eq!((out_a, out_b), (500, 2_000));
+    assert_eq!(pool.get_reserves(), (500, 2_000));
+
+    let ttl = env.as_contract(&pool.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
+}

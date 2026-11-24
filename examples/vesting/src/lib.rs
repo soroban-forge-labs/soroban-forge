@@ -14,7 +14,22 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
+
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL (30 days). The whole schedule (admin, token,
+/// beneficiary, timestamps, amounts) lives in instance storage, so it is bumped
+/// on every state-changing call to keep the contract from being archived.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -53,6 +68,7 @@ impl VestingContract {
         total_amount: i128,
     ) {
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
@@ -90,6 +106,7 @@ impl VestingContract {
     pub fn fund(env: Env) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env
             .storage()
@@ -106,6 +123,9 @@ impl VestingContract {
 
         let client = token::Client::new(&env, &token);
         client.transfer(&admin, &env.current_contract_address(), &total_amount);
+
+        env.events()
+            .publish((symbol_short!("fund"), admin), total_amount);
     }
 
     /// Revoke unvested tokens and return them to the `admin`, leaving already
@@ -113,6 +133,7 @@ impl VestingContract {
     pub fn revoke(env: Env) -> i128 {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env
             .storage()
@@ -147,6 +168,9 @@ impl VestingContract {
             client.transfer(&env.current_contract_address(), &admin, &unvested);
         }
 
+        env.events()
+            .publish((symbol_short!("revoke"), admin), unvested);
+
         unvested
     }
 
@@ -164,12 +188,22 @@ impl VestingContract {
             return total_amount;
         }
 
-        // Linear interpolation: total * (now - cliff) / (end - cliff)
+        // Linear interpolation: total * (now - cliff) / (end - cliff), computed
+        // without multiplying the (up to i128) total_amount by elapsed directly,
+        // since that product can exceed u128::MAX for large grants over long
+        // durations. Split into a whole-unit term and a remainder term, where
+        // the remainder term only multiplies two u64-derived values together.
         let elapsed = now - cliff;
         let duration = end - cliff;
-        // Use u128 for the multiplication to avoid overflow, then cast back.
-        let vested = (total_amount as u128 * elapsed as u128 / duration as u128) as i128;
-        vested
+        let total_u128 = total_amount as u128;
+        let whole = total_u128 / duration as u128;
+        let remainder = total_u128 % duration as u128;
+        let vested = whole
+            .checked_mul(elapsed as u128)
+            .and_then(|v| remainder.checked_mul(elapsed as u128).map(|r| (v, r)))
+            .and_then(|(v, r)| v.checked_add(r / duration as u128))
+            .unwrap_or_else(|| panic!("vested amount calculation overflowed"));
+        vested as i128
     }
 
     /// Return the amount that the beneficiary can currently claim
@@ -188,6 +222,7 @@ impl VestingContract {
         let beneficiary: Address =
             env.storage().instance().get(&DataKey::Beneficiary).unwrap();
         beneficiary.require_auth();
+        extend_instance_ttl(&env);
 
         let claimable = Self::get_claimable_amount(env.clone());
         if claimable <= 0 {
@@ -206,6 +241,9 @@ impl VestingContract {
             &beneficiary,
             &claimable,
         );
+
+        env.events()
+            .publish((symbol_short!("claim"), beneficiary), claimable);
 
         claimable
     }

@@ -1,5 +1,6 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{vec, Address, Env, String};
 
 fn setup(env: &Env) -> (MultiTokenContractClient<'_>, Address) {
@@ -185,4 +186,20 @@ fn balances_across_ids_are_independent() {
     assert_eq!(mt.balance_of(&bob, &1), 0);
     assert_eq!(mt.balance_of(&alice, &1), 100);
     assert_eq!(mt.balance_of(&bob, &2), 200);
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (mt, _admin) = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    let alice = Address::generate(&env);
+    mt.mint(&alice, &1, &10);
+    assert_eq!(mt.balance_of(&alice, &1), 10);
+
+    let ttl = env.as_contract(&mt.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

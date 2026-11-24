@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env};
 
@@ -120,6 +121,8 @@ fn full_release_after_end() {
     let claimed = contract.claim();
     assert_eq!(claimed, 100_000);
     assert_eq!(token.client.balance(&beneficiary), 100_000);
+    // fund + claim events published so far.
+    assert_eq!(env.events().all().len(), 2);
 }
 
 #[test]
@@ -197,8 +200,71 @@ fn admin_can_revoke_unvested_tokens() {
     let revoked = contract.revoke();
     assert_eq!(revoked, 50_000);
     assert_eq!(token.client.balance(&admin), 50_000);
+    // fund + revoke events published so far.
+    assert_eq!(env.events().all().len(), 2);
 
     let claimed = contract.claim();
     assert_eq!(claimed, 50_000);
     assert_eq!(token.client.balance(&beneficiary), 50_000);
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (contract, _token, _admin, _beneficiary, start_ts) = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 100_000;
+        li.timestamp = start_ts + 3000; // past the cliff, half-vested
+    });
+
+    // Unfunded, so revoking touches only the vesting contract's own storage.
+    let unvested = contract.revoke();
+    assert_eq!(unvested, 50_000);
+    assert_eq!(contract.get_vested_amount(), 50_000);
+
+    let ttl = env.as_contract(&contract.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
+}
+
+#[test]
+fn vested_amount_does_not_overflow_for_huge_grant_over_long_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let start_ts = 1_000_000;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let admin = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = make_token(&env);
+
+    // A grant near i128::MAX vested linearly over ~4 years.
+    let huge_amount = i128::MAX - 1;
+    let cliff_duration = 0_u64;
+    let vesting_duration = 4 * 365 * 24 * 60 * 60_u64; // ~4 years in seconds
+
+    let contract_id = env.register(VestingContract, ());
+    let contract = VestingContractClient::new(&env, &contract_id);
+    contract.initialize(
+        &admin,
+        &token.address,
+        &beneficiary,
+        &cliff_duration,
+        &vesting_duration,
+        &huge_amount,
+    );
+
+    // Halfway through the schedule, roughly half should be vested. This
+    // calculation used to overflow u128 and trap before the fix.
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + vesting_duration / 2);
+    let vested = contract.get_vested_amount();
+    assert!(vested > 0 && vested < huge_amount);
+
+    // Fully vested at the end of the schedule.
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + vesting_duration);
+    assert_eq!(contract.get_vested_amount(), huge_amount);
 }

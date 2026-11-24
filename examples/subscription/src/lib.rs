@@ -18,7 +18,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 #[contracttype]
 pub enum DataKey {
@@ -102,6 +102,9 @@ impl SubscriptionContract {
                 charges: 1,
             },
         );
+
+        env.events()
+            .publish((symbol_short!("subscribe"), subscriber), ());
     }
 
     /// Charge `subscriber` for the period that has come due.
@@ -130,7 +133,10 @@ impl SubscriptionContract {
         sub.charges += 1;
         env.storage()
             .instance()
-            .set(&DataKey::Sub(subscriber), &sub);
+            .set(&DataKey::Sub(subscriber.clone()), &sub);
+
+        env.events()
+            .publish((symbol_short!("charge"), subscriber), amount);
 
         amount
     }
@@ -147,7 +153,10 @@ impl SubscriptionContract {
         sub.active = false;
         env.storage()
             .instance()
-            .set(&DataKey::Sub(subscriber), &sub);
+            .set(&DataKey::Sub(subscriber.clone()), &sub);
+
+        env.events()
+            .publish((symbol_short!("cancel"), subscriber), ());
     }
 
     /// Whether `subscriber` has an active subscription.

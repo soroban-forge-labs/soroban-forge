@@ -16,6 +16,12 @@ from the `lottery` template.
    entrants who revealed. Entrants who never reveal forfeit — no single
    party controls the final seed alone.
 
+## Events
+
+- `enter` - topics ("enter", entrant)
+- `reveal` - topics ("reveal", entrant)
+- `draw` - topics ("draw",), data: winner address
+
 ## Develop
 
 ```sh

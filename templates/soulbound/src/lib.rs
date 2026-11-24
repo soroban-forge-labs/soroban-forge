@@ -15,6 +15,11 @@ pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Threshold to trigger TTL extension.
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage TTL (30 days): admin and collection metadata are bumped on
+/// every state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold to trigger instance TTL extension.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -43,6 +48,12 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 #[contract]
 pub struct SoulboundContract;
 
@@ -57,6 +68,7 @@ impl SoulboundContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Name, &name);
         env.storage().instance().set(&DataKey::Symbol, &symbol);
+        extend_instance_ttl(&env);
     }
 
     /// Return the admin address.
@@ -114,6 +126,7 @@ impl SoulboundContract {
     pub fn mint(env: Env, to: Address, token_id: u32, uri: String) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         let owner_key = DataKey::Owner(token_id);
         if env.storage().persistent().has(&owner_key) {
@@ -145,6 +158,7 @@ impl SoulboundContract {
     /// Requires `from` authorization.
     pub fn burn(env: Env, from: Address, token_id: u32) {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         let owner = Self::owner_of(env.clone(), token_id);
         if owner != from {

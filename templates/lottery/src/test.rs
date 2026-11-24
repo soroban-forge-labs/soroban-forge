@@ -58,6 +58,8 @@ fn entry_reveal_and_draw_picks_a_revealed_winner() {
 
     assert!(winner == alice || winner == bob || winner == carol);
     assert_eq!(contract.get_winner(), winner);
+    // 3 enter + 3 reveal + 1 draw events published.
+    assert_eq!(env.events().all().len(), 7);
 }
 
 #[test]
@@ -241,4 +243,49 @@ fn last_revealer_can_withhold_nonce_and_alter_draw_eligibility() {
     // Carol's missing reveal is not penalized with a loss of deposit, but Carol is excluded.
     assert!(winner == alice || winner == bob);
     assert_ne!(winner, carol);
+}
+
+#[test]
+fn storage_survives_past_default_ttl() {
+    let env = Env::default();
+    let (contract, _admin, commit_deadline, reveal_deadline) = setup(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+
+    let nonce_a = BytesN::from_array(&env, &[1_u8; 32]);
+    let nonce_b = BytesN::from_array(&env, &[2_u8; 32]);
+    let nonce_c = BytesN::from_array(&env, &[3_u8; 32]);
+
+    // Entrants commit their entries.
+    contract.enter(&alice, &commit(&env, &alice, &nonce_a));
+    contract.enter(&bob, &commit(&env, &bob, &nonce_b));
+    contract.enter(&carol, &commit(&env, &carol, &nonce_c));
+
+    // Move to reveal phase.
+    env.ledger().with_mut(|li| li.timestamp = commit_deadline);
+    contract.reveal(&alice, &nonce_a);
+    contract.reveal(&bob, &nonce_b);
+    contract.reveal(&carol, &nonce_c);
+
+    // Advance the ledger well past the default TTL (30 days).
+    // 30 days = 30 * 17_280 = 518_400 ledgers.
+    // We advance 35 days to ensure we're beyond the threshold.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 35 * 17_280;
+        li.timestamp = reveal_deadline + (35 * 17_280 * 5); // ~5 seconds per ledger
+    });
+
+    // After advancing past TTL, storage should still work because
+    // extend_ttl was called on each operation.
+    // We should be able to draw the winner successfully.
+    let winner = contract.draw();
+    assert!(winner == alice || winner == bob || winner == carol);
+
+    // Verify we can still read the winner after the draw.
+    assert_eq!(contract.get_winner(), winner);
+
+    // Verify that trying to draw again still fails (state is preserved).
+    assert!(contract.try_draw().is_err());
 }

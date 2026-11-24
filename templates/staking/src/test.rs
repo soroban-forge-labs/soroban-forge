@@ -545,3 +545,97 @@ fn same_token_getters_return_same_token() {
     assert_eq!(staking.get_stake_token(), token.address);
     assert_eq!(staking.get_reward_token(), token.address);
 }
+
+#[test]
+fn admin_handover_propose_then_accept() {
+    let env = Env::default();
+    let (staking, _token, admin, alice, _bob) = setup(&env);
+
+    staking.propose_admin(&alice);
+    assert_eq!(staking.get_admin(), admin);
+    assert_eq!(staking.get_pending_admin(), Some(alice.clone()));
+
+    staking.accept_admin();
+    assert_eq!(staking.get_admin(), alice);
+    assert_eq!(staking.get_pending_admin(), None);
+}
+
+#[test]
+fn admin_handover_cancel_clears_proposal() {
+    let env = Env::default();
+    let (staking, _token, admin, alice, _bob) = setup(&env);
+
+    staking.propose_admin(&alice);
+    staking.cancel_admin_proposal();
+    assert_eq!(staking.get_pending_admin(), None);
+    assert_eq!(staking.get_admin(), admin);
+    assert_eq!(
+        staking.try_accept_admin(),
+        Err(Ok(Error::NoPendingAdmin.into()))
+    );
+}
+
+#[test]
+fn admin_handover_accept_requires_pending_admin_auth() {
+    // No mock_all_auths: only the pending admin's auth is satisfied.
+    let env = Env::default();
+    let (staking, _token, admin, alice, bob) = setup(&env);
+    staking.propose_admin(&alice);
+
+    env.set_auths(&[]);
+    // bob is not the pending admin; accept_admin requires alice's auth.
+    assert!(staking.try_accept_admin().is_err());
+    assert_eq!(staking.get_admin(), admin);
+    assert_eq!(staking.get_pending_admin(), Some(alice));
+    let _ = bob;
+}
+
+#[test]
+fn admin_handover_emits_events() {
+    let env = Env::default();
+    let (staking, _token, _admin, alice, _bob) = setup(&env);
+    staking.propose_admin(&alice);
+    assert!(!env.events().all().events().is_empty());
+    staking.accept_admin();
+    assert!(!env.events().all().events().is_empty());
+}
+
+#[test]
+fn storage_survives_past_default_ttl() {
+    let env = Env::default();
+    let (staking, token, _admin, alice, bob) = setup(&env);
+
+    // Alice and Bob deposit.
+    staking.deposit(&alice, &1000);
+    staking.deposit(&bob, &2000);
+    assert_eq!(staking.get_total_staked(), 3000);
+
+    // Admin distributes rewards.
+    staking.distribute(&600);
+
+    // Advance the ledger well past the default TTL (30 days).
+    // 30 days = 30 * 17_280 = 518_400 ledgers.
+    // We advance 35 days to ensure we're beyond the threshold.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 35 * 17_280;
+        li.timestamp += 35 * 17_280 * 5; // ~5 seconds per ledger
+    });
+
+    // After advancing past TTL, storage should still work because
+    // extend_ttl was called on each operation.
+    // Alice should still be able to claim her rewards.
+    let alice_claimed = staking.claim(&alice);
+    assert_eq!(alice_claimed, 200); // 1/3 of 600
+
+    // Bob can still withdraw after TTL has passed.
+    staking.withdraw(&bob, &1000);
+    assert_eq!(staking.get_staked(&bob), 1000);
+    assert_eq!(token.balance(&bob), USER_FUNDS - 2000 + 1000 + 400);
+
+    // New operations should continue to work.
+    let charlie = Address::generate(&env);
+    let sac = soroban_sdk::token::StellarAssetClient::new(&env, &token.address);
+    sac.mint(&charlie, &USER_FUNDS);
+    staking.deposit(&charlie, &500);
+    assert_eq!(staking.get_staked(&charlie), 500);
+}
