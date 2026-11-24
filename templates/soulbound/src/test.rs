@@ -1,5 +1,6 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env, String};
 
 fn setup(env: &Env) -> (SoulboundContractClient<'_>, Address) {
@@ -93,4 +94,20 @@ fn query_burned_token_panics() {
 
     // Token should no longer exist
     let _owner = sbt.owner_of(&1);
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (sbt, _admin) = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    let alice = Address::generate(&env);
+    sbt.mint(&alice, &1, &String::from_str(&env, "ipfs://badge-1"));
+    assert_eq!(sbt.owner_of(&1), alice);
+
+    let ttl = env.as_contract(&sbt.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

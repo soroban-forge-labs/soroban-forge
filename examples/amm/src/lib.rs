@@ -25,6 +25,21 @@ use soroban_sdk::{
 const FEE_NUM: i128 = 997;
 const FEE_DEN: i128 = 1000;
 
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL (30 days): token addresses, reserves and total shares
+/// are bumped on every state-changing call so the pool is not archived while
+/// in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -206,6 +221,7 @@ impl LiquidityPool {
         env.storage().instance().set(&DataKey::ReserveA, &0i128);
         env.storage().instance().set(&DataKey::ReserveB, &0i128);
         env.storage().instance().set(&DataKey::TotalShares, &0i128);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit liquidity with an explicit ledger timestamp `deadline`.
@@ -240,6 +256,7 @@ impl LiquidityPool {
         min_b: i128,
     ) -> i128 {
         to.require_auth();
+        extend_instance_ttl(&env);
         if amount_a <= 0 || amount_b <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -318,6 +335,7 @@ impl LiquidityPool {
     /// spent.
     pub fn swap(env: Env, to: Address, buy_a: bool, out: i128, in_max: i128) -> i128 {
         to.require_auth();
+        extend_instance_ttl(&env);
         if out <= 0 || in_max <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -378,6 +396,7 @@ impl LiquidityPool {
         min_b: i128,
     ) -> (i128, i128) {
         to.require_auth();
+        extend_instance_ttl(&env);
         if share_amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }

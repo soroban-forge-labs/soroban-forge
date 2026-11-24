@@ -21,6 +21,12 @@ pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Threshold at which a read or write extends the TTL.
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage TTL (30 days). Instance storage (total supply) lives and is
+/// archived with the contract instance, so it is bumped on every
+/// state-changing call.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 /// The bootstrap role. It administers itself and every role that has not been
 /// given an explicit admin with `set_role_admin`.
@@ -152,6 +158,12 @@ pub struct Burn {
 // its TTL. That matters more here than for a balance: an expired role entry
 // reads back as "does not hold the role", so a rarely-used admin would
 // silently lose its powers.
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 fn read_has_role(env: &Env, role: &Symbol, account: &Address) -> bool {
     let key = DataKey::HasRole(role.clone(), account.clone());
@@ -309,6 +321,7 @@ impl AccessControlContract {
     /// Deploy-time setup. Grants [`ADMIN_ROLE`] to `admin`, who can then grant
     /// every other role.
     pub fn __constructor(env: Env, admin: Address) {
+        extend_instance_ttl(&env);
         grant(&env, &ADMIN_ROLE, &admin);
     }
 
@@ -333,6 +346,7 @@ impl AccessControlContract {
     /// Granting a role the account already holds does nothing and emits no
     /// event.
     pub fn grant_role(env: Env, caller: Address, role: Symbol, account: Address) {
+        extend_instance_ttl(&env);
         let admin_role = read_role_admin(&env, &role);
         require_role(&env, &caller, &admin_role);
         grant(&env, &role, &account);
@@ -343,6 +357,7 @@ impl AccessControlContract {
     /// Revoking a role the account does not hold does nothing. Revoking the
     /// last [`ADMIN_ROLE`] holder fails with [`Error::LastAdmin`].
     pub fn revoke_role(env: Env, caller: Address, role: Symbol, account: Address) {
+        extend_instance_ttl(&env);
         let admin_role = read_role_admin(&env, &role);
         require_role(&env, &caller, &admin_role);
         revoke(&env, &role, &account);
@@ -351,6 +366,7 @@ impl AccessControlContract {
     /// Give up one of your own roles. Takes no admin role and can only ever
     /// affect the caller, so it cannot be used to strip someone else.
     pub fn renounce_role(env: Env, account: Address, role: Symbol) {
+        extend_instance_ttl(&env);
         account.require_auth();
         revoke(&env, &role, &account);
     }
@@ -360,6 +376,7 @@ impl AccessControlContract {
     /// Requires [`ADMIN_ROLE`] — re-parenting the role graph stays a top-level
     /// privilege rather than something a delegated admin can do on its own.
     pub fn set_role_admin(env: Env, caller: Address, role: Symbol, admin_role: Symbol) {
+        extend_instance_ttl(&env);
         require_role(&env, &caller, &ADMIN_ROLE);
         let key = DataKey::RoleAdmin(role.clone());
         env.storage().persistent().set(&key, &admin_role);
@@ -437,6 +454,7 @@ impl AccessControlContract {
 
     /// Demo entrypoint gated on [`MINTER_ROLE`] — see `require_role`.
     pub fn mint(env: Env, caller: Address, to: Address, amount: i128) {
+        extend_instance_ttl(&env);
         require_role(&env, &caller, &MINTER_ROLE);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -448,6 +466,7 @@ impl AccessControlContract {
 
     /// Ordinary burn: the owner authorizes burning their own balance.
     pub fn burn(env: Env, from: Address, amount: i128) {
+        extend_instance_ttl(&env);
         from.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -464,6 +483,7 @@ impl AccessControlContract {
     /// Admin-only burn: holders of [`BURNER_ROLE`] may burn any holder's
     /// balance without that holder's authorization.
     pub fn force_burn(env: Env, caller: Address, from: Address, amount: i128) {
+        extend_instance_ttl(&env);
         require_role(&env, &caller, &BURNER_ROLE);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);

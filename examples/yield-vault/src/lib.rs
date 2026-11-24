@@ -4,6 +4,18 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
 };
 
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL (30 days): asset, total shares and total assets are
+/// bumped on every state-changing call so the vault is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+/// Share balance TTL (30 days), extended whenever a balance is written or read.
+pub const SHARES_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a share balance read or write extends its TTL.
+pub const SHARES_TTL_THRESHOLD: u32 = SHARES_TTL - DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -26,6 +38,20 @@ enum DataKey {
     Shares(Address),
 }
 
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
+fn write_shares(env: &Env, account: &Address, shares: i128) {
+    let key = DataKey::Shares(account.clone());
+    env.storage().persistent().set(&key, &shares);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, SHARES_TTL_THRESHOLD, SHARES_TTL);
+}
+
 #[contract]
 pub struct YieldVaultContract;
 
@@ -40,6 +66,7 @@ impl YieldVaultContract {
         env.storage().instance().set(&DataKey::Asset, &asset);
         env.storage().instance().set(&DataKey::TotalShares, &0_i128);
         env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
+        extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -70,10 +97,15 @@ impl YieldVaultContract {
 
     /// Return the share balance for a specific account.
     pub fn balance_of(env: Env, account: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Shares(account))
-            .unwrap_or(0)
+        let key = DataKey::Shares(account);
+        if let Some(shares) = env.storage().persistent().get::<_, i128>(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, SHARES_TTL_THRESHOLD, SHARES_TTL);
+            shares
+        } else {
+            0
+        }
     }
 
     /// Preview the amount of shares that would be minted for a deposit of `assets`.
@@ -130,6 +162,7 @@ impl YieldVaultContract {
     /// prevent dust-share inflation attacks (#519).
     pub fn deposit(env: Env, from: Address, assets: i128) -> Result<i128, VaultError> {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         if assets <= 0 {
             return Err(VaultError::ZeroAmount);
@@ -164,9 +197,7 @@ impl YieldVaultContract {
         env.storage()
             .instance()
             .set(&DataKey::TotalShares, &new_total_shares);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Shares(from.clone()), &user_shares);
+        write_shares(&env, &from, user_shares);
 
         env.events()
             .publish((symbol_short!("deposit"), from), (assets, shares));
@@ -179,6 +210,7 @@ impl YieldVaultContract {
     /// Assets returned: `(shares * total_assets) / total_shares` (rounded down).
     pub fn withdraw(env: Env, from: Address, shares: i128) -> Result<i128, VaultError> {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         if shares <= 0 {
             return Err(VaultError::ZeroAmount);
@@ -202,9 +234,7 @@ impl YieldVaultContract {
         if new_user_shares == 0 {
             env.storage().persistent().remove(&DataKey::Shares(from.clone()));
         } else {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Shares(from.clone()), &new_user_shares);
+            write_shares(&env, &from, new_user_shares);
         }
 
         env.storage()
@@ -229,6 +259,7 @@ impl YieldVaultContract {
     /// increasing the asset value per share for all existing shareholders.
     pub fn add_yield(env: Env, from: Address, yield_amount: i128) -> Result<(), VaultError> {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         if yield_amount <= 0 {
             return Err(VaultError::ZeroAmount);

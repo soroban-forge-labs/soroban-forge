@@ -31,6 +31,11 @@ pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Threshold to trigger TTL extension.
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage TTL (30 days): admin, treasury and fee settings are bumped
+/// on every state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold to trigger instance TTL extension.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 /// External NFT interface matching the `nft` template.
 #[contractclient(name = "NftClient")]
@@ -78,6 +83,12 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 #[contract]
 pub struct NftMarketplaceContract;
 
@@ -95,6 +106,7 @@ impl NftMarketplaceContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
+        extend_instance_ttl(&env);
     }
 
     /// Return the marketplace admin address.
@@ -118,6 +130,7 @@ impl NftMarketplaceContract {
     pub fn set_admin(env: Env, new_admin: Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &new_admin);
     }
 
@@ -126,6 +139,7 @@ impl NftMarketplaceContract {
     pub fn set_treasury(env: Env, new_treasury: Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
         env.storage()
             .instance()
             .set(&DataKey::Treasury, &new_treasury);
@@ -138,6 +152,7 @@ impl NftMarketplaceContract {
     pub fn set_fee_bps(env: Env, new_fee_bps: u32) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
         if new_fee_bps > MAX_FEE_BPS {
             panic_with_error!(&env, Error::InvalidFee);
         }
@@ -158,6 +173,7 @@ impl NftMarketplaceContract {
         price: i128,
     ) {
         seller.require_auth();
+        extend_instance_ttl(&env);
 
         if price <= 0 {
             panic_with_error!(&env, Error::InvalidPrice);
@@ -199,6 +215,7 @@ impl NftMarketplaceContract {
     /// Requires `buyer` authorization.
     pub fn buy(env: Env, buyer: Address, nft_contract: Address, token_id: u32) {
         buyer.require_auth();
+        extend_instance_ttl(&env);
 
         let key = DataKey::Listing(nft_contract.clone(), token_id);
         let listing: Listing = env
@@ -236,6 +253,7 @@ impl NftMarketplaceContract {
     /// Requires `seller` authorization.
     pub fn cancel(env: Env, seller: Address, nft_contract: Address, token_id: u32) {
         seller.require_auth();
+        extend_instance_ttl(&env);
 
         let key = DataKey::Listing(nft_contract.clone(), token_id);
         let listing: Listing = env

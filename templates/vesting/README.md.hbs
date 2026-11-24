@@ -16,6 +16,12 @@ time according to a fixed schedule:
 3. **Claim** — the beneficiary calls `claim` to transfer any newly vested
    tokens to their address. Can be called multiple times.
 
+## Events
+
+- `fund` - topics ("fund", admin), data: amount funded
+- `claim` - topics ("claim", beneficiary), data: amount claimed
+- `revoke` - topics ("revoke", admin), data: unvested amount returned
+
 ## Develop
 
 ```sh

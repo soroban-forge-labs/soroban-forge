@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{
     testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env, IntoVal,
@@ -203,4 +204,19 @@ fn non_pending_address_cannot_accept() {
         },
     }]);
     contract.accept_admin();
+}
+
+#[test]
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (contract, _token, _admin, _start_ts) = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    contract.set_params(&50, &60);
+
+    let ttl = env.as_contract(&contract.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

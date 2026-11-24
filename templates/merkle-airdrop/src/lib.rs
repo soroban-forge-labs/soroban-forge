@@ -29,6 +29,17 @@ use soroban_sdk::{
 const CLAIM_TTL_THRESHOLD: u32 = 518_400; // ~30 days of ledgers
 const CLAIM_TTL_EXTEND_TO: u32 = 1_036_800; // ~60 days of ledgers
 
+/// Instance storage (admin, token, root, deadline) is bumped on every
+/// state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 501_120; // ~29 days of ledgers
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 518_400; // ~30 days of ledgers
+
+fn extend_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -64,12 +75,14 @@ impl MerkleAirdropContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Root, &root);
+        extend_instance(&env);
     }
 
     /// Set or update the claim deadline timestamp (admin only).
     /// While `env.ledger().timestamp() < deadline`, `sweep` is rejected.
     pub fn set_deadline(env: Env, deadline: u64) {
         Self::admin(env.clone()).require_auth();
+        extend_instance(&env);
         env.storage().instance().set(&DataKey::Deadline, &deadline);
     }
 
@@ -77,6 +90,7 @@ impl MerkleAirdropContract {
     pub fn fund(env: Env, amount: i128) {
         let admin = Self::admin(env.clone());
         admin.require_auth();
+        extend_instance(&env);
         if amount <= 0 {
             panic!("amount must be positive");
         }
@@ -88,6 +102,7 @@ impl MerkleAirdropContract {
     /// Replace the merkle root, e.g. for a second airdrop round (admin only).
     pub fn set_root(env: Env, root: BytesN<32>) {
         Self::admin(env.clone()).require_auth();
+        extend_instance(&env);
         env.storage().instance().set(&DataKey::Root, &root);
     }
 
@@ -143,6 +158,7 @@ impl MerkleAirdropContract {
     /// claimed or the proof does not reproduce the root.
     pub fn claim(env: Env, claimant: Address, amount: i128, proof: Vec<BytesN<32>>) -> i128 {
         claimant.require_auth();
+        extend_instance(&env);
         if let Some(deadline) = env.storage().instance().get::<_, u64>(&DataKey::Deadline) {
             if env.ledger().timestamp() >= deadline {
                 panic!("claim window has closed");
@@ -180,6 +196,7 @@ impl MerkleAirdropContract {
     pub fn sweep(env: Env) -> i128 {
         let admin = Self::admin(env.clone());
         admin.require_auth();
+        extend_instance(&env);
 
         if let Some(deadline) = env.storage().instance().get::<_, u64>(&DataKey::Deadline) {
             if env.ledger().timestamp() < deadline {

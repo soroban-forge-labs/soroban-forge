@@ -18,6 +18,7 @@ pub enum TimelockError {
     NotReady = 7,
     AlreadyExecuted = 8,
     AlreadyCancelled = 9,
+    NoPendingAdmin = 10,
 }
 
 #[contracttype]
@@ -65,6 +66,7 @@ pub struct Operation {
 #[derive(Clone)]
 enum DataKey {
     Admin,
+    PendingAdmin,
     MinDelay,
     Role(Role, Address),
     Op(BytesN<32>),
@@ -127,6 +129,90 @@ impl TimelockContract {
         }
 
         env.storage().instance().set(&DataKey::MinDelay, &new_delay);
+        Ok(())
+    }
+
+    /// Propose a new admin (current admin only). The handover completes when
+    /// the proposed address calls `accept_admin`.
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), TimelockError> {
+        caller.require_auth();
+        Self::require_current_admin(&env, &caller)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+
+        env.events()
+            .publish((symbol_short!("adm_prop"), caller), new_admin);
+
+        Ok(())
+    }
+
+    /// Accept a pending admin handover (pending admin only).
+    ///
+    /// Moves the stored admin and the Admin role from the old admin to the caller.
+    pub fn accept_admin(env: Env, caller: Address) -> Result<(), TimelockError> {
+        caller.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(TimelockError::NoPendingAdmin)?;
+        if pending != caller {
+            return Err(TimelockError::Unauthorized);
+        }
+
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(TimelockError::NotInitialized)?;
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Role(Role::Admin, old_admin.clone()));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Role(Role::Admin, caller.clone()), &true);
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        env.events()
+            .publish((symbol_short!("adm_acc"), old_admin), caller);
+
+        Ok(())
+    }
+
+    /// Cancel a pending admin handover (current admin only).
+    pub fn cancel_admin_proposal(env: Env, caller: Address) -> Result<(), TimelockError> {
+        caller.require_auth();
+        Self::require_current_admin(&env, &caller)?;
+
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(TimelockError::NoPendingAdmin);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        env.events().publish((symbol_short!("adm_canc"),), caller);
+
+        Ok(())
+    }
+
+    /// Return the pending admin, if a handover has been proposed.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    fn require_current_admin(env: &Env, caller: &Address) -> Result<(), TimelockError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(TimelockError::NotInitialized)?;
+        if &admin != caller {
+            return Err(TimelockError::Unauthorized);
+        }
         Ok(())
     }
 

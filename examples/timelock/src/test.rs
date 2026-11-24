@@ -449,3 +449,60 @@ fn test_batch_execution_requires_predecessor() {
 
     let _ = batch_id;
 }
+
+#[test]
+fn test_admin_handover_propose_and_accept() {
+    let env = Env::default();
+    let ctx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    assert_eq!(ctx.timelock.get_pending_admin(), Some(new_admin.clone()));
+
+    ctx.timelock.accept_admin(&new_admin);
+    assert_eq!(ctx.timelock.get_pending_admin(), None);
+    assert!(ctx.timelock.has_role(&Role::Admin, &new_admin));
+    assert!(!ctx.timelock.has_role(&Role::Admin, &ctx.admin));
+}
+
+#[test]
+fn test_admin_handover_cancel() {
+    let env = Env::default();
+    let ctx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    ctx.timelock.cancel_admin_proposal(&ctx.admin);
+    assert_eq!(ctx.timelock.get_pending_admin(), None);
+    assert!(ctx.timelock.has_role(&Role::Admin, &ctx.admin));
+
+    assert_eq!(
+        ctx.timelock.try_accept_admin(&new_admin),
+        Err(Ok(TimelockError::NoPendingAdmin))
+    );
+}
+
+#[test]
+fn test_admin_handover_rejects_non_pending_accept() {
+    let env = Env::default();
+    let ctx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    assert_eq!(
+        ctx.timelock.try_accept_admin(&ctx.mallory),
+        Err(Ok(TimelockError::Unauthorized))
+    );
+    assert!(ctx.timelock.has_role(&Role::Admin, &ctx.admin));
+}
+
+#[test]
+fn test_admin_handover_propose_requires_admin() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    assert_eq!(
+        ctx.timelock.try_propose_admin(&ctx.mallory, &ctx.mallory),
+        Err(Ok(TimelockError::Unauthorized))
+    );
+}
