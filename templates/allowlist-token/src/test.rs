@@ -1,5 +1,7 @@
 use super::*;
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
 
@@ -280,4 +282,48 @@ fn burn_blocked_account_fails() {
     client.remove_from_allowlist(&admin, &alice);
 
     token.burn(&alice, &100);
+}
+
+#[test]
+fn storage_survives_default_ttl_expiry() {
+    const DEFAULT_ENTRY_TTL: u32 = 4_096;
+
+    let env = Env::default();
+    let (client, admin, alice, bob) = setup(&env);
+    client.add_to_allowlist(&admin, &alice);
+    client.add_to_allowlist(&admin, &bob);
+    client.mint(&admin, &alice, &1_000);
+
+    let instance_ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    let balance_ttl = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::Balance(alice.clone()))
+    });
+    assert!(instance_ttl > DEFAULT_ENTRY_TTL);
+    assert!(balance_ttl > DEFAULT_ENTRY_TTL);
+
+    env.ledger()
+        .with_mut(|li| li.sequence_number += DEFAULT_ENTRY_TTL + 1);
+
+    assert!(client.is_allowed(&alice));
+    assert_eq!(client.balance(&alice), 1_000);
+    assert_eq!(client.total_supply(), 1_000);
+
+    client.transfer(&alice, &bob, &300);
+    assert_eq!(client.balance(&alice), 700);
+    assert_eq!(client.balance(&bob), 300);
+
+    assert!(
+        env.as_contract(&client.address, || env.storage().instance().get_ttl()) > DEFAULT_ENTRY_TTL
+    );
+    for addr in [&alice, &bob] {
+        assert!(
+            env.as_contract(&client.address, || {
+                env.storage()
+                    .persistent()
+                    .get_ttl(&DataKey::Balance(addr.clone()))
+            }) > DEFAULT_ENTRY_TTL
+        );
+    }
 }

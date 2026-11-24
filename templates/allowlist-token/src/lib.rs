@@ -15,6 +15,10 @@ const BALANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const BALANCE_LIFETIME_THRESHOLD: u32 = BALANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 const ALLOWANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const ALLOWANCE_LIFETIME_THRESHOLD: u32 = ALLOWANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+/// Instance entry (admin, metadata, total supply) lives 30 days and is bumped
+/// whenever it drops below 29 days, so it is never archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -84,6 +88,12 @@ pub struct Approve {
     pub live_until_ledger: u32,
 }
 
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 fn get_admin(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::Admin).unwrap()
 }
@@ -96,10 +106,17 @@ fn is_allowed(env: &Env, addr: &Address) -> bool {
 }
 
 fn get_balance(env: &Env, addr: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Balance(addr.clone()))
-        .unwrap_or(0)
+    let key = DataKey::Balance(addr.clone());
+    match env.storage().persistent().get::<_, i128>(&key) {
+        Some(balance) => {
+            // Reads keep an existing balance alive; missing entries are not created.
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
+            balance
+        }
+        None => 0,
+    }
 }
 
 fn set_balance(env: &Env, addr: &Address, amount: i128) {
@@ -196,6 +213,7 @@ impl AllowlistToken {
         env.storage().instance().set(&DataKey::Symbol, &symbol);
         env.storage().instance().set(&DataKey::Decimals, &decimals);
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
+        extend_instance_ttl(&env);
     }
 
     /// Add an address to the allowlist. Admin only.
@@ -212,6 +230,7 @@ impl AllowlistToken {
             BALANCE_LIFETIME_THRESHOLD,
             BALANCE_BUMP_AMOUNT,
         );
+        extend_instance_ttl(&env);
     }
 
     /// Remove an address from the allowlist. Admin only.
@@ -223,6 +242,7 @@ impl AllowlistToken {
         env.storage()
             .persistent()
             .remove(&DataKey::Allowed(addr));
+        extend_instance_ttl(&env);
     }
 
     /// Check if an address is on the allowlist.
@@ -243,6 +263,7 @@ impl AllowlistToken {
             .checked_add(amount)
             .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
         set_total_supply(&env, supply);
+        extend_instance_ttl(&env);
         Mint { to, amount }.publish(&env);
     }
 
@@ -273,6 +294,7 @@ impl AllowlistToken {
         check_allowed(&env, &from);
         check_allowed(&env, &spender);
         set_allowance(&env, &from, &spender, amount, live_until_ledger);
+        extend_instance_ttl(&env);
     }
 
     /// Transfer tokens between two allowlisted addresses.
@@ -283,6 +305,7 @@ impl AllowlistToken {
         check_allowed(&env, &to);
         spend_balance(&env, &from, amount);
         receive_balance(&env, &to, amount);
+        extend_instance_ttl(&env);
         Transfer {
             from,
             to,
@@ -304,6 +327,7 @@ impl AllowlistToken {
         set_allowance(&env, &from, &spender, allowance - amount, 0);
         spend_balance(&env, &from, amount);
         receive_balance(&env, &to, amount);
+        extend_instance_ttl(&env);
         Transfer {
             from,
             to,
@@ -322,6 +346,7 @@ impl AllowlistToken {
             .checked_sub(amount)
             .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
         set_total_supply(&env, supply);
+        extend_instance_ttl(&env);
         Burn { from, amount }.publish(&env);
     }
 
@@ -340,6 +365,7 @@ impl AllowlistToken {
             .checked_sub(amount)
             .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
         set_total_supply(&env, supply);
+        extend_instance_ttl(&env);
         Burn { from, amount }.publish(&env);
     }
 
