@@ -16,6 +16,21 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
 
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL (30 days). The whole schedule (admin, token,
+/// beneficiary, timestamps, amounts) lives in instance storage, so it is bumped
+/// on every state-changing call to keep the contract from being archived.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -53,6 +68,7 @@ impl VestingContract {
         total_amount: i128,
     ) {
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
@@ -90,6 +106,7 @@ impl VestingContract {
     pub fn fund(env: Env) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env
             .storage()
@@ -113,6 +130,7 @@ impl VestingContract {
     pub fn revoke(env: Env) -> i128 {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env
             .storage()
@@ -188,6 +206,7 @@ impl VestingContract {
         let beneficiary: Address =
             env.storage().instance().get(&DataKey::Beneficiary).unwrap();
         beneficiary.require_auth();
+        extend_instance_ttl(&env);
 
         let claimable = Self::get_claimable_amount(env.clone());
         if claimable <= 0 {

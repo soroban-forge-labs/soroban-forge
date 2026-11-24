@@ -1,5 +1,6 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{symbol_short, Address, Env};
 
 /// A role with no special meaning to the contract, used to show that role
@@ -335,4 +336,22 @@ fn an_unauthorized_invocation_is_rejected() {
 
     env.set_auths(&[]);
     client.mint(&alice, &bob, &1000);
+}
+
+// --- storage TTL --------------------------------------------------------------
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let f = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    f.client.grant_role(&f.admin, &MINTER_ROLE, &f.alice);
+    f.client.mint(&f.alice, &f.bob, &100);
+    assert_eq!(f.client.total_supply(), 100);
+
+    let ttl = env.as_contract(&f.client.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

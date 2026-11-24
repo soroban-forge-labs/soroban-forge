@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env};
 
@@ -201,4 +202,24 @@ fn admin_can_revoke_unvested_tokens() {
     let claimed = contract.claim();
     assert_eq!(claimed, 50_000);
     assert_eq!(token.client.balance(&beneficiary), 50_000);
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (contract, _token, _admin, _beneficiary, start_ts) = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 100_000;
+        li.timestamp = start_ts + 3000; // past the cliff, half-vested
+    });
+
+    // Unfunded, so revoking touches only the vesting contract's own storage.
+    let unvested = contract.revoke();
+    assert_eq!(unvested, 50_000);
+    assert_eq!(contract.get_vested_amount(), 50_000);
+
+    let ttl = env.as_contract(&contract.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }
