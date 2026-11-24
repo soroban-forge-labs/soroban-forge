@@ -214,6 +214,7 @@ impl ForgePlugin for InitPlugin {
                     false,
                     &options,
                     false,
+                    false,
                 ) {
                     Ok(files) => ci_files.extend(files),
                     Err(error) => {

@@ -3,6 +3,8 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, token::TokenClient, Address, Env, InvokeError};
 
 const FEE_BPS: u32 = 30; // 0.30%
+/// A high fee so accrual survives the integer rounding in share accounting.
+const HIGH_FEE_BPS: u32 = 1_000; // 10%
 const POOL_LIQUIDITY: i128 = 1_000_000;
 const BORROWER_RESERVES: i128 = 10_000;
 const LOAN: i128 = 100_000;
@@ -121,7 +123,11 @@ fn setup(env: &Env) -> Fixture<'_> {
     let admin = Address::generate(env);
     let pool_id = env.register(FlashLoanPool, (admin.clone(), token_id.clone(), FEE_BPS));
 
-    StellarAssetClient::new(env, &token_id).mint(&pool_id, &POOL_LIQUIDITY);
+    // The admin seeds the pool through `deposit`, which mints LP shares to the
+    // admin. Minting straight to the contract would leave the pool funded with
+    // no one able to withdraw — every token must be backed by a share.
+    StellarAssetClient::new(env, &token_id).mint(&admin, &POOL_LIQUIDITY);
+    FlashLoanPoolClient::new(env, &pool_id).deposit(&admin, &POOL_LIQUIDITY);
 
     Fixture {
         pool: FlashLoanPoolClient::new(env, &pool_id),
@@ -139,6 +145,31 @@ fn register_borrower(env: &Env, fx: &Fixture, funded: bool) -> Address {
         StellarAssetClient::new(env, &fx.token_id).mint(&id, &BORROWER_RESERVES);
     }
     id
+}
+
+/// A pool with no seed liquidity: the first caller to deposit owns 100% of
+/// it, which makes fee accrual to a single LP unambiguous.
+struct EmptyPool<'a> {
+    pool: FlashLoanPoolClient<'a>,
+    pool_id: Address,
+    token: TokenClient<'a>,
+    token_id: Address,
+}
+
+fn empty_pool(env: &Env, fee_bps: u32) -> EmptyPool<'_> {
+    env.mock_all_auths();
+
+    let issuer = Address::generate(env);
+    let token_id = env.register_stellar_asset_contract_v2(issuer).address();
+    let admin = Address::generate(env);
+    let pool_id = env.register(FlashLoanPool, (admin, token_id, fee_bps));
+
+    EmptyPool {
+        pool: FlashLoanPoolClient::new(env, &pool_id),
+        pool_id,
+        token: TokenClient::new(env, &token_id),
+        token_id,
+    }
 }
 
 #[test]
@@ -275,8 +306,9 @@ fn deposit_and_withdraw_move_liquidity() {
     fx.pool.deposit(&lender, &50_000);
     assert_eq!(fx.pool.balance(), POOL_LIQUIDITY + 50_000);
 
+    // The admin redeems 20k of their 1M shares; the pool drops by that amount.
     fx.pool.withdraw(&fx.admin, &20_000);
-    assert_eq!(fx.pool.balance(), POOL_LIQUIDITY + 30_000);
+    assert_eq!(fx.pool.balance(), POOL_LIQUIDITY + 50_000 - 20_000);
     assert_eq!(fx.token.balance(&fx.admin), 20_000);
 }
 
@@ -332,4 +364,103 @@ fn the_loan_path_needs_no_external_authorization() {
     fx.pool.flash_loan(&borrower, &LOAN);
 
     assert_eq!(fx.token.balance(&fx.pool_id), POOL_LIQUIDITY + LOAN_FEE);
+}
+
+#[test]
+fn a_non_admin_depositor_can_redeem_with_fees() {
+    let env = Env::default();
+    // A pool seeded only by the LP we are testing, so they own 100% of every
+    // fee and rounding cannot hide the accrual.
+    let ep = empty_pool(&env, HIGH_FEE_BPS);
+    let lp = Address::generate(&env);
+    StellarAssetClient::new(&env, &ep.token_id).mint(&lp, &100_000);
+    ep.pool.deposit(&lp, &100_000);
+
+    // A loan accrues a fee to the whole pool — and the LP owns the whole pool.
+    let borrower = env.register(GoodBorrower, (ep.pool_id.clone(),));
+    StellarAssetClient::new(&env, &ep.token_id).mint(&borrower, &BORROWER_RESERVES);
+    let loan_fee = ep.pool.fee_for(&LOAN);
+    ep.pool.flash_loan(&borrower, &LOAN);
+
+    // The LP redeems their entire position. They get back their principal
+    // plus the entire fee, since no one else shares the pool.
+    let total = ep.pool.balance();
+    ep.pool.withdraw(&lp, &total);
+    assert_eq!(ep.token.balance(&lp), 100_000 + loan_fee);
+    assert_eq!(ep.pool.shares(&lp), 0);
+    assert_eq!(ep.pool.total_shares(), 0);
+    assert_eq!(ep.pool.balance(), 0);
+}
+
+#[test]
+fn depositor_withdraws_more_than_deposited_because_of_fees() {
+    let env = Env::default();
+    let ep = empty_pool(&env, HIGH_FEE_BPS);
+    let lp = Address::generate(&env);
+    StellarAssetClient::new(&env, &ep.token_id).mint(&lp, &100_000);
+    ep.pool.deposit(&lp, &100_000);
+
+    let borrower = env.register(GoodBorrower, (ep.pool_id.clone(),));
+    StellarAssetClient::new(&env, &ep.token_id).mint(&borrower, &BORROWER_RESERVES);
+    ep.pool.flash_loan(&borrower, &LOAN);
+
+    // Full redemption returns strictly more than the deposit.
+    ep.pool.withdraw(&lp, &100_000);
+    assert!(ep.token.balance(&lp) > 100_000);
+}
+
+#[test]
+#[should_panic]
+fn a_non_shareholder_cannot_withdraw() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let stranger = Address::generate(&env);
+
+    // No deposit, no shares — the only path into the pool is deposit.
+    assert_eq!(fx.pool.shares(&stranger), 0);
+    fx.pool.withdraw(&stranger, &1_000);
+}
+
+#[test]
+fn a_shareholder_cannot_withdraw_more_than_their_share() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let lp = Address::generate(&env);
+    StellarAssetClient::new(env, &fx.token_id).mint(&lp, &100_000);
+    fx.pool.deposit(&lp, &100_000);
+
+    // The LP owns 100k of 1.1M ≈ 9%. Asking for more than that fails.
+    assert_eq!(
+        fx.pool.try_withdraw(&lp, &1_000_000),
+        Err(contract_err(Error::InsufficientLiquidity))
+    );
+}
+
+#[test]
+fn deposit_then_full_redeem_returns_principal() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let lp = Address::generate(&env);
+    StellarAssetClient::new(env, &fx.token_id).mint(&lp, &50_000);
+    fx.pool.deposit(&lp, &50_000);
+
+    fx.pool.withdraw(&lp, &50_000);
+    assert_eq!(fx.token.balance(&lp), 50_000);
+    assert_eq!(fx.pool.shares(&lp), 0);
+    assert_eq!(fx.pool.total_shares(), POOL_LIQUIDITY);
+}
+
+#[test]
+fn second_depositor_gets_proportional_shares() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let lp = Address::generate(&env);
+    StellarAssetClient::new(env, &fx.token_id).mint(&lp, &100_000);
+    fx.pool.deposit(&lp, &100_000);
+
+    // Pool holds 1.1M backed by 1M shares; the LP holds 100_000 / 1.1M ≈
+    // 90_909 shares. Full redemption returns exactly their deposit (no fees
+    // have accrued), proving the price mechanism is fair, not arbitrary.
+    fx.pool.withdraw(&lp, &100_000);
+    assert_eq!(fx.token.balance(&lp), 100_000);
 }

@@ -111,8 +111,23 @@ def diff_trees(expected: Path, actual: Path) -> list[str]:
     return problems
 
 
+def check_boms() -> list[str]:
+    """Fail if any template file starts with a UTF-8 byte-order mark."""
+    problems = []
+    for path in sorted(TEMPLATES_DIR.rglob("*")):
+        if path.is_file() and path.read_bytes().startswith(b"\xef\xbb\xbf"):
+            problems.append(f"  {path.relative_to(ROOT)} starts with a UTF-8 BOM")
+    return problems
+
+
 def main() -> int:
     check = "--check" in sys.argv
+
+    bom_problems = check_boms()
+    if bom_problems:
+        print("template files must not start with a BOM:\n" + "\n".join(bom_problems), file=sys.stderr)
+        return 1
+
     if not BINARY.exists():
         sys.exit(
             f"error: {BINARY} not found — run `cargo build --release --bin soroban-forge` first"
