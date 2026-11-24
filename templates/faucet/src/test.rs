@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env};
 
@@ -120,4 +121,18 @@ fn an_attacker_cannot_reinitialize_to_drain_the_faucet() {
     assert_eq!(contract.claim(&attacker), 100);
     assert!(contract.try_claim(&attacker).is_err());
     assert_eq!(token.client.balance(&attacker), 100);
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let (contract, _token, _admin, _start_ts) = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    contract.set_params(&50, &60);
+
+    let ttl = env.as_contract(&contract.address, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

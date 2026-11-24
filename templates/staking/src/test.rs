@@ -545,3 +545,43 @@ fn same_token_getters_return_same_token() {
     assert_eq!(staking.get_stake_token(), token.address);
     assert_eq!(staking.get_reward_token(), token.address);
 }
+
+#[test]
+fn storage_survives_past_default_ttl() {
+    let env = Env::default();
+    let (staking, token, _admin, alice, bob) = setup(&env);
+
+    // Alice and Bob deposit.
+    staking.deposit(&alice, &1000);
+    staking.deposit(&bob, &2000);
+    assert_eq!(staking.get_total_staked(), 3000);
+
+    // Admin distributes rewards.
+    staking.distribute(&600);
+
+    // Advance the ledger well past the default TTL (30 days).
+    // 30 days = 30 * 17_280 = 518_400 ledgers.
+    // We advance 35 days to ensure we're beyond the threshold.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 35 * 17_280;
+        li.timestamp += 35 * 17_280 * 5; // ~5 seconds per ledger
+    });
+
+    // After advancing past TTL, storage should still work because
+    // extend_ttl was called on each operation.
+    // Alice should still be able to claim her rewards.
+    let alice_claimed = staking.claim(&alice);
+    assert_eq!(alice_claimed, 200); // 1/3 of 600
+
+    // Bob can still withdraw after TTL has passed.
+    staking.withdraw(&bob, &1000);
+    assert_eq!(staking.get_staked(&bob), 1000);
+    assert_eq!(token.balance(&bob), USER_FUNDS - 2000 + 1000 + 400);
+
+    // New operations should continue to work.
+    let charlie = Address::generate(&env);
+    let sac = soroban_sdk::token::StellarAssetClient::new(&env, &token.address);
+    sac.mint(&charlie, &USER_FUNDS);
+    staking.deposit(&charlie, &500);
+    assert_eq!(staking.get_staked(&charlie), 500);
+}

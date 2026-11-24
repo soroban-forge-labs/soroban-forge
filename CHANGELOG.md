@@ -79,6 +79,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Renew the `crowdfund` campaign instance on state changes and persistent
+  pledge entries on writes and hot-path reads, with named TTL constants,
+  lifetime regression tests and a regenerated example (#720).
+
 - Reject staking reward distributions to an empty pool with `Error::NoStakers`, without emitting a misleading `distrib` event (#572).
 
 - Concurrent writes to `identities.json` and `networks.json` no longer lose

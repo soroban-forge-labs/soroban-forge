@@ -1,4 +1,4 @@
-//! English Auction contract — ascending price auction.
+//! English Auction contract - ascending price auction.
 //!
 //! An ascending-price auction where bidders place successively higher bids
 //! within a fixed time window. The highest bidder at auction end wins the asset.
@@ -7,7 +7,18 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
+
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Target TTL for contract instance storage (~30 days).
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold below which instance storage TTL is extended (~29 days).
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL_EXTEND_TO - DAY_IN_LEDGERS;
+/// Target TTL for persistent storage entries (~30 days).
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold below which persistent storage TTL is extended (~29 days).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL_EXTEND_TO - DAY_IN_LEDGERS;
 
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -29,8 +40,6 @@ pub enum DataKey {
     PaymentToken,
     AssetAmount,
     ReservePrice,
-    MinIncrementBps,
-    ExtensionWindow,
     StartTime,
     Duration,
     State,
@@ -38,6 +47,23 @@ pub enum DataKey {
     HighestBid,
     PreviousBidder,
     PreviousBid,
+    /// Minimum bid increment in basis points (1 bps = 0.01%).
+    MinIncrementBps,
+    /// Window before auction end (seconds) within which a bid extends the end.
+    ExtensionWindow,
+    Refund(Address),
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
+fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 #[contract]
@@ -53,8 +79,10 @@ impl EnglishAuctionContract {
     /// * `asset_amount` — quantity of asset tokens offered for sale
     /// * `reserve_price` — minimum starting bid in payment tokens
     /// * `duration_seconds` — duration of the auction in seconds
-    /// * `min_increment_bps` — minimum bid increment in basis points (e.g. 500 = 5%)
-    /// * `extension_window` — bids within this many seconds of end extend the auction
+    /// * `min_increment_bps` — minimum bid increment in basis points
+    /// * `extension_window_seconds` — anti-sniping window; bids within this
+    ///   window of the end extend the auction by `extension_window_seconds`
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
         seller: Address,
@@ -64,10 +92,9 @@ impl EnglishAuctionContract {
         reserve_price: i128,
         duration_seconds: u64,
         min_increment_bps: u32,
-        extension_window: u64,
+        extension_window_seconds: u64,
     ) {
         seller.require_auth();
-
         if env.storage().instance().has(&DataKey::Seller) {
             panic!("already initialized");
         }
@@ -84,18 +111,32 @@ impl EnglishAuctionContract {
             panic!("min increment bps too large");
         }
 
-        let now = env.ledger().timestamp();
-
         env.storage().instance().set(&DataKey::Seller, &seller);
-        env.storage().instance().set(&DataKey::AssetToken, &asset_token);
-        env.storage().instance().set(&DataKey::PaymentToken, &payment_token);
-        env.storage().instance().set(&DataKey::AssetAmount, &asset_amount);
-        env.storage().instance().set(&DataKey::ReservePrice, &reserve_price);
-        env.storage().instance().set(&DataKey::MinIncrementBps, &min_increment_bps);
-        env.storage().instance().set(&DataKey::ExtensionWindow, &extension_window);
-        env.storage().instance().set(&DataKey::StartTime, &now);
-        env.storage().instance().set(&DataKey::Duration, &duration_seconds);
-        env.storage().instance().set(&DataKey::State, &AuctionState::Pending);
+        env.storage()
+            .instance()
+            .set(&DataKey::AssetToken, &asset_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::PaymentToken, &payment_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::AssetAmount, &asset_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReservePrice, &reserve_price);
+        env.storage()
+            .instance()
+            .set(&DataKey::Duration, &duration_seconds);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinIncrementBps, &min_increment_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::ExtensionWindow, &extension_window_seconds);
+        env.storage()
+            .instance()
+            .set(&DataKey::State, &AuctionState::Pending);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit the asset tokens into the auction contract to open bidding.
@@ -106,48 +147,56 @@ impl EnglishAuctionContract {
         let asset_token: Address = env.storage().instance().get(&DataKey::AssetToken).unwrap();
         let asset_amount: i128 = env.storage().instance().get(&DataKey::AssetAmount).unwrap();
         let state: AuctionState = env.storage().instance().get(&DataKey::State).unwrap();
-
         if state != AuctionState::Pending {
             panic!("can only fund from pending state");
         }
-
         seller.require_auth();
-
         token::Client::new(&env, &asset_token).transfer(
             &seller,
-            &env.current_contract_address(),
+            env.current_contract_address(),
             &asset_amount,
         );
-
+        // The bidding clock starts when the auction opens, not at initialize,
+        // so a seller who funds late still gets the full duration (#577).
+        env.storage()
+            .instance()
+            .set(&DataKey::StartTime, &env.ledger().timestamp());
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Open);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("fund"), seller), asset_amount);
     }
 
     /// Place a bid on the auction.
     ///
     /// The new bid must be higher than the current highest bid (or >= reserve price
-    /// if no bids yet). Previous bidder's funds are returned.
+    /// if no bids yet). Previous bidder's funds are credited as a withdrawable refund.
     pub fn place_bid(env: Env, bidder: Address, bid_amount: i128) {
         bidder.require_auth();
-
         let state: AuctionState = env.storage().instance().get(&DataKey::State).unwrap();
         if state != AuctionState::Open {
             panic!("auction is not open for bidding");
         }
-
         let now = env.ledger().timestamp();
         let start_time: u64 = env.storage().instance().get(&DataKey::StartTime).unwrap();
         let duration: u64 = env.storage().instance().get(&DataKey::Duration).unwrap();
         let end_time = start_time + duration;
-
         if now > end_time {
             panic!("auction has ended");
         }
-
-        let payment_token: Address = env.storage().instance().get(&DataKey::PaymentToken).unwrap();
-        let reserve_price: i128 = env.storage().instance().get(&DataKey::ReservePrice).unwrap();
-
+        let payment_token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PaymentToken)
+            .unwrap();
+        let reserve_price: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReservePrice)
+            .unwrap();
         let highest_bid: i128 = env
             .storage()
             .instance()
@@ -163,24 +212,37 @@ impl EnglishAuctionContract {
         let min_required = if highest_bid == 0 {
             reserve_price
         } else {
-            highest_bid + (highest_bid * (min_increment_bps as i128)) / 10_000
+            let increment = highest_bid
+                .checked_mul(min_increment_bps as i128)
+                .expect("increment overflow")
+                / 10_000;
+            // Always require at least one unit more than the current bid.
+            highest_bid + increment.max(1)
         };
-
         if bid_amount < min_required {
             panic!("bid is too low");
         }
 
-        if let Some(previous_bidder) = env.storage().instance().get::<_, Address>(&DataKey::HighestBidder) {
+        token::Client::new(&env, &payment_token).transfer(
+            &bidder,
+            env.current_contract_address(),
+            &bid_amount,
+        );
+
+        if let Some(previous_bidder) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::HighestBidder)
+        {
             let previous_bid: i128 = env.storage().instance().get(&DataKey::HighestBid).unwrap();
-            token::Client::new(&env, &payment_token).transfer(
-                &env.current_contract_address(),
-                &previous_bidder,
-                &previous_bid,
-            );
+            let refund_key = DataKey::Refund(previous_bidder);
+            let existing_refund: i128 = env.storage().persistent().get(&refund_key).unwrap_or(0);
+            let total_refund = existing_refund
+                .checked_add(previous_bid)
+                .expect("refund overflow");
+            env.storage().persistent().set(&refund_key, &total_refund);
+            extend_persistent_ttl(&env, &refund_key);
         }
-
-        token::Client::new(&env, &payment_token).transfer(&bidder, &env.current_contract_address(), &bid_amount);
-
         env.storage()
             .instance()
             .set(&DataKey::HighestBidder, &bidder);
@@ -194,12 +256,17 @@ impl EnglishAuctionContract {
             .get(&DataKey::ExtensionWindow)
             .unwrap_or(0);
 
-        if extension_window > 0 && now + extension_window >= end_time {
-            let new_duration = (now + extension_window) - start_time;
+        if extension_window > 0 && end_time - now <= extension_window {
+            let new_end_time = end_time + extension_window;
+            let new_duration = new_end_time - start_time;
             env.storage()
                 .instance()
                 .set(&DataKey::Duration, &new_duration);
         }
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("bid"), bidder), bid_amount);
     }
 
     /// Close the auction and settle with the highest bidder.
@@ -208,44 +275,47 @@ impl EnglishAuctionContract {
     pub fn settle(env: Env) {
         let seller: Address = env.storage().instance().get(&DataKey::Seller).unwrap();
         let state: AuctionState = env.storage().instance().get(&DataKey::State).unwrap();
-
         if state != AuctionState::Open {
             panic!("auction is not open");
         }
-
         let now = env.ledger().timestamp();
         let start_time: u64 = env.storage().instance().get(&DataKey::StartTime).unwrap();
         let duration: u64 = env.storage().instance().get(&DataKey::Duration).unwrap();
         let end_time = start_time + duration;
-
         if now <= end_time {
             panic!("auction has not ended");
         }
-
-        let highest_bidder_opt: Option<Address> = env.storage().instance().get(&DataKey::HighestBidder);
-
+        let highest_bidder_opt: Option<Address> =
+            env.storage().instance().get(&DataKey::HighestBidder);
         match highest_bidder_opt {
             Some(highest_bidder) => {
-                let asset_token: Address = env.storage().instance().get(&DataKey::AssetToken).unwrap();
-                let asset_amount: i128 = env.storage().instance().get(&DataKey::AssetAmount).unwrap();
-                let payment_token: Address = env.storage().instance().get(&DataKey::PaymentToken).unwrap();
+                let asset_token: Address =
+                    env.storage().instance().get(&DataKey::AssetToken).unwrap();
+                let asset_amount: i128 =
+                    env.storage().instance().get(&DataKey::AssetAmount).unwrap();
+                let payment_token: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::PaymentToken)
+                    .unwrap();
                 let highest_bid: i128 = env.storage().instance().get(&DataKey::HighestBid).unwrap();
-
                 token::Client::new(&env, &asset_token).transfer(
                     &env.current_contract_address(),
                     &highest_bidder,
                     &asset_amount,
                 );
-
                 token::Client::new(&env, &payment_token).transfer(
                     &env.current_contract_address(),
                     &seller,
                     &highest_bid,
                 );
-
                 env.storage()
                     .instance()
                     .set(&DataKey::State, &AuctionState::Settled);
+                extend_instance_ttl(&env);
+
+                env.events()
+                    .publish((symbol_short!("settle"), highest_bidder), highest_bid);
             }
             None => {
                 panic!("no bids placed, cannot settle");
@@ -255,40 +325,33 @@ impl EnglishAuctionContract {
 
     /// Cancel the auction and return the asset to the seller.
     ///
-    /// Can only be called by the seller before auction end.
+    /// Can only be called by the seller before any bids have been placed.
     pub fn cancel(env: Env) {
         let seller: Address = env.storage().instance().get(&DataKey::Seller).unwrap();
         let state: AuctionState = env.storage().instance().get(&DataKey::State).unwrap();
-
         if state != AuctionState::Open {
             panic!("auction is not open");
         }
-
         seller.require_auth();
+
+        if env.storage().instance().has(&DataKey::HighestBidder) {
+            panic!("cannot cancel auction after a bid has been placed");
+        }
 
         let asset_token: Address = env.storage().instance().get(&DataKey::AssetToken).unwrap();
         let asset_amount: i128 = env.storage().instance().get(&DataKey::AssetAmount).unwrap();
-
         token::Client::new(&env, &asset_token).transfer(
             &env.current_contract_address(),
             &seller,
             &asset_amount,
         );
-
-        if let Some(highest_bidder) = env.storage().instance().get::<_, Address>(&DataKey::HighestBidder) {
-            let payment_token: Address = env.storage().instance().get(&DataKey::PaymentToken).unwrap();
-            let highest_bid: i128 = env.storage().instance().get(&DataKey::HighestBid).unwrap();
-
-            token::Client::new(&env, &payment_token).transfer(
-                &env.current_contract_address(),
-                &highest_bidder,
-                &highest_bid,
-            );
-        }
-
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Canceled);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("cancel"), seller), asset_amount);
     }
 
     /// Get the current highest bid and bidder.
@@ -302,14 +365,22 @@ impl EnglishAuctionContract {
         (bidder, bid)
     }
 
-    /// Get the current auction end time.
+    /// Get the current auction state.
+    pub fn get_state(env: Env) -> AuctionState {
+        env.storage()
+            .instance()
+            .get(&DataKey::State)
+            .unwrap_or(AuctionState::Pending)
+    }
+
+    /// Get the current auction end time (start + duration).
     pub fn get_end_time(env: Env) -> u64 {
         let start_time: u64 = env.storage().instance().get(&DataKey::StartTime).unwrap();
         let duration: u64 = env.storage().instance().get(&DataKey::Duration).unwrap();
         start_time + duration
     }
 
-    /// Get the configured minimum increment in basis points.
+    /// Get the minimum bid increment in basis points.
     pub fn get_min_increment_bps(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -317,12 +388,40 @@ impl EnglishAuctionContract {
             .unwrap_or(0)
     }
 
-    /// Get the current auction state.
-    pub fn get_state(env: Env) -> AuctionState {
-        env.storage()
+    /// Get the pending refund amount owed to `bidder`.
+    pub fn get_refund(env: Env, bidder: Address) -> i128 {
+        let key = DataKey::Refund(bidder);
+        if let Some(refund) = env.storage().persistent().get::<_, i128>(&key) {
+            extend_persistent_ttl(&env, &key);
+            refund
+        } else {
+            0
+        }
+    }
+
+    /// Withdraw any available refund for the caller.
+    pub fn withdraw_refund(env: Env, bidder: Address) {
+        bidder.require_auth();
+        let refund_key = DataKey::Refund(bidder.clone());
+        let refund_amount: i128 = env.storage().persistent().get(&refund_key).unwrap_or(0);
+        if refund_amount == 0 {
+            panic!("no refund available");
+        }
+        let payment_token: Address = env
+            .storage()
             .instance()
-            .get(&DataKey::State)
-            .unwrap_or(AuctionState::Pending)
+            .get(&DataKey::PaymentToken)
+            .unwrap();
+        env.storage().persistent().remove(&refund_key);
+        token::Client::new(&env, &payment_token).transfer(
+            &env.current_contract_address(),
+            &bidder,
+            &refund_amount,
+        );
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("refund"), bidder), refund_amount);
     }
 }
 

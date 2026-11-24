@@ -8,7 +8,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -132,6 +132,9 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Open);
+
+        env.events()
+            .publish((symbol_short!("fund"), seller), asset_amount);
     }
 
     /// Calculate and return the current price based on elapsed time.
@@ -204,6 +207,9 @@ impl DutchAuctionContract {
             .instance()
             .set(&DataKey::SettledPrice, &current_price);
 
+        env.events()
+            .publish((symbol_short!("buy"), buyer), current_price);
+
         current_price
     }
 
@@ -232,6 +238,9 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Canceled);
+
+        env.events()
+            .publish((symbol_short!("cancel"), seller), asset_amount);
     }
 
     /// Return current state of the auction.
