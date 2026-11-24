@@ -105,7 +105,7 @@ pub fn get_counter(env: Env) -> u32 {
 
 pub fn get_name(env: Env) -> String {
     migrate_if_needed(&env);  // <-- Automatic migration
-    env.storage().instance().get(&DataKey::NameV2).unwrap_or(String::from_slice(&env, "unknown"))
+    env.storage().instance().get(&DataKey::NameV2).unwrap_or(String::from_str(&env, "unknown"))
 }
 ```
 
@@ -136,7 +136,7 @@ fn test_migration_from_v1_to_v2() {
     env.storage().instance().set(&DataKey::Version, &1u32);
 
     // Call a v2 function → triggers migration
-    client.set_name(&String::from_slice(&env, "migrated"));
+    client.set_name(&String::from_str(&env, "migrated"));
 
     // Verify
     assert_eq!(client.version(), 2);
