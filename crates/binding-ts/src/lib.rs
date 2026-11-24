@@ -1022,10 +1022,10 @@ fn watch_loop(
         }
     }
 
-    let mut last = snapshot_mtime(dir);
+    let mut last = snapshot_watch_mtime(dir, output, wasm_override);
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        let now = snapshot_mtime(dir);
+        let now = snapshot_watch_mtime(dir, output, wasm_override);
         if now != last {
             last = now;
             if let Err(err) =
@@ -1068,11 +1068,14 @@ fn regenerate(
 }
 
 fn timestamp() -> String {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{now}s")
+    std::process::Command::new("date")
+        .arg("+%H:%M:%S")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "00:00:00".to_string())
 }
 
 /// Latest mtime under `dir`, recursively. Used as a coarse change
@@ -1080,7 +1083,10 @@ fn timestamp() -> String {
 /// for a one-second poll.
 fn snapshot_mtime(dir: &Path) -> Option<SystemTime> {
     fn walk(path: &Path, latest: &mut Option<SystemTime>) -> std::io::Result<()> {
-        let meta = std::fs::metadata(path)?;
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            return Ok(());
+        }
         if let Ok(modified) = meta.modified() {
             match latest {
                 Some(current) if *current >= modified => {}
@@ -1089,14 +1095,70 @@ fn snapshot_mtime(dir: &Path) -> Option<SystemTime> {
         }
         if meta.is_dir() {
             for entry in std::fs::read_dir(path)? {
-                let entry = entry?;
-                walk(&entry.path(), latest)?;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                let name = entry.file_name();
+                if matches!(name.to_str(), Some("target" | "node_modules" | ".git")) {
+                    continue;
+                }
+                // Files can disappear while cargo is rebuilding. Treat that
+                // as an ordinary race instead of invalidating the snapshot.
+                let _ = walk(&entry.path(), latest);
             }
         }
         Ok(())
     }
     let mut latest = None;
     let _ = walk(dir, &mut latest);
+    latest
+}
+
+/// Snapshot only files relevant to binding generation. Generated output is
+/// excluded so the default `bindings/typescript` directory cannot retrigger
+/// its own watch loop; the built wasm is included when it lives outside the
+/// project source tree.
+fn snapshot_watch_mtime(
+    dir: &Path,
+    output: &Path,
+    wasm_override: Option<&Path>,
+) -> Option<SystemTime> {
+    fn walk(path: &Path, output: &Path, latest: &mut Option<SystemTime>) {
+        if path == output || path.starts_with(output) {
+            return;
+        }
+        let meta = match std::fs::symlink_metadata(path) {
+            Ok(meta) if !meta.file_type().is_symlink() => meta,
+            _ => return,
+        };
+        if let Ok(modified) = meta.modified() {
+            if latest.is_none_or(|current| modified > current) {
+                *latest = Some(modified);
+            }
+        }
+        if meta.is_dir() {
+            let Ok(entries) = std::fs::read_dir(path) else { return };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if matches!(name.to_str(), Some("target" | "node_modules" | ".git")) {
+                    continue;
+                }
+                walk(&entry.path(), output, latest);
+            }
+        }
+    }
+
+    let mut latest = None;
+    // Only contract sources and Cargo manifests can change the generated
+    // bindings. Avoid scanning documentation, examples, build output, and
+    // dependency trees on every polling tick.
+    for path in [dir.join("src"), dir.join("Cargo.toml"), dir.join("Cargo.lock")] {
+        walk(&path, output, &mut latest);
+    }
+    if let Some(wasm) = wasm_override {
+        walk(wasm, output, &mut latest);
+    }
     latest
 }
 
