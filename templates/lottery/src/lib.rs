@@ -31,7 +31,15 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Vec,
+};
+
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
 
 #[contracttype]
 pub enum DataKey {
@@ -98,6 +106,9 @@ impl LotteryContract {
     /// passed to `reveal` later. Must be called before the commit deadline.
     pub fn enter(env: Env, entrant: Address, commitment: BytesN<32>) {
         entrant.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 
         let now = env.ledger().timestamp();
         let commit_deadline: u64 = env
@@ -122,8 +133,10 @@ impl LotteryContract {
         env.storage().instance().set(&key, &commitment);
 
         let mut entrants: Vec<Address> = env.storage().instance().get(&DataKey::Entrants).unwrap();
-        entrants.push_back(entrant);
+        entrants.push_back(entrant.clone());
         env.storage().instance().set(&DataKey::Entrants, &entrants);
+
+        env.events().publish((symbol_short!("enter"), entrant), ());
     }
 
     /// Reveal the nonce behind a prior commitment.
@@ -133,6 +146,9 @@ impl LotteryContract {
     /// commitment submitted in `enter`.
     pub fn reveal(env: Env, entrant: Address, nonce: BytesN<32>) {
         entrant.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 
         let now = env.ledger().timestamp();
         let commit_deadline: u64 = env
@@ -170,6 +186,9 @@ impl LotteryContract {
         }
 
         env.storage().instance().set(&revealed_key, &nonce);
+
+        env.events()
+            .publish((symbol_short!("reveal"), entrant), ());
     }
 
     /// Draw the winner from the entrants who successfully revealed.
@@ -178,6 +197,10 @@ impl LotteryContract {
     /// seed is derived by XOR-ing every revealed nonce together, so no
     /// single entrant controls the outcome.
     pub fn draw(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+        
         let now = env.ledger().timestamp();
         let reveal_deadline: u64 = env
             .storage()
@@ -220,6 +243,9 @@ impl LotteryContract {
 
         env.storage().instance().set(&DataKey::Winner, &winner);
         env.storage().instance().set(&DataKey::Drawn, &true);
+
+        env.events()
+            .publish((symbol_short!("draw"),), winner.clone());
 
         winner
     }

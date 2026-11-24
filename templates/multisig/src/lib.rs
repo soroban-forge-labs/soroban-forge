@@ -10,7 +10,7 @@
 
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
-    contract, contracterror, contractimpl, contracttype,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
     crypto::Hash,
     BytesN, Env, Vec,
 };
@@ -114,6 +114,11 @@ impl MultisigContract {
             .instance()
             .set(&DataKey::Threshold, &new_threshold);
         extend_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("rotate"), env.current_contract_address()),
+            (new_signers.len(), new_threshold),
+        );
     }
 
     /// Change the signature threshold.
@@ -133,6 +138,11 @@ impl MultisigContract {
         }
         env.storage().instance().set(&DataKey::Threshold, &threshold);
         extend_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("thresh"), env.current_contract_address()),
+            threshold,
+        );
     }
 
     /// Current threshold (`M`).
