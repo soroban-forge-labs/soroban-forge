@@ -25,6 +25,7 @@ pub enum Error {
     InsufficientBalance = 2,
     InsufficientAllowance = 3,
     InvalidExpiration = 4,
+    NoPendingAdmin = 5,
 }
 
 #[contracttype]
@@ -45,6 +46,7 @@ pub struct AllowanceValue {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Name,
     Symbol,
     Decimals,
@@ -175,6 +177,42 @@ impl TokenContract {
     /// The current admin address.
     pub fn admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Step one of an admin handover: the current admin nominates `new_admin`.
+    /// Overwrites any earlier proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("propose"), admin), new_admin);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = match env.storage().instance().get(&DataKey::PendingAdmin) {
+            Some(pending) => pending,
+            None => panic_with_error!(&env, Error::NoPendingAdmin),
+        };
+        pending.require_auth();
+        let old: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish((symbol_short!("accept"), old), pending);
+    }
+
+    /// The current admin withdraws an outstanding proposal.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            panic_with_error!(&env, Error::NoPendingAdmin);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish((symbol_short!("cancel"), admin), ());
     }
 }
 

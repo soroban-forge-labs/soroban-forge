@@ -96,3 +96,57 @@ fn transfer_from_beyond_allowance_panics() {
     token.approve(&alice, &bob, &100, &200);
     token.transfer_from(&bob, &alice, &bob, &101);
 }
+
+#[test]
+fn admin_handover_propose_and_accept() {
+    let env = Env::default();
+    let (token, admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    token.propose_admin(&new_admin);
+    // Admin is unchanged until the proposal is accepted.
+    assert_eq!(token.admin(), admin);
+
+    token.accept_admin();
+    assert_eq!(token.admin(), new_admin);
+
+    // The new admin can mint; the proposal is cleared.
+    let alice = Address::generate(&env);
+    token.mint(&alice, &5);
+    assert_eq!(token.balance(&alice), 5);
+}
+
+#[test]
+#[should_panic]
+fn accept_without_proposal_panics() {
+    let env = Env::default();
+    let (token, _admin) = setup(&env);
+    token.accept_admin();
+}
+
+#[test]
+#[should_panic]
+fn accept_by_non_pending_address_fails() {
+    let env = Env::default();
+    let (token, _admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    token.propose_admin(&new_admin);
+
+    // Only the pending admin's auth satisfies accept_admin.
+    env.set_auths(&[]);
+    token.accept_admin();
+}
+
+#[test]
+#[should_panic]
+fn cancel_clears_proposal() {
+    let env = Env::default();
+    let (token, admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    token.propose_admin(&new_admin);
+    token.cancel_admin_proposal();
+    assert_eq!(token.admin(), admin);
+
+    // Nothing left to accept.
+    token.accept_admin();
+}
