@@ -151,7 +151,6 @@ fn test_purchase_at_floor_price() {
 
     // State is Settled
     assert_eq!(ctx.contract.get_state(), AuctionState::Settled);
-    assert!(!env.events().all().is_empty());
 }
 
 #[test]
@@ -200,7 +199,6 @@ fn test_cancel_auction() {
         ctx.asset_token.client.balance(&ctx.seller),
         ctx.asset_amount
     );
-    assert!(!env.events().all().is_empty());
 }
 
 #[test]

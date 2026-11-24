@@ -545,3 +545,57 @@ fn same_token_getters_return_same_token() {
     assert_eq!(staking.get_stake_token(), token.address);
     assert_eq!(staking.get_reward_token(), token.address);
 }
+
+#[test]
+fn admin_handover_propose_then_accept() {
+    let env = Env::default();
+    let (staking, _token, admin, alice, _bob) = setup(&env);
+
+    staking.propose_admin(&alice);
+    assert_eq!(staking.get_admin(), admin);
+    assert_eq!(staking.get_pending_admin(), Some(alice.clone()));
+
+    staking.accept_admin();
+    assert_eq!(staking.get_admin(), alice);
+    assert_eq!(staking.get_pending_admin(), None);
+}
+
+#[test]
+fn admin_handover_cancel_clears_proposal() {
+    let env = Env::default();
+    let (staking, _token, admin, alice, _bob) = setup(&env);
+
+    staking.propose_admin(&alice);
+    staking.cancel_admin_proposal();
+    assert_eq!(staking.get_pending_admin(), None);
+    assert_eq!(staking.get_admin(), admin);
+    assert_eq!(
+        staking.try_accept_admin(),
+        Err(Ok(Error::NoPendingAdmin.into()))
+    );
+}
+
+#[test]
+fn admin_handover_accept_requires_pending_admin_auth() {
+    // No mock_all_auths: only the pending admin's auth is satisfied.
+    let env = Env::default();
+    let (staking, _token, admin, alice, bob) = setup(&env);
+    staking.propose_admin(&alice);
+
+    env.set_auths(&[]);
+    // bob is not the pending admin; accept_admin requires alice's auth.
+    assert!(staking.try_accept_admin().is_err());
+    assert_eq!(staking.get_admin(), admin);
+    assert_eq!(staking.get_pending_admin(), Some(alice));
+    let _ = bob;
+}
+
+#[test]
+fn admin_handover_emits_events() {
+    let env = Env::default();
+    let (staking, _token, _admin, alice, _bob) = setup(&env);
+    staking.propose_admin(&alice);
+    assert!(!env.events().all().events().is_empty());
+    staking.accept_admin();
+    assert!(!env.events().all().events().is_empty());
+}

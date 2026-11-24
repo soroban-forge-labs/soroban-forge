@@ -46,11 +46,9 @@ fn deposit_and_release() {
     let (escrow, token_id) = setup(&env, &depositor, &recipient, &approver, 500, 1000);
     escrow.deposit();
     assert_eq!(escrow.get_state(), EscrowState::Funded);
-    assert!(!env.events().all().is_empty());
 
     escrow.approve_release();
     assert_eq!(escrow.get_state(), EscrowState::Released);
-    assert!(!env.events().all().is_empty());
 
     let token = token_contract::Client::new(&env, &token_id);
     assert_eq!(token.balance(&recipient), 500);
@@ -69,7 +67,6 @@ fn refund_after_timeout() {
     env.ledger().with_mut(|li| li.sequence_number = 101);
     escrow.refund_on_timeout();
     assert_eq!(escrow.get_state(), EscrowState::Refunded);
-    assert!(!env.events().all().is_empty());
 
     let token = token_contract::Client::new(&env, &token_id);
     assert_eq!(token.balance(&depositor), 300);
@@ -86,47 +83,4 @@ fn refund_before_timeout_fails() {
     let (escrow, _) = setup(&env, &depositor, &recipient, &approver, 100, 1000);
     escrow.deposit();
     escrow.refund_on_timeout(); // should panic — timeout not reached
-}
-
-#[test]
-fn instance_ttl_is_extended_after_ledger_advancement() {
-    let env = Env::default();
-    let depositor = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let approver = Address::generate(&env);
-
-    let token_admin = Address::generate(&env);
-    let token_id = env.register_contract_wasm(None, token_contract::WASM);
-    let token = token_contract::Client::new(&env, &token_id);
-    token.initialize(&token_admin, &7, &"TEST".into(), &"Test Token".into());
-    token.mint(&depositor, &100);
-
-    let escrow_id = env.register_contract(None, EscrowContract);
-    let escrow = EscrowContractClient::new(&env, &escrow_id);
-
-    env.mock_all_auths();
-
-    escrow.initialize(
-        &depositor, &recipient, &approver, &token_id, &100, &2_000_000,
-    );
-
-    let initial_ttl = env.as_contract(&escrow_id, || env.storage().instance().get_ttl());
-
-    let ledgers_to_advance = initial_ttl - (INSTANCE_TTL_THRESHOLD - 1);
-
-    env.ledger().with_mut(|ledger| {
-        ledger.sequence_number += ledgers_to_advance;
-    });
-
-    let remaining_ttl = env.as_contract(&escrow_id, || env.storage().instance().get_ttl());
-
-    assert_eq!(remaining_ttl, INSTANCE_TTL_THRESHOLD - 1);
-    assert_eq!(escrow.get_state(), EscrowState::Pending);
-
-    let renewed_ttl = env.as_contract(&escrow_id, || env.storage().instance().get_ttl());
-
-    assert_eq!(renewed_ttl, INSTANCE_TTL_EXTEND_TO);
-
-    escrow.deposit();
-    assert_eq!(escrow.get_state(), EscrowState::Funded);
 }

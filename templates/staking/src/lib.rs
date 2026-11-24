@@ -27,12 +27,15 @@ pub enum Error {
     /// is possible for 18-decimal tokens once `amount` exceeds roughly
     /// 1.7 × 10²⁰ base units (~170 tokens at 18 decimals).
     Overflow = 6,
+    /// `accept_admin` / `cancel_admin_proposal` called with no proposal pending.
+    NoPendingAdmin = 7,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     StakeToken,
     RewardToken,
     AccRewardPerShare,
@@ -279,6 +282,55 @@ impl StakingContract {
         }
         env.events().publish((symbol_short!("claim"), user), amt);
         amt
+    }
+
+    /// Step 1 of the admin handover: current admin nominates `new_admin`.
+    /// Overwrites any earlier unaccepted proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let current = admin(&env);
+        current.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_prop"), current), new_admin);
+    }
+
+    /// Step 2: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        pending.require_auth();
+        let old = admin(&env);
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_acc"), old), pending);
+    }
+
+    /// Current admin withdraws an unaccepted proposal.
+    pub fn cancel_admin_proposal(env: Env) {
+        let current = admin(&env);
+        current.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_canc"), current), pending);
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        admin(&env)
+    }
+
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     pub fn get_staked(env: Env, user: Address) -> i128 {

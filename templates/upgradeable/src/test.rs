@@ -86,3 +86,61 @@ fn non_admin_cannot_upgrade() {
     let wasm_hash = BytesN::from_array(&env, &[0; 32]);
     client.upgrade(&wasm_hash);
 }
+
+#[test]
+fn propose_sets_pending_admin() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    assert_eq!(client.pending_admin(), Some(new_admin));
+    assert_eq!(client.admin(), admin);
+}
+
+#[test]
+fn pending_admin_can_accept() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+    assert_eq!(client.admin(), new_admin);
+    assert_eq!(client.pending_admin(), None);
+}
+
+#[test]
+fn admin_can_cancel_proposal() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    client.cancel_admin_proposal();
+    assert_eq!(client.pending_admin(), None);
+    assert_eq!(client.admin(), admin);
+    assert_eq!(
+        client.try_accept_admin().unwrap_err(),
+        Ok(Error::NoPendingAdmin)
+    );
+}
+
+#[test]
+#[should_panic(expected = "HostError")]
+fn non_pending_address_cannot_accept() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(UpgradeableContract, (admin.clone(),));
+    let client = UpgradeableContractClient::new(&env, &contract_id);
+    let new_admin = Address::generate(&env);
+    // Authorize only the proposal; the pending admin's auth is never granted.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+}
