@@ -1,4 +1,6 @@
 use super::*;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::{Address, Env, Symbol};
 
 /// A minimal mock oracle exposing the same `lastprice` shape as Reflector,
@@ -74,4 +76,39 @@ fn get_price_panics_when_the_oracle_has_no_data() {
     let consumer = OracleConsumerContractClient::new(&env, &consumer_id);
 
     consumer.get_price();
+}
+
+#[test]
+fn storage_ttl_extended_on_deploy_and_past_default_ttl() {
+    let env = Env::default();
+    let (consumer, _oracle_id, _asset) = setup(&env);
+
+    // Initial check: constructor extended instance TTL to 30 days (518,400 ledgers)
+    env.as_contract(&consumer.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+    });
+
+    // Advance ledger past default TTL (4095 ledgers) to 10,000 ledgers
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + 10_000);
+
+    // Contract entries survive and get_price/convert still work past default TTL
+    assert_eq!(consumer.get_price(), 12_345_678_901_234);
+    assert_eq!(consumer.convert(&100_000_000_000_000), 12_345_678_901_234);
+
+    // Advance ledger past extension threshold (more than 1 day in ledgers)
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + DAY_IN_LEDGERS + 10);
+
+    // Verify remaining TTL dropped below threshold
+    env.as_contract(&consumer.address, || {
+        assert!(env.storage().instance().get_ttl() < INSTANCE_TTL_THRESHOLD);
+    });
+
+    // Calling get_price on hot path re-extends instance TTL back to 30 days
+    assert_eq!(consumer.get_price(), 12_345_678_901_234);
+
+    env.as_contract(&consumer.address, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+    });
 }

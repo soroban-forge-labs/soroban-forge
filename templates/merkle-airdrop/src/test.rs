@@ -1,7 +1,8 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{token::StellarAssetClient, token::TokenClient, vec, Address, Env};
 
 /// Amounts in the allowlist, one per generated claimant.
@@ -247,3 +248,18 @@ fn sweep_before_deadline_is_rejected() {
     f.contract.sweep();
 }
 
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let f = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    let new_root = BytesN::from_array(&env, &[7; 32]);
+    f.contract.set_root(&new_root);
+    assert_eq!(f.contract.root(), new_root);
+
+    let ttl = env.as_contract(&f.contract_id, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
+}

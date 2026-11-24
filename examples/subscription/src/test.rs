@@ -80,6 +80,8 @@ fn subscribing_charges_the_first_period() {
     assert_eq!(sub.next_charge, START_TS + INTERVAL);
     // The next period is not due yet.
     assert!(!f.contract.is_due(&f.subscriber));
+
+    assert_eq!(env.events().all().len(), 1);
 }
 
 #[test]
@@ -100,6 +102,9 @@ fn charges_once_the_interval_has_elapsed() {
     assert_eq!(sub.charges, 2);
     assert_eq!(sub.next_charge, START_TS + INTERVAL * 2);
     assert!(!f.contract.is_due(&f.subscriber));
+
+    // subscribe + charge events published so far.
+    assert_eq!(env.events().all().len(), 2);
 }
 
 #[test]
@@ -160,6 +165,8 @@ fn cancelling_deactivates_the_subscription() {
     f.contract.cancel(&f.subscriber);
 
     assert!(!f.contract.is_active(&f.subscriber));
+    // subscribe + cancel events published so far.
+    assert_eq!(env.events().all().len(), 2);
     // Even once the interval has elapsed, nothing is due any more.
     env.ledger()
         .with_mut(|li| li.timestamp = START_TS + INTERVAL);

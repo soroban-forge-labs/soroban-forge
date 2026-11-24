@@ -13,7 +13,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 #[contracttype]
 pub enum DataKey {
@@ -105,6 +105,9 @@ impl StreamingContract {
 
         let client = token::Client::new(&env, &token);
         client.transfer(&sender, &env.current_contract_address(), &total_amount);
+
+        env.events()
+            .publish((symbol_short!("fund"), sender), total_amount);
     }
 
     /// Cancel the stream as the sender, settling any unclaimed streamed tokens
@@ -155,6 +158,9 @@ impl StreamingContract {
             }
         }
 
+        env.events()
+            .publish((symbol_short!("cancel"), sender), (recipient_due, sender_refund));
+
         (recipient_due, sender_refund)
     }
 
@@ -172,10 +178,22 @@ impl StreamingContract {
             return total_amount;
         }
 
-        // Linear interpolation: total * (now - start) / (end - start)
+        // Linear interpolation: total * (now - start) / (end - start), computed
+        // without multiplying the (up to i128) total_amount by elapsed directly,
+        // since that product can exceed u128::MAX for large grants over long
+        // durations. Split into a whole-unit term and a remainder term, where
+        // the remainder term only multiplies two u64-derived values together.
         let elapsed = now - start;
         let duration = end - start;
-        (total_amount as u128 * elapsed as u128 / duration as u128) as i128
+        let total_u128 = total_amount as u128;
+        let whole = total_u128 / duration as u128;
+        let remainder = total_u128 % duration as u128;
+        let streamed = whole
+            .checked_mul(elapsed as u128)
+            .and_then(|v| remainder.checked_mul(elapsed as u128).map(|r| (v, r)))
+            .and_then(|(v, r)| v.checked_add(r / duration as u128))
+            .unwrap_or_else(|| panic!("streamed amount calculation overflowed"));
+        streamed as i128
     }
 
     /// Return the amount the recipient can currently claim
@@ -207,6 +225,9 @@ impl StreamingContract {
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token);
         client.transfer(&env.current_contract_address(), &recipient, &claimable);
+
+        env.events()
+            .publish((symbol_short!("claim"), recipient), claimable);
 
         claimable
     }

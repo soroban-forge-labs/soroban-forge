@@ -156,3 +156,17 @@ fn storage_ttl_extended_on_state_changes() {
         assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
     });
 }
+
+#[test]
+fn increment_overflow_returns_error_and_leaves_count_unchanged() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+
+    // Drive the counter to u32::MAX.
+    assert_eq!(client.increment(&(u32::MAX - 1)), u32::MAX - 1);
+    assert_eq!(client.increment(&1), u32::MAX);
+
+    // The next increment would overflow and must fail with a contract error.
+    assert_eq!(client.try_increment(&1), Err(Ok(Error::Overflow)));
+    assert_eq!(client.count(), u32::MAX);
+}

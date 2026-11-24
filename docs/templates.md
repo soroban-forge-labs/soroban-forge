@@ -24,6 +24,14 @@ List them at any time with `soroban-forge templates`:
 - `vesting` – token vesting with cliff + linear release schedule
 - `yield-vault` – ERC4626-style yield vault with proportional shares and vault-favoured rounding
 
+The `crowdfund` template renews its campaign instance on every successful
+state-changing call and each existing pledge entry on writes or hot-path
+reads. Named constants set a 29-day threshold and 30-day extension at
+five-second ledger closes; campaign deadlines still use unix timestamps.
+Missing pledge reads return zero without creating entries. Inactive state
+can still archive and require restoration. See the generated crowdfund
+README for lifetime limits and the regression tests past the default TTL.
+
 ## Variables
 
 Template files (and file names) may contain `{{variable}}` placeholders.

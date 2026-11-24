@@ -36,6 +36,8 @@ pub enum Error {
     AlreadyPaused = 2,
     /// `unpause` was called on a contract that is not paused.
     NotPaused = 3,
+    /// `increment` would push the counter past `u32::MAX`.
+    Overflow = 4,
 }
 
 /// Emitted when the breaker is opened.
@@ -138,7 +140,9 @@ impl PausableContract {
     /// value. Rejected with [`Error::Paused`] while paused.
     pub fn increment(env: Env, by: u32) -> Result<u32, Error> {
         require_not_paused(&env)?;
-        let next = Self::count(env.clone()) + by;
+        let next = Self::count(env.clone())
+            .checked_add(by)
+            .ok_or(Error::Overflow)?;
         env.storage().instance().set(&DataKey::Count, &next);
         extend_instance_ttl(&env);
         Ok(next)
