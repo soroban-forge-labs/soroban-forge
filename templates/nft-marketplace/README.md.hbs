@@ -13,7 +13,9 @@ the Soroban NFT template interface:
    `treasury` address, and a `fee_bps` protocol fee (in basis points, where
    100 bps = 1%). The fee is capped at `MAX_FEE_BPS` = 1000 (10%); the
    constructor and `set_fee_bps` reject anything higher with `InvalidFee`. The
-   admin can update treasury and fee settings as needed.
+   admin can update treasury and fee settings as needed. Admin handover is
+   two-step: `propose_admin(new_admin)` then `accept_admin()` by the new admin;
+   both steps publish an `AdminProposed` / `AdminAccepted` event.
 2. **Listing an NFT** — A seller calls `list(seller, nft_contract, token_id, payment_token, price)`.
    The NFT is transferred from the seller to the marketplace contract for escrow,
    and the protocol fee in force at that moment is stored in the listing.

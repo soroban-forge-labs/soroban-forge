@@ -14,7 +14,9 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
+use soroban_sdk::{
+    contract, contractevent, contractimpl, contracttype, symbol_short, token, Address, Env,
+};
 
 /// Ledgers per day, assuming ~5s per ledger.
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -34,6 +36,7 @@ fn extend_instance_ttl(env: &Env) {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Token,
     Beneficiary,
     Start,
@@ -43,6 +46,33 @@ pub enum DataKey {
     Claimed,
     Funded,
     Revoked,
+}
+
+/// Emitted when the admin proposes a successor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the admin cancels a pending proposal.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
 }
 
 #[contract]
@@ -172,6 +202,60 @@ impl VestingContract {
             .publish((symbol_short!("revoke"), admin), unvested);
 
         unvested
+    }
+
+    /// Return the current admin.
+    pub fn admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Return the pending admin, if a handover has been proposed.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Step one of a handover: the current admin nominates `new_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed { admin, new_admin }.publish(&env);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic!("no pending admin"));
+        pending.require_auth();
+        extend_instance_ttl(&env);
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
+    }
+
+    /// The current admin withdraws a pending proposal.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        extend_instance_ttl(&env);
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic!("no pending admin"));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled { admin, pending }.publish(&env);
     }
 
     /// Return the amount of tokens vested so far according to the schedule.

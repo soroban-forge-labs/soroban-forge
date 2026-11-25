@@ -1,7 +1,19 @@
 use super::*;
 use soroban_sdk::testutils::storage::Instance as _;
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{token::StellarAssetClient, token::TokenClient, Address, Env};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
+use soroban_sdk::{
+    token::StellarAssetClient, token::TokenClient, Address, Env, Symbol, TryFromVal, Val, Vec,
+};
+
+/// Decode the last published event into (name, topic address, data values).
+fn last_event(env: &Env) -> (Symbol, Address, Vec<Val>) {
+    let events = env.events().all();
+    let (_contract, topics, data) = events.iter().last().unwrap();
+    let name = Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
+    let to = Address::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+    let data = Vec::<Val>::try_from_val(env, &data).unwrap();
+    (name, to, data)
+}
 
 /// A registered Stellar Asset Contract plus a client to mint with.
 struct Tok<'a> {
@@ -274,4 +286,36 @@ fn instance_storage_outlives_the_default_ttl() {
 
     let ttl = env.as_contract(&pool.address, || env.storage().instance().get_ttl());
     assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
+}
+
+#[test]
+fn deposit_swap_withdraw_publish_contractevents() {
+    let env = Env::default();
+    let (pool, token_a, token_b, alice) = setup(&env);
+    token_a.admin.mint(&alice, &2_000);
+    token_b.admin.mint(&alice, &2_000);
+
+    let minted = pool.deposit(&alice, &1_000, &1_000, &1_000, &1_000);
+    let (name, to, data) = last_event(&env);
+    assert_eq!(name, Symbol::new(&env, "deposit"));
+    assert_eq!(to, alice);
+    assert_eq!(i128::try_from_val(&env, &data.get(0).unwrap()).unwrap(), 1_000);
+    assert_eq!(i128::try_from_val(&env, &data.get(1).unwrap()).unwrap(), 1_000);
+    assert_eq!(i128::try_from_val(&env, &data.get(2).unwrap()).unwrap(), minted);
+
+    let spent = pool.swap(&alice, &false, &100, &1_000);
+    let (name, to, data) = last_event(&env);
+    assert_eq!(name, Symbol::new(&env, "swap"));
+    assert_eq!(to, alice);
+    assert!(!bool::try_from_val(&env, &data.get(0).unwrap()).unwrap());
+    assert_eq!(i128::try_from_val(&env, &data.get(1).unwrap()).unwrap(), spent);
+    assert_eq!(i128::try_from_val(&env, &data.get(2).unwrap()).unwrap(), 100);
+
+    let (out_a, out_b) = pool.withdraw(&alice, &minted, &1, &1);
+    let (name, to, data) = last_event(&env);
+    assert_eq!(name, Symbol::new(&env, "withdraw"));
+    assert_eq!(to, alice);
+    assert_eq!(i128::try_from_val(&env, &data.get(0).unwrap()).unwrap(), minted);
+    assert_eq!(i128::try_from_val(&env, &data.get(1).unwrap()).unwrap(), out_a);
+    assert_eq!(i128::try_from_val(&env, &data.get(2).unwrap()).unwrap(), out_b);
 }

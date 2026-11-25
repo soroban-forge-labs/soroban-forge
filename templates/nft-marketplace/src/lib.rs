@@ -14,7 +14,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
     symbol_short, token, Address, Env,
 };
 
@@ -53,6 +53,25 @@ pub enum Error {
     ListingNotFound = 3,
     InvalidPrice = 4,
     InvalidFee = 5,
+    NoPendingAdmin = 6,
+}
+
+/// Emitted when the admin proposes a successor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
 }
 
 #[contracttype]
@@ -72,6 +91,7 @@ pub struct Listing {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Treasury,
     FeeBps,
     Listing(Address, u32),
@@ -125,13 +145,40 @@ impl NftMarketplaceContract {
         env.storage().instance().get(&DataKey::FeeBps).unwrap()
     }
 
-    /// Update the marketplace admin address.
+    /// Return the pending admin, if a handover has been proposed.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Step one of an admin handover: the current admin nominates `new_admin`.
     /// Requires current admin authorization.
-    pub fn set_admin(env: Env, new_admin: Address) {
+    pub fn propose_admin(env: Env, new_admin: Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         extend_instance_ttl(&env);
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed { admin, new_admin }.publish(&env);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        pending.require_auth();
+        extend_instance_ttl(&env);
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
     }
 
     /// Update the treasury address.

@@ -3,7 +3,10 @@ extern crate std;
 use super::*;
 use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env};
+use soroban_sdk::testutils::Events as _;
+use soroban_sdk::{
+    testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env, IntoVal,
+};
 
 struct Tok<'a> {
     address: Address,
@@ -267,4 +270,51 @@ fn vested_amount_does_not_overflow_for_huge_grant_over_long_duration() {
     env.ledger()
         .with_mut(|li| li.timestamp = start_ts + vesting_duration);
     assert_eq!(contract.get_vested_amount(), huge_amount);
+}
+
+#[test]
+fn admin_handover_propose_and_accept() {
+    let env = Env::default();
+    let (contract, _token, admin, _b, _ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+    contract.propose_admin(&new_admin);
+    assert_eq!(contract.pending_admin(), Some(new_admin.clone()));
+    assert_eq!(contract.admin(), admin);
+    assert_eq!(env.events().all().len(), 1);
+    contract.accept_admin();
+    assert_eq!(contract.admin(), new_admin);
+    assert_eq!(contract.pending_admin(), None);
+    assert_eq!(env.events().all().len(), 1);
+}
+
+#[test]
+fn admin_can_cancel_proposal() {
+    let env = Env::default();
+    let (contract, _token, admin, _b, _ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+    contract.propose_admin(&new_admin);
+    contract.cancel_admin_proposal();
+    assert_eq!(contract.pending_admin(), None);
+    assert_eq!(contract.admin(), admin);
+    assert!(contract.try_accept_admin().is_err());
+}
+
+#[test]
+#[should_panic(expected = "HostError")]
+fn non_pending_address_cannot_accept() {
+    let env = Env::default();
+    let (contract, _token, admin, _b, _ts) = setup(&env);
+    let new_admin = Address::generate(&env);
+    // Authorize only the proposal; the pending admin's auth is never granted.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract.address,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    contract.propose_admin(&new_admin);
+    contract.accept_admin();
 }
