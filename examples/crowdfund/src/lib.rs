@@ -7,9 +7,36 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
     Address, Env,
 };
+
+/// Emitted when a backer pledges. Topics: ("pledge", from); data: amount.
+#[contractevent(topics = ["pledge"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pledge {
+    #[topic]
+    pub from: Address,
+    pub amount: i128,
+}
+
+/// Emitted when the owner claims funds. Topics: ("claim", owner); data: total.
+#[contractevent(topics = ["claim"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Claim {
+    #[topic]
+    pub owner: Address,
+    pub total: i128,
+}
+
+/// Emitted when a backer is refunded. Topics: ("refund", to); data: amount.
+#[contractevent(topics = ["refund"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Refund {
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+}
 
 // Ledger lifetimes, independent of the campaign's timestamp-based deadline.
 // Renew below 29 days to retain 30 days at five-second ledger closes.
@@ -140,8 +167,7 @@ impl CrowdfundContract {
             .set(&DataKey::TotalPledged, &(total_pledged(&env) + amount));
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("pledge"), from), amount);
+        Pledge { from, amount }.publish(&env);
     }
 
     /// Owner claims the escrowed funds after a successful campaign.
@@ -167,7 +193,7 @@ impl CrowdfundContract {
             &total,
         );
         extend_instance_ttl(&env);
-        env.events().publish((symbol_short!("claim"), owner), total);
+        Claim { owner, total }.publish(&env);
     }
 
     /// Refund `to`'s pledge after a failed campaign. Anyone may trigger a
@@ -197,7 +223,7 @@ impl CrowdfundContract {
             &amount,
         );
         extend_instance_ttl(&env);
-        env.events().publish((symbol_short!("refund"), to), amount);
+        Refund { to, amount }.publish(&env);
     }
 
     // --- read-only getters ---
