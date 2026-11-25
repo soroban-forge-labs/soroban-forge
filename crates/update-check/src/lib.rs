@@ -175,7 +175,6 @@ pub fn spawn(
         let path = state_path()?;
         let state = load_state(&path);
         let current_secs = now_secs();
-        let state = load_state(&path);
 
         if current_secs.saturating_sub(state.last_checked_secs) < CHECK_INTERVAL_SECS {
             // Within the throttle window — use cached state to decide whether to hint.
