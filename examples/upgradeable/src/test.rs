@@ -1,6 +1,7 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Bytes, BytesN, Env, IntoVal};
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
+use soroban_sdk::{Address, Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal};
 
 fn setup(env: &Env) -> (UpgradeableContractClient<'_>, Address) {
     env.mock_all_auths();
@@ -24,11 +25,56 @@ fn constructor_sets_admin() {
 }
 
 #[test]
+fn version_starts_at_one() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    assert_eq!(client.version(), 1);
+}
+
+#[test]
 fn admin_can_upgrade() {
     let env = Env::default();
     let (client, _admin) = setup(&env);
     let wasm_hash = test_wasm_hash(&env);
     client.upgrade(&wasm_hash);
+}
+
+#[test]
+fn upgrade_emits_event_with_new_wasm_hash() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let wasm_hash = test_wasm_hash(&env);
+
+    client.upgrade(&wasm_hash);
+
+    let events = env.events().all();
+    let mut found = false;
+    for event in events.iter() {
+        let (_contract, topics, data) = event;
+        // The first topic is the event name symbol.
+        if let Some(topic) = topics.get(0) {
+            let name: Result<Symbol, _> = topic.try_into_val(&env);
+            if let Ok(name) = name {
+                if name == Symbol::new(&env, "Upgraded") {
+                    let emitted_hash: BytesN<32> = data.try_into_val(&env).unwrap();
+                    assert_eq!(emitted_hash, wasm_hash);
+                    found = true;
+                }
+            }
+        }
+    }
+    assert!(found, "expected an Upgraded event to be published");
+}
+
+#[test]
+fn upgrade_bumps_version() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let wasm_hash = test_wasm_hash(&env);
+
+    assert_eq!(client.version(), 1);
+    client.upgrade(&wasm_hash);
+    assert_eq!(client.version(), 2);
 }
 
 #[test]
@@ -98,4 +144,33 @@ fn non_pending_address_cannot_accept() {
     }]);
     client.propose_admin(&new_admin);
     client.accept_admin();
+}
+
+fn instance_ttl(env: &Env, client: &UpgradeableContractClient<'_>) -> u32 {
+    env.as_contract(&client.address, || env.storage().instance().get_ttl())
+}
+
+#[test]
+fn instance_storage_survives_past_the_default_ttl() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let default_ttl = env.ledger().get().min_persistent_entry_ttl;
+    // Inspect before advancing so recording-mode auto-restore cannot mask an expired entry.
+    assert!(instance_ttl(&env, &client) > default_ttl);
+
+    env.ledger()
+        .with_mut(|li| li.sequence_number += default_ttl + 1);
+
+    assert_eq!(client.admin(), admin);
+    assert_eq!(client.version(), 1);
+
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    assert!(instance_ttl(&env, &client) >= INSTANCE_TTL_THRESHOLD);
+    client.accept_admin();
+    assert_eq!(client.admin(), new_admin);
+
+    client.upgrade(&test_wasm_hash(&env));
+    assert_eq!(client.version(), 2);
+    assert!(instance_ttl(&env, &client) >= INSTANCE_TTL_THRESHOLD);
 }

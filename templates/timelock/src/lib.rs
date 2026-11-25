@@ -72,6 +72,52 @@ enum DataKey {
     Op(BytesN<32>),
 }
 
+const LEDGERS_PER_DAY: u32 = 17_280;
+/// Renew the instance (admin, pending admin, minimum delay) once fewer than this many ledgers remain.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
+/// Renew the instance to this many ledgers.
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 60 * LEDGERS_PER_DAY;
+/// Renew a persistent entry (role grant or queued operation) once fewer than this many ledgers remain.
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
+/// Renew a persistent entry to this many ledgers.
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 60 * LEDGERS_PER_DAY;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
+fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+/// Writes a role grant and keeps it alive.
+fn grant(env: &Env, role: Role, account: Address) {
+    let key = DataKey::Role(role, account);
+    env.storage().persistent().set(&key, &true);
+    extend_persistent_ttl(env, &key);
+}
+
+/// Writes an operation and keeps it alive.
+fn write_operation(env: &Env, id: &BytesN<32>, operation: &Operation) {
+    let key = DataKey::Op(id.clone());
+    env.storage().persistent().set(&key, operation);
+    extend_persistent_ttl(env, &key);
+}
+
+/// Reads an operation on a hot path and renews its TTL when present.
+fn read_operation(env: &Env, id: &BytesN<32>) -> Option<Operation> {
+    let key = DataKey::Op(id.clone());
+    let operation: Option<Operation> = env.storage().persistent().get(&key);
+    if operation.is_some() {
+        extend_persistent_ttl(env, &key);
+    }
+    operation
+}
+
 #[contract]
 pub struct TimelockContract;
 
@@ -93,22 +139,17 @@ impl TimelockContract {
         env.storage().instance().set(&DataKey::MinDelay, &min_delay);
 
         // Grant Admin role to admin address
-        env.storage()
-            .persistent()
-            .set(&DataKey::Role(Role::Admin, admin.clone()), &true);
+        grant(&env, Role::Admin, admin.clone());
 
         for proposer in proposers.iter() {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Role(Role::Proposer, proposer), &true);
+            grant(&env, Role::Proposer, proposer);
         }
 
         for executor in executors.iter() {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Role(Role::Executor, executor), &true);
+            grant(&env, Role::Executor, executor);
         }
 
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -129,6 +170,7 @@ impl TimelockContract {
         }
 
         env.storage().instance().set(&DataKey::MinDelay, &new_delay);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -141,6 +183,7 @@ impl TimelockContract {
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("adm_prop"), caller), new_admin);
@@ -172,11 +215,10 @@ impl TimelockContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Role(Role::Admin, old_admin.clone()));
-        env.storage()
-            .persistent()
-            .set(&DataKey::Role(Role::Admin, caller.clone()), &true);
+        grant(&env, Role::Admin, caller.clone());
         env.storage().instance().set(&DataKey::Admin, &caller);
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("adm_acc"), old_admin), caller);
@@ -193,6 +235,7 @@ impl TimelockContract {
             return Err(TimelockError::NoPendingAdmin);
         }
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        extend_instance_ttl(&env);
 
         env.events().publish((symbol_short!("adm_canc"),), caller);
 
@@ -217,11 +260,15 @@ impl TimelockContract {
     }
 
     /// Check whether an account has a specific role.
+    ///
+    /// Every role-gated call reads its grant through here, so a present grant has its TTL renewed.
     pub fn has_role(env: Env, role: Role, account: Address) -> bool {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Role(role, account))
-            .unwrap_or(false)
+        let key = DataKey::Role(role, account);
+        let granted = env.storage().persistent().get(&key).unwrap_or(false);
+        if granted {
+            extend_persistent_ttl(&env, &key);
+        }
+        granted
     }
 
     /// Grant a role to an account (admin only).
@@ -237,9 +284,8 @@ impl TimelockContract {
             return Err(TimelockError::Unauthorized);
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Role(role, account), &true);
+        grant(&env, role, account);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -259,6 +305,7 @@ impl TimelockContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Role(role, account));
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -386,9 +433,8 @@ impl TimelockContract {
             predecessor: None,
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Op(id.clone()), &operation);
+        write_operation(&env, &id, &operation);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("queue"), id.clone()), (ready_at, target));
@@ -445,9 +491,8 @@ impl TimelockContract {
             predecessor: predecessor.clone(),
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Op(id.clone()), &operation);
+        write_operation(&env, &id, &operation);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("queue"), id.clone()), (ready_at, first.target.clone()));
@@ -482,11 +527,8 @@ impl TimelockContract {
             salt,
         );
 
-        let mut operation: Operation = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Op(id.clone()))
-            .ok_or(TimelockError::NotQueued)?;
+        let mut operation: Operation =
+            read_operation(&env, &id).ok_or(TimelockError::NotQueued)?;
 
         if operation.cancelled {
             return Err(TimelockError::AlreadyCancelled);
@@ -501,20 +543,16 @@ impl TimelockContract {
         }
 
         if let Some(predecessor) = operation.predecessor.clone() {
-            let predecessor_op: Operation = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Op(predecessor))
-                .ok_or(TimelockError::NotQueued)?;
+            let predecessor_op: Operation =
+                read_operation(&env, &predecessor).ok_or(TimelockError::NotQueued)?;
             if predecessor_op.cancelled || !predecessor_op.executed {
                 return Err(TimelockError::NotReady);
             }
         }
 
         operation.executed = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Op(id.clone()), &operation);
+        write_operation(&env, &id, &operation);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("exec"), id), target.clone());
@@ -546,11 +584,8 @@ impl TimelockContract {
 
         let id = Self::hash_batch(env.clone(), calls.clone(), predecessor.clone(), salt);
 
-        let mut operation: Operation = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Op(id.clone()))
-            .ok_or(TimelockError::NotQueued)?;
+        let mut operation: Operation =
+            read_operation(&env, &id).ok_or(TimelockError::NotQueued)?;
 
         if operation.cancelled {
             return Err(TimelockError::AlreadyCancelled);
@@ -565,20 +600,16 @@ impl TimelockContract {
         }
 
         if let Some(predecessor_id) = predecessor.clone() {
-            let predecessor_op: Operation = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Op(predecessor_id))
-                .ok_or(TimelockError::NotQueued)?;
+            let predecessor_op: Operation =
+                read_operation(&env, &predecessor_id).ok_or(TimelockError::NotQueued)?;
             if predecessor_op.cancelled || !predecessor_op.executed {
                 return Err(TimelockError::NotReady);
             }
         }
 
         operation.executed = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Op(id.clone()), &operation);
+        write_operation(&env, &id, &operation);
+        extend_instance_ttl(&env);
 
         env.events().publish((symbol_short!("exec"), id), calls.clone());
 
@@ -607,11 +638,8 @@ impl TimelockContract {
             return Err(TimelockError::Unauthorized);
         }
 
-        let mut operation: Operation = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Op(id.clone()))
-            .ok_or(TimelockError::NotQueued)?;
+        let mut operation: Operation =
+            read_operation(&env, &id).ok_or(TimelockError::NotQueued)?;
 
         if operation.executed {
             return Err(TimelockError::AlreadyExecuted);
@@ -622,9 +650,8 @@ impl TimelockContract {
         }
 
         operation.cancelled = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Op(id.clone()), &operation);
+        write_operation(&env, &id, &operation);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("cancel"), id), caller);
