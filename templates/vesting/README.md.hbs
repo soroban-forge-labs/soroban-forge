@@ -21,6 +21,15 @@ time according to a fixed schedule:
 - `fund` - topics ("fund", admin), data: amount funded
 - `claim` - topics ("claim", beneficiary), data: amount claimed
 - `revoke` - topics ("revoke", admin), data: unvested amount returned
+- `AdminProposed` - topic admin, data: new_admin
+- `AdminAccepted` - topic old_admin, data: new_admin
+- `AdminProposalCancelled` - topic admin, data: pending
+
+## Admin handover
+
+Admin rotation is two-step: the current admin calls `propose_admin(new_admin)`,
+then `new_admin` calls `accept_admin()`. The current admin may call
+`cancel_admin_proposal()` before acceptance.
 
 ## Develop
 
