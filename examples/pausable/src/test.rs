@@ -156,3 +156,76 @@ fn storage_ttl_extended_on_state_changes() {
         assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
     });
 }
+
+#[test]
+fn increment_overflow_returns_error_and_leaves_count_unchanged() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+
+    // Drive the counter to u32::MAX.
+    assert_eq!(client.increment(&(u32::MAX - 1)), u32::MAX - 1);
+    assert_eq!(client.increment(&1), u32::MAX);
+
+    // The next increment would overflow and must fail with a contract error.
+    assert_eq!(client.try_increment(&1), Err(Ok(Error::Overflow)));
+    assert_eq!(client.count(), u32::MAX);
+}
+
+#[test]
+fn propose_sets_pending_admin() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    assert_eq!(client.pending_admin(), Some(new_admin));
+    assert_eq!(client.admin(), admin);
+}
+
+#[test]
+fn pending_admin_can_accept() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+    assert_eq!(client.admin(), new_admin);
+    assert_eq!(client.pending_admin(), None);
+}
+
+#[test]
+fn admin_can_cancel_proposal() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    client.cancel_admin_proposal();
+    assert_eq!(client.pending_admin(), None);
+    assert_eq!(client.admin(), admin);
+    assert_eq!(
+        client.try_accept_admin().unwrap_err(),
+        Ok(Error::NoPendingAdmin)
+    );
+}
+
+#[test]
+#[should_panic(expected = "HostError")]
+fn non_pending_address_cannot_accept() {
+    use soroban_sdk::IntoVal as _;
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(PausableContract, (admin.clone(),));
+    let client = PausableContractClient::new(&env, &contract_id);
+    let new_admin = Address::generate(&env);
+    // Authorize only the proposal; the pending admin's auth is never granted.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+}
