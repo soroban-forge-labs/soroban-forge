@@ -16,9 +16,42 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
     Address, Env,
 };
+
+/// Emitted when liquidity is added. Topics: ("deposit", to).
+#[contractevent(topics = ["deposit"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deposit {
+    #[topic]
+    pub to: Address,
+    pub amount_a: i128,
+    pub amount_b: i128,
+    pub shares: i128,
+}
+
+/// Emitted on a swap. Topics: ("swap", to).
+#[contractevent(topics = ["swap"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Swap {
+    #[topic]
+    pub to: Address,
+    pub buy_a: bool,
+    pub in_amount: i128,
+    pub out_amount: i128,
+}
+
+/// Emitted when liquidity is removed. Topics: ("withdraw", to).
+#[contractevent(topics = ["withdraw"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Withdraw {
+    #[topic]
+    pub to: Address,
+    pub shares: i128,
+    pub amount_a: i128,
+    pub amount_b: i128,
+}
 
 /// Swap fee numerator/denominator: 0.3% (997/1000), the Uniswap-v2 standard.
 /// The 0.3% stays in the pool, so `k` grows monotonically with trading.
@@ -309,8 +342,13 @@ impl LiquidityPool {
         let new_reserve_b = checked_add(&env, reserve_b, final_b);
         put_reserves(&env, new_reserve_a, new_reserve_b);
         mint_shares(&env, &to, minted);
-        env.events()
-            .publish((symbol_short!("deposit"), to), (final_a, final_b, minted));
+        Deposit {
+            to,
+            amount_a: final_a,
+            amount_b: final_b,
+            shares: minted,
+        }
+        .publish(&env);
         minted
     }
 
@@ -380,8 +418,13 @@ impl LiquidityPool {
                 reserve_b - out,
             );
         }
-        env.events()
-            .publish((symbol_short!("swap"), to), (buy_a, in_amount, out));
+        Swap {
+            to,
+            buy_a,
+            in_amount,
+            out_amount: out,
+        }
+        .publish(&env);
         in_amount
     }
 
@@ -421,10 +464,13 @@ impl LiquidityPool {
         token::Client::new(&env, &get_token_b(&env)).transfer(&pool, &to, &out_b);
 
         put_reserves(&env, reserve_a - out_a, reserve_b - out_b);
-        env.events().publish(
-            (symbol_short!("withdraw"), to),
-            (share_amount, out_a, out_b),
-        );
+        Withdraw {
+            to,
+            shares: share_amount,
+            amount_a: out_a,
+            amount_b: out_b,
+        }
+        .publish(&env);
         (out_a, out_b)
     }
 
