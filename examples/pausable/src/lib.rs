@@ -36,6 +36,10 @@ pub enum Error {
     AlreadyPaused = 2,
     /// `unpause` was called on a contract that is not paused.
     NotPaused = 3,
+    /// `increment` would push the counter past `u32::MAX`.
+    Overflow = 4,
+    /// `accept_admin` or `cancel_admin_proposal` called with no proposal pending.
+    NoPendingAdmin = 5,
 }
 
 /// Emitted when the breaker is opened.
@@ -58,6 +62,7 @@ pub struct Unpaused {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Paused,
     Count,
 }
@@ -85,6 +90,33 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
     }
 }
 
+/// Emitted when the admin proposes a successor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the admin cancels a pending proposal.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
+}
+
 #[contract]
 pub struct PausableContract;
 
@@ -101,6 +133,54 @@ impl PausableContract {
     /// Return the admin address.
     pub fn admin(env: Env) -> Address {
         read_admin(&env)
+    }
+
+    /// Return the pending admin, if a handover has been proposed.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Step one of a handover: the current admin nominates `new_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed { admin, new_admin }.publish(&env);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// The current admin withdraws a pending proposal.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled { admin, pending }.publish(&env);
+        Ok(())
     }
 
     /// Whether guarded entrypoints are currently rejecting calls.
@@ -138,7 +218,9 @@ impl PausableContract {
     /// value. Rejected with [`Error::Paused`] while paused.
     pub fn increment(env: Env, by: u32) -> Result<u32, Error> {
         require_not_paused(&env)?;
-        let next = Self::count(env.clone()) + by;
+        let next = Self::count(env.clone())
+            .checked_add(by)
+            .ok_or(Error::Overflow)?;
         env.storage().instance().set(&DataKey::Count, &next);
         extend_instance_ttl(&env);
         Ok(next)
