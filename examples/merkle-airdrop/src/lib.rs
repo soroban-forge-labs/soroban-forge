@@ -21,7 +21,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    xdr::ToXdr, Address, Bytes, BytesN, Env, Vec,
 };
 
 /// Claim markers are persistent (they must outlive the instance), so they are
@@ -40,9 +41,20 @@ fn extend_instance(env: &Env) {
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    /// `accept_admin` or `cancel_admin_proposal` was called with no admin
+    /// handover in progress.
+    NoPendingAdmin = 1,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
+    /// Admin proposed by `propose_admin`, not yet confirmed by `accept_admin`.
+    PendingAdmin,
     Token,
     Root,
     /// Optional claim deadline timestamp; when set, claims close and `sweep`
@@ -104,6 +116,62 @@ impl MerkleAirdropContract {
         Self::admin(env.clone()).require_auth();
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Root, &root);
+    }
+
+    /// Start an admin handover by naming `new_admin` (current admin only).
+    ///
+    /// The admin does not change until `new_admin` calls `accept_admin`, so a
+    /// typo cannot lock the contract. Proposing again replaces the pending
+    /// address. Publishes `adm_prop` with `(current_admin, new_admin)`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_prop"), admin), new_admin);
+    }
+
+    /// Finish the handover: the pending admin takes over (pending admin only).
+    ///
+    /// Fails with `NoPendingAdmin` when nothing was proposed. Only the
+    /// proposed address can authorize this call. Publishes `adm_acc` with
+    /// `(old_admin, new_admin)`.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        pending.require_auth();
+        let old_admin = Self::admin(env.clone());
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_acc"), old_admin), pending);
+    }
+
+    /// Withdraw a pending proposal (current admin only).
+    ///
+    /// Fails with `NoPendingAdmin` when nothing is pending. Publishes
+    /// `adm_canc` with the address that was proposed.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_canc"), admin), pending);
+    }
+
+    /// The address proposed as the next admin, if a handover is in progress.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// The merkle root currently accepted by `claim`.

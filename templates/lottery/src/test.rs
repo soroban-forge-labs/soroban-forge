@@ -1,8 +1,8 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{testutils::Ledger, Address, Bytes, BytesN, Env};
+use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::{testutils::Ledger, Address, Bytes, BytesN, Env, IntoVal};
 
 fn commit(env: &Env, entrant: &Address, nonce: &BytesN<32>) -> BytesN<32> {
     let mut buf = Bytes::new(env);
@@ -288,4 +288,108 @@ fn storage_survives_past_default_ttl() {
 
     // Verify that trying to draw again still fails (state is preserved).
     assert!(contract.try_draw().is_err());
+}
+
+#[test]
+fn propose_sets_pending_admin_and_publishes_event() {
+    let env = Env::default();
+    let (contract, admin, _, _) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+
+    assert_eq!(contract.pending_admin(), Some(new_admin.clone()));
+    assert_eq!(contract.admin(), admin.clone());
+    assert_eq!(env.events().all().len(), 1);
+}
+
+#[test]
+fn accept_transfers_admin_clears_pending_and_publishes_event() {
+    let env = Env::default();
+    let (contract, admin, _, _) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+    contract.accept_admin();
+
+    assert_eq!(contract.admin(), new_admin.clone());
+    assert_eq!(contract.pending_admin(), None);
+    assert_eq!(env.events().all().len(), 1);
+}
+
+#[test]
+fn cancel_clears_pending_and_publishes_event() {
+    let env = Env::default();
+    let (contract, admin, _, _) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    contract.propose_admin(&new_admin);
+    contract.cancel_admin_proposal();
+
+    assert_eq!(contract.pending_admin(), None);
+    assert_eq!(contract.admin(), admin.clone());
+    assert_eq!(env.events().all().len(), 1);
+    // The cancelled proposal can no longer be accepted.
+    assert_eq!(
+        contract.try_accept_admin().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+}
+
+#[test]
+fn accept_without_proposal_fails() {
+    let env = Env::default();
+    let (contract, _, _, _) = setup(&env);
+    assert_eq!(
+        contract.try_accept_admin().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+    assert_eq!(
+        contract.try_cancel_admin_proposal().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+}
+
+#[test]
+fn non_pending_address_cannot_accept() {
+    let env = Env::default();
+    let (contract, admin, _, _) = setup(&env);
+    let new_admin = Address::generate(&env);
+    contract.propose_admin(&new_admin);
+
+    // Only a stranger (not the pending admin) authorizes this call.
+    let stranger = Address::generate(&env);
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &stranger,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(contract.try_accept_admin().is_err());
+    assert_eq!(contract.admin(), admin);
+    assert_eq!(contract.pending_admin(), Some(new_admin));
+}
+
+#[test]
+fn only_current_admin_can_propose() {
+    let env = Env::default();
+    let (contract, admin, _, _) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    let stranger = Address::generate(&env);
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &stranger,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract.address,
+            fn_name: "propose_admin",
+            args: (&new_admin,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(contract.try_propose_admin(&new_admin).is_err());
+    assert_eq!(contract.admin(), admin);
+    assert_eq!(contract.pending_admin(), None);
 }
