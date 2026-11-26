@@ -1,9 +1,10 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
 use soroban_sdk::{
-    contract, contractimpl, token::StellarAssetClient, token::TokenClient, Address, Env, String,
+    contract, contractimpl, token::StellarAssetClient, token::TokenClient, Address, Env, IntoVal, String,
 };
 
 /// Mock NFT contract implementing the `nft` template interface.
@@ -293,8 +294,53 @@ fn test_admin_updates() {
     ctx.marketplace.set_treasury(&new_treasury);
     assert_eq!(ctx.marketplace.treasury(), new_treasury);
 
-    ctx.marketplace.set_admin(&new_admin);
+}
+
+#[test]
+fn test_admin_handover_two_step() {
+    let env = Env::default();
+    let ctx = setup(&env, 250);
+    let old_admin = ctx.marketplace.admin();
+    let new_admin = Address::generate(&env);
+
+    ctx.marketplace.propose_admin(&new_admin);
+    assert_eq!(env.events().all().len(), 1);
+    assert_eq!(ctx.marketplace.pending_admin(), Some(new_admin.clone()));
+    assert_eq!(ctx.marketplace.admin(), old_admin);
+
+    ctx.marketplace.accept_admin();
+    assert_eq!(env.events().all().len(), 1);
     assert_eq!(ctx.marketplace.admin(), new_admin);
+    assert_eq!(ctx.marketplace.pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_accept_admin_without_proposal_fails() {
+    let env = Env::default();
+    let ctx = setup(&env, 250);
+    ctx.marketplace.accept_admin();
+}
+
+#[test]
+#[should_panic(expected = "HostError")]
+fn test_wrong_address_cannot_accept_admin() {
+    let env = Env::default();
+    let ctx = setup(&env, 250);
+    let admin = ctx.marketplace.admin();
+    let new_admin = Address::generate(&env);
+    // Authorize only the proposal; the pending admin's auth is never granted.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &ctx.marketplace.address,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    ctx.marketplace.propose_admin(&new_admin);
+    ctx.marketplace.accept_admin();
 }
 
 #[test]
@@ -475,4 +521,19 @@ fn test_set_fee_bps_accepts_cap_and_rejects_above_it() {
 fn test_constructor_rejects_fee_above_cap() {
     let env = Env::default();
     setup(&env, MAX_FEE_BPS + 1);
+}
+
+#[test]
+fn test_instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let ctx = setup(&env, 250);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    ctx.marketplace.set_fee_bps(&500);
+    assert_eq!(ctx.marketplace.fee_bps(), 500);
+
+    let ttl = env.as_contract(&ctx.marketplace_id, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
 }

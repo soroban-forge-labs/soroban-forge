@@ -20,7 +20,9 @@
 
 #![no_std]
 
-use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec, panic_with_error};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -33,6 +35,9 @@ pub enum Error {
     InvalidProof = 5,
     ClaimWindowIsStillOpen = 6,
     NothingToSweep = 7,
+    /// `accept_admin` or `cancel_admin_proposal` was called with no admin
+    /// handover in progress.
+    NoPendingAdmin = 8,
 }
 
 
@@ -41,9 +46,22 @@ pub enum Error {
 const CLAIM_TTL_THRESHOLD: u32 = 518_400; // ~30 days of ledgers
 const CLAIM_TTL_EXTEND_TO: u32 = 1_036_800; // ~60 days of ledgers
 
+/// Instance storage (admin, token, root, deadline) is bumped on every
+/// state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 501_120; // ~29 days of ledgers
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 518_400; // ~30 days of ledgers
+
+fn extend_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
+    /// Admin proposed by `propose_admin`, not yet confirmed by `accept_admin`.
+    PendingAdmin,
     Token,
     Root,
     /// Optional claim deadline timestamp; when set, claims close and `sweep`
@@ -76,12 +94,14 @@ impl MerkleAirdropContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Root, &root);
+        extend_instance(&env);
     }
 
     /// Set or update the claim deadline timestamp (admin only).
     /// While `env.ledger().timestamp() < deadline`, `sweep` is rejected.
     pub fn set_deadline(env: Env, deadline: u64) {
         Self::admin(env.clone()).require_auth();
+        extend_instance(&env);
         env.storage().instance().set(&DataKey::Deadline, &deadline);
     }
 
@@ -89,6 +109,7 @@ impl MerkleAirdropContract {
     pub fn fund(env: Env, amount: i128) {
         let admin = Self::admin(env.clone());
         admin.require_auth();
+        extend_instance(&env);
         if amount <= 0 {
             panic_with_error!(&env, Error::AmountMustBePositive);
         }
@@ -100,7 +121,64 @@ impl MerkleAirdropContract {
     /// Replace the merkle root, e.g. for a second airdrop round (admin only).
     pub fn set_root(env: Env, root: BytesN<32>) {
         Self::admin(env.clone()).require_auth();
+        extend_instance(&env);
         env.storage().instance().set(&DataKey::Root, &root);
+    }
+
+    /// Start an admin handover by naming `new_admin` (current admin only).
+    ///
+    /// The admin does not change until `new_admin` calls `accept_admin`, so a
+    /// typo cannot lock the contract. Proposing again replaces the pending
+    /// address. Publishes `adm_prop` with `(current_admin, new_admin)`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_prop"), admin), new_admin);
+    }
+
+    /// Finish the handover: the pending admin takes over (pending admin only).
+    ///
+    /// Fails with `NoPendingAdmin` when nothing was proposed. Only the
+    /// proposed address can authorize this call. Publishes `adm_acc` with
+    /// `(old_admin, new_admin)`.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        pending.require_auth();
+        let old_admin = Self::admin(env.clone());
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_acc"), old_admin), pending);
+    }
+
+    /// Withdraw a pending proposal (current admin only).
+    ///
+    /// Fails with `NoPendingAdmin` when nothing is pending. Publishes
+    /// `adm_canc` with the address that was proposed.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_canc"), admin), pending);
+    }
+
+    /// The address proposed as the next admin, if a handover is in progress.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// The merkle root currently accepted by `claim`.
@@ -155,6 +233,7 @@ impl MerkleAirdropContract {
     /// claimed or the proof does not reproduce the root.
     pub fn claim(env: Env, claimant: Address, amount: i128, proof: Vec<BytesN<32>>) -> i128 {
         claimant.require_auth();
+        extend_instance(&env);
         if let Some(deadline) = env.storage().instance().get::<_, u64>(&DataKey::Deadline) {
             if env.ledger().timestamp() >= deadline {
                 panic_with_error!(&env, Error::ClaimWindowHasClosed);
@@ -192,6 +271,7 @@ impl MerkleAirdropContract {
     pub fn sweep(env: Env) -> i128 {
         let admin = Self::admin(env.clone());
         admin.require_auth();
+        extend_instance(&env);
 
         if let Some(deadline) = env.storage().instance().get::<_, u64>(&DataKey::Deadline) {
             if env.ledger().timestamp() < deadline {

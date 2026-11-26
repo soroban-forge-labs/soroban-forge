@@ -30,6 +30,17 @@ pub enum Error {
 pub const DAY_IN_LEDGERS: u32 = 17_280;
 pub const BALANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
 pub const BALANCE_TTL_THRESHOLD: u32 = BALANCE_TTL - DAY_IN_LEDGERS;
+/// Instance storage holds the underlying token and total supply and is
+/// archived together with the contract instance, so it is extended on every
+/// state-changing entrypoint.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -161,12 +172,14 @@ impl WrappedAssetContract {
             .instance()
             .set(&DataKey::Underlying, &underlying);
         env.storage().instance().set(&DataKey::TotalSupply, &0_i128);
+        extend_instance(&env);
     }
 
     /// Deposit `amount` of the underlying token and mint the same amount of
     /// wrapper balance to `from`.
     pub fn wrap(env: Env, from: Address, amount: i128) -> i128 {
         from.require_auth();
+        extend_instance(&env);
 
         if amount <= 0 {
             panic_with_error!(&env, Error::AmountMustBePositive);
@@ -192,6 +205,7 @@ impl WrappedAssetContract {
     /// amount of the underlying token back to them.
     pub fn unwrap(env: Env, from: Address, amount: i128) -> i128 {
         from.require_auth();
+        extend_instance(&env);
 
         if amount <= 0 {
             panic_with_error!(&env, Error::AmountMustBePositive);
@@ -235,6 +249,7 @@ impl TokenInterface for WrappedAssetContract {
 
     fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
         from.require_auth();
+        extend_instance(&env);
         write_allowance(&env, &from, &spender, amount, expiration_ledger);
         env.events().publish(
             (symbol_short!("approve"), from, spender),
@@ -248,6 +263,7 @@ impl TokenInterface for WrappedAssetContract {
 
     fn transfer(env: Env, from: Address, to: MuxedAddress, amount: i128) {
         from.require_auth();
+        extend_instance(&env);
         if amount < 0 {
             panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }
@@ -265,6 +281,7 @@ impl TokenInterface for WrappedAssetContract {
 
     fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
+        extend_instance(&env);
         if amount < 0 {
             panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }
@@ -282,6 +299,7 @@ impl TokenInterface for WrappedAssetContract {
 
     fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
+        extend_instance(&env);
         if amount < 0 {
             panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }
@@ -299,6 +317,7 @@ impl TokenInterface for WrappedAssetContract {
 
     fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
         spender.require_auth();
+        extend_instance(&env);
         if amount < 0 {
             panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }

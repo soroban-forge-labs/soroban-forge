@@ -246,6 +246,7 @@ pub fn generate(
     release: bool,
     opts: &GenerateOptions,
     force: bool,
+    diff_only: bool,
 ) -> Result<Vec<String>> {
     if let Some(ref msrv) = opts.msrv {
         validate_msrv(msrv)?;
@@ -340,11 +341,16 @@ pub fn generate(
         std::fs::create_dir_all(&dest_dir)
             .map_err(ForgeError::io(format!("creating {}", dest_dir.display())))?;
         let out_path = dest_dir.join(name);
-        if out_path.exists() && !force {
-            return Err(ForgeError::AlreadyExists(out_path));
+        let rendered = render_preset(dir, provider, contents, &vars)?;
+        if diff_only {
+            print_diff(&out_path, &rendered)?;
+        } else {
+            if out_path.exists() && !force {
+                return Err(ForgeError::AlreadyExists(out_path));
+            }
+            std::fs::write(&out_path, rendered)
+                .map_err(ForgeError::io(format!("writing {}", out_path.display())))?;
         }
-        std::fs::write(&out_path, render_preset(dir, provider, contents, &vars)?)
-            .map_err(ForgeError::io(format!("writing {}", out_path.display())))?;
 
         let rel_path = if dest_rel == "." {
             name.to_string()
@@ -686,11 +692,19 @@ impl ForgePlugin for CiPresetsPlugin {
         // ── generate ───────────────────────────────────────────────────────
         let release = matches.get_flag("release");
         let force = matches.get_flag("force");
+        let diff_only = matches.get_flag("diff");
+
+        if diff_only {
+            for provider in &providers {
+                generate(&dir, provider, &name, opts.deploy, release, &opts, force, true)?;
+            }
+            return Ok(());
+        }
 
         if ctx.json {
             let mut results = Vec::new();
             for provider in &providers {
-                let written = generate(&dir, provider, &name, opts.deploy, release, &opts, force)?;
+                let written = generate(&dir, provider, &name, opts.deploy, release, &opts, force, false)?;
                 results.push(serde_json::json!({
                     "provider": provider,
                     "project_name": name,
@@ -705,7 +719,7 @@ impl ForgePlugin for CiPresetsPlugin {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
         } else {
             for provider in &providers {
-                let written = generate(&dir, provider, &name, opts.deploy, release, &opts, force)?;
+                let written = generate(&dir, provider, &name, opts.deploy, release, &opts, force, false)?;
                 if !ctx.quiet {
                     print!("{}", format_report(provider, &name, &written, release, &opts));
                 }
@@ -757,6 +771,37 @@ mod tests {
             deploy: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn diff_flag_is_parsed() {
+        let matches = CiPresetsPlugin
+            .command()
+            .try_get_matches_from(["ci-init", "--diff"])
+            .unwrap();
+        assert!(matches.get_flag("diff"));
+    }
+
+    #[test]
+    fn diff_only_generate_does_not_write_files() {
+        let tmp = std::env::temp_dir().join(format!(
+            "soroban-forge-ci-diff-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = generate(
+            &tmp,
+            "github",
+            "my-project",
+            false,
+            false,
+            &base_opts(),
+            false,
+            true,
+        );
+        assert!(result.is_ok());
+        assert!(!tmp.join(".github/workflows/build-test.yml").exists());
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

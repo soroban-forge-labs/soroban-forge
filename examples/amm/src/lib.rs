@@ -16,14 +16,62 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
     Address, Env,
 };
+
+/// Emitted when liquidity is added. Topics: ("deposit", to).
+#[contractevent(topics = ["deposit"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deposit {
+    #[topic]
+    pub to: Address,
+    pub amount_a: i128,
+    pub amount_b: i128,
+    pub shares: i128,
+}
+
+/// Emitted on a swap. Topics: ("swap", to).
+#[contractevent(topics = ["swap"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Swap {
+    #[topic]
+    pub to: Address,
+    pub buy_a: bool,
+    pub in_amount: i128,
+    pub out_amount: i128,
+}
+
+/// Emitted when liquidity is removed. Topics: ("withdraw", to).
+#[contractevent(topics = ["withdraw"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Withdraw {
+    #[topic]
+    pub to: Address,
+    pub shares: i128,
+    pub amount_a: i128,
+    pub amount_b: i128,
+}
 
 /// Swap fee numerator/denominator: 0.3% (997/1000), the Uniswap-v2 standard.
 /// The 0.3% stays in the pool, so `k` grows monotonically with trading.
 const FEE_NUM: i128 = 997;
 const FEE_DEN: i128 = 1000;
+
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL (30 days): token addresses, reserves and total shares
+/// are bumped on every state-changing call so the pool is not archived while
+/// in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -206,6 +254,7 @@ impl LiquidityPool {
         env.storage().instance().set(&DataKey::ReserveA, &0i128);
         env.storage().instance().set(&DataKey::ReserveB, &0i128);
         env.storage().instance().set(&DataKey::TotalShares, &0i128);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit liquidity with an explicit ledger timestamp `deadline`.
@@ -240,6 +289,7 @@ impl LiquidityPool {
         min_b: i128,
     ) -> i128 {
         to.require_auth();
+        extend_instance_ttl(&env);
         if amount_a <= 0 || amount_b <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -292,8 +342,13 @@ impl LiquidityPool {
         let new_reserve_b = checked_add(&env, reserve_b, final_b);
         put_reserves(&env, new_reserve_a, new_reserve_b);
         mint_shares(&env, &to, minted);
-        env.events()
-            .publish((symbol_short!("deposit"), to), (final_a, final_b, minted));
+        Deposit {
+            to,
+            amount_a: final_a,
+            amount_b: final_b,
+            shares: minted,
+        }
+        .publish(&env);
         minted
     }
 
@@ -318,6 +373,7 @@ impl LiquidityPool {
     /// spent.
     pub fn swap(env: Env, to: Address, buy_a: bool, out: i128, in_max: i128) -> i128 {
         to.require_auth();
+        extend_instance_ttl(&env);
         if out <= 0 || in_max <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -362,8 +418,13 @@ impl LiquidityPool {
                 reserve_b - out,
             );
         }
-        env.events()
-            .publish((symbol_short!("swap"), to), (buy_a, in_amount, out));
+        Swap {
+            to,
+            buy_a,
+            in_amount,
+            out_amount: out,
+        }
+        .publish(&env);
         in_amount
     }
 
@@ -378,6 +439,7 @@ impl LiquidityPool {
         min_b: i128,
     ) -> (i128, i128) {
         to.require_auth();
+        extend_instance_ttl(&env);
         if share_amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -402,10 +464,13 @@ impl LiquidityPool {
         token::Client::new(&env, &get_token_b(&env)).transfer(&pool, &to, &out_b);
 
         put_reserves(&env, reserve_a - out_a, reserve_b - out_b);
-        env.events().publish(
-            (symbol_short!("withdraw"), to),
-            (share_amount, out_a, out_b),
-        );
+        Withdraw {
+            to,
+            shares: share_amount,
+            amount_a: out_a,
+            amount_b: out_b,
+        }
+        .publish(&env);
         (out_a, out_b)
     }
 

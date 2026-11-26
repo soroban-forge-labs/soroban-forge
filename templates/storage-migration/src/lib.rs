@@ -18,6 +18,19 @@ pub enum Error {
 }
 
 
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17280;
+
+/// Instance storage TTL (30 days).
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+/// Persistent storage TTL (30 days).
+pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a read or write extends the persistent TTL.
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+
 // Storage version marker key
 #[contracttype]
 pub enum DataKey {
@@ -35,15 +48,65 @@ const VERSION_1: u32 = 1;
 const VERSION_2: u32 = 2;
 const CURRENT_VERSION: u32 = VERSION_2;
 
-fn get_version(env: &Env) -> u32 {
+fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
-        .get(&DataKey::Version)
-        .unwrap_or(VERSION_1)
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
+fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+}
+
+fn get_version(env: &Env) -> u32 {
+    let version_opt = env.storage().instance().get::<_, u32>(&DataKey::Version);
+    if let Some(v) = version_opt {
+        v
+    } else if env.storage().persistent().has(&DataKey::CounterV1)
+        || env.storage().instance().has(&DataKey::CounterV1)
+    {
+        VERSION_1
+    } else {
+        0
+    }
 }
 
 fn set_version(env: &Env, version: u32) {
     env.storage().instance().set(&DataKey::Version, &version);
+}
+
+fn put_counter(env: &Env, counter: u32) {
+    let key = DataKey::CounterV2;
+    env.storage().persistent().set(&key, &counter);
+    extend_persistent_ttl(env, &key);
+}
+
+fn get_counter_internal(env: &Env) -> u32 {
+    let key = DataKey::CounterV2;
+    if let Some(counter) = env.storage().persistent().get::<_, u32>(&key) {
+        extend_persistent_ttl(env, &key);
+        counter
+    } else {
+        0
+    }
+}
+
+fn put_name(env: &Env, name: &String) {
+    let key = DataKey::NameV2;
+    env.storage().persistent().set(&key, name);
+    extend_persistent_ttl(env, &key);
+}
+
+fn get_name_internal(env: &Env) -> String {
+    let key = DataKey::NameV2;
+    if let Some(name) = env.storage().persistent().get::<_, String>(&key) {
+        extend_persistent_ttl(env, &key);
+        name
+    } else {
+        String::from_str(env, "unknown")
+    }
 }
 
 #[contract]
@@ -62,16 +125,22 @@ impl StorageMigration {
     pub fn init(env: Env, initial_counter: u32, name: String) {
         // Existing state of either layout means this contract is already set
         // up. (A fresh contract has neither key; `migrate_if_needed` is not
-        // called here because an unset version reads as v1.)
-        let storage = env.storage().instance();
-        if storage.has(&DataKey::CounterV2) || storage.has(&DataKey::CounterV1) {
+        // called here because an unset version reads as 0.)
+        let instance = env.storage().instance();
+        let persistent = env.storage().persistent();
+        if persistent.has(&DataKey::CounterV2)
+            || instance.has(&DataKey::CounterV2)
+            || persistent.has(&DataKey::CounterV1)
+            || instance.has(&DataKey::CounterV1)
+        {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
 
         // Set the v2 state
-        env.storage().instance().set(&DataKey::CounterV2, &initial_counter);
-        env.storage().instance().set(&DataKey::NameV2, &name);
+        put_counter(&env, initial_counter);
+        put_name(&env, &name);
         set_version(&env, CURRENT_VERSION);
+        extend_instance_ttl(&env);
     }
 
     /// Run the storage migration from v1 to v2.
@@ -81,15 +150,15 @@ impl StorageMigration {
     fn migrate_if_needed(env: &Env) {
         let current_version = get_version(env);
 
-        if current_version >= CURRENT_VERSION {
-            return; // Already migrated
+        if current_version >= CURRENT_VERSION || current_version == 0 {
+            return;
         }
 
         if current_version == VERSION_1 {
             Self::migrate_v1_to_v2(env);
+            set_version(env, CURRENT_VERSION);
+            extend_instance_ttl(env);
         }
-
-        set_version(env, CURRENT_VERSION);
     }
 
     /// Migrate from v1 to v2 storage layout.
@@ -103,59 +172,45 @@ impl StorageMigration {
         // Read v1 counter
         let v1_counter: u32 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::CounterV1)
+            .or_else(|| env.storage().instance().get(&DataKey::CounterV1))
             .unwrap_or(0);
 
-        // Write to v2 storage
-        env.storage()
-            .instance()
-            .set(&DataKey::CounterV2, &v1_counter);
-        env.storage()
-            .instance()
-            .set(&DataKey::NameV2, &String::from_slice(env, "migrated"));
+        // Write to v2 persistent storage
+        put_counter(env, v1_counter);
+        put_name(env, &String::from_str(env, "migrated"));
 
         // Optionally: remove v1 keys to clean up
+        // env.storage().persistent().remove(&DataKey::CounterV1);
         // env.storage().instance().remove(&DataKey::CounterV1);
     }
 
     /// Get the current counter value (v2 layout).
     pub fn get_counter(env: Env) -> u32 {
         Self::migrate_if_needed(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::CounterV2)
-            .unwrap_or(0)
+        get_counter_internal(&env)
     }
 
     /// Get the current name (v2 layout).
     pub fn get_name(env: Env) -> String {
         Self::migrate_if_needed(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::NameV2)
-            .unwrap_or_else(|| String::from_slice(&env, "unknown"))
+        get_name_internal(&env)
     }
 
     /// Increment the counter (v2 layout).
     pub fn increment(env: Env) {
         Self::migrate_if_needed(&env);
-        let current: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::CounterV2)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::CounterV2, &(current + 1));
+        let current = get_counter_internal(&env);
+        put_counter(&env, current + 1);
+        extend_instance_ttl(&env);
     }
 
     /// Update the name (v2 layout).
     pub fn set_name(env: Env, new_name: String) {
         Self::migrate_if_needed(&env);
-        env.storage()
-            .instance()
-            .set(&DataKey::NameV2, &new_name);
+        put_name(&env, &new_name);
+        extend_instance_ttl(&env);
     }
 
     /// Get the current storage version.

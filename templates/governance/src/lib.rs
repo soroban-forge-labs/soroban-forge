@@ -19,7 +19,9 @@
 //! proposal is created, or the same tokens can be moved between accounts and
 //! voted with repeatedly.
 
-use soroban_sdk::{contracterror, contract, contractimpl, contracttype, Address, Env, Symbol, Val, Vec, panic_with_error};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Symbol, Val, Vec,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -38,6 +40,9 @@ pub enum Error {
     ProposalAlreadyExecuted = 11,
     QuorumNotReached = 12,
     ProposalDidNotPass = 13,
+    /// `accept_admin` or `cancel_admin_proposal` was called with no admin
+    /// handover in progress.
+    NoPendingAdmin = 14,
 }
 
 
@@ -47,6 +52,11 @@ pub const VOTE_WEIGHT: i128 = 1;
 pub const DAY_IN_LEDGERS: u32 = 17_280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage (admin, quorum, voting period, counters) is bumped to this
+/// many ledgers on every state-changing call so the contract is not archived
+/// while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 /// A governance proposal.
 #[contracttype]
@@ -86,10 +96,19 @@ pub enum DataKey {
     MemberSince(Address),
     /// Number of registered members.
     MemberCount,
+    /// Address proposed as the next admin; set by `propose_admin`, cleared by
+    /// `accept_admin` / `cancel_admin_proposal`.
+    PendingAdmin,
 }
 
 #[contract]
 pub struct GovernanceContract;
+
+fn extend_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 fn admin(env: &Env) -> Address {
     env.storage()
@@ -134,12 +153,68 @@ impl GovernanceContract {
             .set(&DataKey::VotingPeriod, &voting_period);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::MemberCount, &0u32);
+        extend_instance(&env);
+    }
+
+    /// Propose `new_admin` as the next admin (current admin only). Nothing
+    /// changes until `new_admin` calls `accept_admin`. A new proposal
+    /// replaces any earlier pending one.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let current = admin(&env);
+        current.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_prop"), current), new_admin);
+    }
+
+    /// Complete the handover (pending admin only): the caller becomes admin.
+    /// Fails with `NoPendingAdmin` if no handover is in progress.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        pending.require_auth();
+        let previous = admin(&env);
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_acc"), previous), pending);
+    }
+
+    /// Cancel a pending handover (current admin only). Fails with
+    /// `NoPendingAdmin` if none is in progress.
+    pub fn cancel_admin_proposal(env: Env) {
+        let current = admin(&env);
+        current.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_canc"), current), pending);
+    }
+
+    /// Current admin.
+    pub fn get_admin(env: Env) -> Address {
+        admin(&env)
+    }
+
+    /// Address proposed as the next admin, if a handover is in progress.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// Register `member` as a voter (admin only). Members may vote on
     /// proposals created from this ledger onwards.
     pub fn add_member(env: Env, member: Address) {
         admin(&env).require_auth();
+        extend_instance(&env);
         let key = DataKey::MemberSince(member);
         if env.storage().persistent().has(&key) {
             panic_with_error!(&env, Error::AlreadyAMember);
@@ -160,6 +235,7 @@ impl GovernanceContract {
     /// already cast stay counted.
     pub fn remove_member(env: Env, member: Address) {
         admin(&env).require_auth();
+        extend_instance(&env);
         let key = DataKey::MemberSince(member);
         if !env.storage().persistent().has(&key) {
             panic_with_error!(&env, Error::NotAMember);
@@ -197,6 +273,7 @@ impl GovernanceContract {
         args: Vec<Val>,
     ) -> u64 {
         proposer.require_auth();
+        extend_instance(&env);
         if !Self::is_member(env.clone(), proposer.clone()) {
             panic_with_error!(&env, Error::OnlyMembersCanCreateProposals);
         }
@@ -240,6 +317,7 @@ impl GovernanceContract {
     /// caller, so it cannot be inflated or negative.
     pub fn cast_vote(env: Env, voter: Address, proposal_id: u64, in_favour: bool) {
         voter.require_auth();
+        extend_instance(&env);
 
         // Prevent double-voting.
         let voted_key = DataKey::Voted(proposal_id, voter.clone());
@@ -286,6 +364,7 @@ impl GovernanceContract {
     /// 2. Total votes meet or exceed the configured quorum.
     /// 3. Votes in favour exceed votes against.
     pub fn execute_proposal(env: Env, proposal_id: u64) {
+        extend_instance(&env);
         let prop_key = DataKey::Proposal(proposal_id);
         let mut proposal: Proposal = env
             .storage()

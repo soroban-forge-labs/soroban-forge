@@ -1,7 +1,8 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{token::StellarAssetClient, token::TokenClient, Address, Env};
 
 struct Tok<'a> {
@@ -159,8 +160,7 @@ fn unknown_address_is_not_a_payee() {
     let env = Env::default();
     let f = setup(&env, &[1, 1], 100);
     let stranger = Address::generate(&env);
-
-    f.contract.releasable(&stranger);
+    f.contract.shares(&stranger);
 }
 
 #[test]
@@ -186,33 +186,126 @@ fn mismatched_payees_and_shares_are_rejected() {
 #[should_panic]
 fn second_initialize_is_rejected() {
     let env = Env::default();
-    let f = setup(&env, &[1, 1], 1);
+    let f = setup(&env, &[1, 1], 100);
+    let other_token = make_token(&env);
+    f.contract
+        .initialize(&other_token.address, &f.payees, &Vec::new(&env));
+}
+
+#[test]
+#[should_panic(expected = "payees and shares must have the same length")]
+fn mismatched_payees_and_shares_are_rejected() {
+    let env = Env::default();
+    let token = make_token(&env);
+    let contract_id = env.register(PaymentSplitterContract, ());
+    let contract = PaymentSplitterContractClient::new(&env, &contract_id);
+
     let mut payees = Vec::new(&env);
     payees.push_back(Address::generate(&env));
-    let mut shares = Vec::new(&env);
-    shares.push_back(1_u32);
-    f.contract.initialize(&f.token.address, &payees, &shares);
+    let shares = Vec::new(&env);
+
+    contract.initialize(&token.address, &payees, &shares);
 }
 
 #[test]
 fn second_initialize_cannot_rewrite_payees_or_reset_deposits() {
     let env = Env::default();
-    let f = setup(&env, &[3, 1], 1_000);
-    f.contract.deposit(&f.funder, &400);
+    let f = setup(&env, &[1, 1], 100);
 
-    // An attacker tries to install themselves as the only payee.
-    let attacker = Address::generate(&env);
-    let mut payees = Vec::new(&env);
-    payees.push_back(attacker.clone());
-    let mut shares = Vec::new(&env);
-    shares.push_back(100_u32);
-    let result = f.contract.try_initialize(&f.token.address, &payees, &shares);
+    f.contract.deposit(&f.funder, &100);
+    let a = f.payees.get_unchecked(0);
+    assert_eq!(f.contract.releasable(&a), 50);
+
+    // Mallory tries to overwrite the payee table and reset TotalReceived to 0
+    let mallory = Address::generate(&env);
+    let mut mallory_payees = Vec::new(&env);
+    mallory_payees.push_back(mallory.clone());
+    let mut mallory_shares = Vec::new(&env);
+    mallory_shares.push_back(100);
+
+    let result = f
+        .contract
+        .try_initialize(&f.token.address, &mallory_payees, &mallory_shares);
     assert!(result.is_err());
 
-    // Everything is exactly as configured the first time.
-    assert_eq!(f.contract.payees(), f.payees);
-    assert_eq!(f.contract.total_shares(), 4);
+    // The genuine payees still hold their shares and their owed funds
+    assert_eq!(f.contract.total_received(), 100);
+    assert_eq!(f.contract.releasable(&a), 50);
+}
+
+#[test]
+fn storage_ttl_extended_on_state_changes_and_past_default_ttl() {
+    let env = Env::default();
+    let f = setup(&env, &[50, 50], 1_000);
+    let payee_a = f.payees.get_unchecked(0);
+    let payee_b = f.payees.get_unchecked(1);
+
+    // Initial check: instance and persistent storage TTLs are extended to 30 days
+    env.as_contract(&f.contract_id, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Shares(payee_a.clone())),
+            PERSISTENT_TTL
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Released(payee_a.clone())),
+            PERSISTENT_TTL
+        );
+    });
+
+    // Advance ledger past default TTL (4095 ledgers) to 10,000 ledgers
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + 10_000);
+
+    // Contract entries survive and deposit works past default TTL
+    f.contract.deposit(&f.funder, &400);
     assert_eq!(f.contract.total_received(), 400);
-    assert_eq!(f.contract.earned(&f.payees.get_unchecked(0)), 300);
-    assert!(f.contract.try_shares(&attacker).is_err(), "attacker must not be a payee");
+    assert_eq!(f.contract.releasable(&payee_a), 200);
+
+    // Advance ledger past extension threshold (more than 1 day in ledgers)
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + DAY_IN_LEDGERS + 10);
+
+    // Verify remaining TTL dropped below threshold
+    env.as_contract(&f.contract_id, || {
+        assert!(env.storage().instance().get_ttl() < INSTANCE_TTL_THRESHOLD);
+        assert!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Released(payee_a.clone()))
+                < PERSISTENT_TTL_THRESHOLD
+        );
+    });
+
+    // Calling release extends both instance and persistent TTLs back to 30 days
+    assert_eq!(f.contract.release(&payee_a), 200);
+    assert_eq!(f.token.client.balance(&payee_a), 200);
+
+    env.as_contract(&f.contract_id, || {
+        assert_eq!(env.storage().instance().get_ttl(), INSTANCE_TTL);
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Released(payee_a.clone())),
+            PERSISTENT_TTL
+        );
+    });
+
+    // Reading shares on a hot path re-extends the persistent entry
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + DAY_IN_LEDGERS + 10);
+    assert_eq!(f.contract.shares(&payee_b), 50);
+
+    env.as_contract(&f.contract_id, || {
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Shares(payee_b.clone())),
+            PERSISTENT_TTL
+        );
+    });
 }

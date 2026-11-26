@@ -1,8 +1,9 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token::StellarAssetClient, token::TokenClient, vec, Address, Env};
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::{token::StellarAssetClient, token::TokenClient, vec, Address, Env, IntoVal};
 
 /// Amounts in the allowlist, one per generated claimant.
 const AMOUNTS: [i128; 4] = [100, 200, 300, 400];
@@ -247,3 +248,121 @@ fn sweep_before_deadline_is_rejected() {
     f.contract.sweep();
 }
 
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let f = setup(&env);
+
+    // Well past the default instance TTL, but within the extended one.
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    let new_root = BytesN::from_array(&env, &[7; 32]);
+    f.contract.set_root(&new_root);
+    assert_eq!(f.contract.root(), new_root);
+
+    let ttl = env.as_contract(&f.contract_id, || env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
+}
+
+#[test]
+fn admin_handover_propose_then_accept() {
+    let env = Env::default();
+    let f = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    assert_eq!(f.contract.pending_admin(), None);
+    f.contract.propose_admin(&new_admin);
+    // Proposing alone changes nothing.
+    assert_eq!(f.contract.admin(), f.admin);
+    assert_eq!(f.contract.pending_admin(), Some(new_admin.clone()));
+
+    f.contract.accept_admin();
+    assert_eq!(f.contract.admin(), new_admin);
+    assert_eq!(f.contract.pending_admin(), None);
+
+    // The new admin now holds the admin powers.
+    assert_eq!(f.contract.sweep(), TOTAL);
+    assert_eq!(f.token.client.balance(&new_admin), TOTAL);
+}
+
+#[test]
+fn admin_proposal_can_be_cancelled() {
+    let env = Env::default();
+    let f = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    f.contract.propose_admin(&new_admin);
+    f.contract.cancel_admin_proposal();
+    assert_eq!(f.contract.pending_admin(), None);
+    assert_eq!(f.contract.admin(), f.admin);
+
+    // Nothing left to accept or cancel.
+    assert_eq!(
+        f.contract.try_accept_admin().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+    assert_eq!(
+        f.contract.try_cancel_admin_proposal().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+}
+
+#[test]
+fn accept_admin_without_proposal_fails() {
+    let env = Env::default();
+    let f = setup(&env);
+    assert_eq!(
+        f.contract.try_accept_admin().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+}
+
+#[test]
+fn non_pending_address_cannot_accept_admin() {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+    let env = Env::default();
+    let f = setup(&env);
+    let pending = Address::generate(&env);
+    let intruder = Address::generate(&env);
+    f.contract.propose_admin(&pending);
+
+    // Only the intruder authorizes; the pending admin's auth is missing.
+    let result = f
+        .contract
+        .mock_auths(&[MockAuth {
+            address: &intruder,
+            invoke: &MockAuthInvoke {
+                contract: &f.contract_id,
+                fn_name: "accept_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_accept_admin();
+    assert!(result.is_err(), "only the pending admin may accept");
+    assert_eq!(f.contract.admin(), f.admin);
+    assert_eq!(f.contract.pending_admin(), Some(pending));
+}
+
+#[test]
+fn non_admin_cannot_propose_admin() {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+    let env = Env::default();
+    let f = setup(&env);
+    let intruder = Address::generate(&env);
+
+    let result = f
+        .contract
+        .mock_auths(&[MockAuth {
+            address: &intruder,
+            invoke: &MockAuthInvoke {
+                contract: &f.contract_id,
+                fn_name: "propose_admin",
+                args: (&intruder,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_propose_admin(&intruder);
+    assert!(result.is_err(), "only the admin may propose");
+    assert_eq!(f.contract.pending_admin(), None);
+}

@@ -8,7 +8,9 @@
 
 #![no_std]
 
-use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, panic_with_error};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -24,6 +26,22 @@ pub enum Error {
     CanOnlyCancelAnOpenAuction = 8,
 }
 
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Target TTL for contract instance storage (~30 days).
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold below which instance storage TTL is extended (~29 days).
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL_EXTEND_TO - DAY_IN_LEDGERS;
+/// Target TTL for persistent storage entries (~30 days).
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold below which persistent storage TTL is extended (~29 days).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL_EXTEND_TO - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
 
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -112,6 +130,7 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Pending);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit the asset tokens into the auction contract to open the auction.
@@ -142,6 +161,10 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Open);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("fund"), seller), asset_amount);
     }
 
     /// Calculate and return the current price based on elapsed time.
@@ -213,6 +236,10 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::SettledPrice, &current_price);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("buy"), buyer), current_price);
 
         current_price
     }
@@ -242,6 +269,10 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Canceled);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("cancel"), seller), asset_amount);
     }
 
     /// Return current state of the auction.

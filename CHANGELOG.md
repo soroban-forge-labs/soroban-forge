@@ -5,6 +5,15 @@ All notable changes to Soroban Forge will be documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `flash-loan` template: the pool now extends its instance TTL on construction
+  and on every `deposit`, `withdraw` and `flash_loan` call, and stores each
+  depositor's LP shares in a persistent entry that is renewed on write and on
+  hot-path reads, using named 29-day threshold / 30-day extension constants.
+  Previously nothing called `extend_ttl`, so the pool, its share total and
+  every LP position archived once the default TTL elapsed and every call that
+  read them failed until an out-of-band restore (#724)
 - Fix `deploy` and `invoke` rejecting soroban-forge-only identities as `--source`; the key is now passed to stellar-cli via `STELLAR_ACCOUNT`, never argv (#614)
 ### Added
 
@@ -78,6 +87,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   identity; the secret key is printed only with the explicit flag (#422)
 
 ### Fixed
+
+- Renew the `crowdfund` campaign instance on state changes and persistent
+  pledge entries on writes and hot-path reads, with named TTL constants,
+  lifetime regression tests and a regenerated example (#720).
 
 - Reject staking reward distributions to an empty pool with `Error::NoStakers`, without emitting a misleading `distrib` event (#572).
 

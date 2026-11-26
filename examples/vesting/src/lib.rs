@@ -14,7 +14,9 @@
 
 #![no_std]
 
-use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, panic_with_error};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -27,10 +29,25 @@ pub enum Error {
     NothingToClaim = 5,
 }
 
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL (30 days). The whole schedule (admin, token,
+/// beneficiary, timestamps, amounts) lives in instance storage, so it is bumped
+/// on every state-changing call to keep the contract from being archived.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Token,
     Beneficiary,
     Start,
@@ -40,6 +57,33 @@ pub enum DataKey {
     Claimed,
     Funded,
     Revoked,
+}
+
+/// Emitted when the admin proposes a successor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the admin cancels a pending proposal.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
 }
 
 #[contract]
@@ -64,6 +108,8 @@ impl VestingContract {
         vesting_duration: u64,
         total_amount: i128,
     ) {
+        extend_instance_ttl(&env);
+
         if total_amount <= 0 {
             panic_with_error!(&env, Error::TotalAmountMustBePositive);
         }
@@ -96,6 +142,7 @@ impl VestingContract {
     pub fn fund(env: Env) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env
             .storage()
@@ -112,6 +159,9 @@ impl VestingContract {
 
         let client = token::Client::new(&env, &token);
         client.transfer(&admin, &env.current_contract_address(), &total_amount);
+
+        env.events()
+            .publish((symbol_short!("fund"), admin), total_amount);
     }
 
     /// Revoke unvested tokens and return them to the `admin`, leaving already
@@ -119,6 +169,7 @@ impl VestingContract {
     pub fn revoke(env: Env) -> i128 {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         if env
             .storage()
@@ -153,7 +204,64 @@ impl VestingContract {
             client.transfer(&env.current_contract_address(), &admin, &unvested);
         }
 
+        env.events()
+            .publish((symbol_short!("revoke"), admin), unvested);
+
         unvested
+    }
+
+    /// Return the current admin.
+    pub fn admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Return the pending admin, if a handover has been proposed.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Step one of a handover: the current admin nominates `new_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed { admin, new_admin }.publish(&env);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic!("no pending admin"));
+        pending.require_auth();
+        extend_instance_ttl(&env);
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
+    }
+
+    /// The current admin withdraws a pending proposal.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        extend_instance_ttl(&env);
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic!("no pending admin"));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled { admin, pending }.publish(&env);
     }
 
     /// Return the amount of tokens vested so far according to the schedule.
@@ -170,12 +278,22 @@ impl VestingContract {
             return total_amount;
         }
 
-        // Linear interpolation: total * (now - cliff) / (end - cliff)
+        // Linear interpolation: total * (now - cliff) / (end - cliff), computed
+        // without multiplying the (up to i128) total_amount by elapsed directly,
+        // since that product can exceed u128::MAX for large grants over long
+        // durations. Split into a whole-unit term and a remainder term, where
+        // the remainder term only multiplies two u64-derived values together.
         let elapsed = now - cliff;
         let duration = end - cliff;
-        // Use u128 for the multiplication to avoid overflow, then cast back.
-        let vested = (total_amount as u128 * elapsed as u128 / duration as u128) as i128;
-        vested
+        let total_u128 = total_amount as u128;
+        let whole = total_u128 / duration as u128;
+        let remainder = total_u128 % duration as u128;
+        let vested = whole
+            .checked_mul(elapsed as u128)
+            .and_then(|v| remainder.checked_mul(elapsed as u128).map(|r| (v, r)))
+            .and_then(|(v, r)| v.checked_add(r / duration as u128))
+            .unwrap_or_else(|| panic!("vested amount calculation overflowed"));
+        vested as i128
     }
 
     /// Return the amount that the beneficiary can currently claim
@@ -194,6 +312,7 @@ impl VestingContract {
         let beneficiary: Address =
             env.storage().instance().get(&DataKey::Beneficiary).unwrap();
         beneficiary.require_auth();
+        extend_instance_ttl(&env);
 
         let claimable = Self::get_claimable_amount(env.clone());
         if claimable <= 0 {
@@ -212,6 +331,9 @@ impl VestingContract {
             &beneficiary,
             &claimable,
         );
+
+        env.events()
+            .publish((symbol_short!("claim"), beneficiary), claimable);
 
         claimable
     }

@@ -4,13 +4,17 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, symbol_short, Address,
     Env, String, Vec,
 };
 
 pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const BALANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
 pub const BALANCE_TTL_THRESHOLD: u32 = BALANCE_TTL - DAY_IN_LEDGERS;
+/// Instance storage (admin and metadata) is bumped to this many ledgers on
+/// every state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -19,6 +23,8 @@ pub enum Error {
     NegativeAmount = 1,
     InsufficientBalance = 2,
     MismatchedLengths = 3,
+    /// `accept_admin` or `cancel_admin_proposal` called with no proposal pending.
+    NoPendingAdmin = 4,
 }
 
 #[contracttype]
@@ -32,9 +38,14 @@ pub struct BalanceKey {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Name,
     Symbol,
     Balance(BalanceKey),
+}
+
+fn extend_instance(env: &Env) {
+    env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 }
 
 fn check_nonnegative(env: &Env, amount: i128) {
@@ -77,6 +88,33 @@ fn require_same_length(env: &Env, len_a: u32, len_b: u32) {
     }
 }
 
+/// Emitted when the admin proposes a successor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the admin cancels a pending proposal.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
+}
+
 #[contract]
 pub struct MultiTokenContract;
 
@@ -86,10 +124,59 @@ impl MultiTokenContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Name, &name);
         env.storage().instance().set(&DataKey::Symbol, &symbol);
+        extend_instance(&env);
     }
 
     pub fn admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Return the pending admin, if a handover has been proposed.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Step one of a handover: the current admin nominates `new_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed { admin, new_admin }.publish(&env);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// The current admin withdraws a pending proposal.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled { admin, pending }.publish(&env);
+        Ok(())
     }
 
     pub fn name(env: Env) -> String {
@@ -117,6 +204,7 @@ impl MultiTokenContract {
         check_nonnegative(&env, amount);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance(&env);
         receive_balance(&env, &to, id, amount);
         env.events().publish((symbol_short!("mint"), admin, to, id), amount);
     }
@@ -125,6 +213,7 @@ impl MultiTokenContract {
         require_same_length(&env, ids.len(), amounts.len());
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance(&env);
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();
             let amount = amounts.get(i).unwrap();
@@ -136,6 +225,7 @@ impl MultiTokenContract {
 
     pub fn transfer(env: Env, from: Address, to: Address, id: u32, amount: i128) {
         from.require_auth();
+        extend_instance(&env);
         check_nonnegative(&env, amount);
         spend_balance(&env, &from, id, amount);
         receive_balance(&env, &to, id, amount);
@@ -144,6 +234,7 @@ impl MultiTokenContract {
 
     pub fn transfer_batch(env: Env, from: Address, to: Address, ids: Vec<u32>, amounts: Vec<i128>) {
         from.require_auth();
+        extend_instance(&env);
         require_same_length(&env, ids.len(), amounts.len());
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();
@@ -157,6 +248,7 @@ impl MultiTokenContract {
 
     pub fn burn(env: Env, from: Address, id: u32, amount: i128) {
         from.require_auth();
+        extend_instance(&env);
         check_nonnegative(&env, amount);
         spend_balance(&env, &from, id, amount);
         env.events().publish((symbol_short!("burn"), from, id), amount);
@@ -164,6 +256,7 @@ impl MultiTokenContract {
 
     pub fn burn_batch(env: Env, from: Address, ids: Vec<u32>, amounts: Vec<i128>) {
         from.require_auth();
+        extend_instance(&env);
         require_same_length(&env, ids.len(), amounts.len());
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();

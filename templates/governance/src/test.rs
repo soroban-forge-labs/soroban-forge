@@ -5,7 +5,7 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, vec,
-    testutils::{Address as _, Ledger},
+    testutils::{storage::Instance as _, Address as _, Events, Ledger},
     Address, Env, IntoVal, Symbol,
 };
 
@@ -271,4 +271,113 @@ fn zero_voting_period_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
     let client = GovernanceContractClient::new(&env, &env.register(GovernanceContract, (Address::generate(&env), 3, 0)));
+}
+
+#[test]
+fn instance_storage_outlives_the_default_ttl() {
+    let (dao, _) = setup(0);
+
+    // Well past the default instance TTL, but within the extended one.
+    dao.env.ledger().with_mut(|li| li.sequence_number += 100_000);
+
+    let member = Address::generate(&dao.env);
+    dao.client.add_member(&member);
+    assert_eq!(dao.client.member_count(), 1);
+
+    let ttl = dao
+        .env
+        .as_contract(&dao.client.address, || dao.env.storage().instance().get_ttl());
+    assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
+}
+
+#[test]
+fn admin_handover_propose_then_accept() {
+    let (dao, _) = setup(0);
+    let old = dao.client.get_admin();
+    let new_admin = Address::generate(&dao.env);
+
+    dao.client.propose_admin(&new_admin);
+    assert_eq!(dao.env.events().all().len(), 1);
+    assert_eq!(dao.client.get_pending_admin(), Some(new_admin.clone()));
+    // Proposing alone does not transfer anything.
+    assert_eq!(dao.client.get_admin(), old);
+
+    dao.client.accept_admin();
+    assert_eq!(dao.client.get_admin(), new_admin);
+    assert_eq!(dao.client.get_pending_admin(), None);
+    // Accepting published an event.
+    assert_eq!(dao.env.events().all().len(), 1);
+}
+
+#[test]
+fn admin_handover_cancel() {
+    let (dao, _) = setup(0);
+    let old = dao.client.get_admin();
+    let new_admin = Address::generate(&dao.env);
+
+    dao.client.propose_admin(&new_admin);
+    dao.client.cancel_admin_proposal();
+    assert_eq!(dao.client.get_pending_admin(), None);
+    assert_eq!(dao.client.get_admin(), old);
+    assert_eq!(
+        dao.client.try_accept_admin().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+}
+
+#[test]
+fn admin_handover_without_proposal_fails() {
+    let (dao, _) = setup(0);
+    assert_eq!(
+        dao.client.try_accept_admin().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+    assert_eq!(
+        dao.client.try_cancel_admin_proposal().unwrap_err().unwrap(),
+        Error::NoPendingAdmin
+    );
+}
+
+#[test]
+fn non_pending_address_cannot_accept_admin() {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+    let (dao, _) = setup(0);
+    let old = dao.client.get_admin();
+    let new_admin = Address::generate(&dao.env);
+    let attacker = Address::generate(&dao.env);
+    dao.client.propose_admin(&new_admin);
+
+    // Only `attacker` authorizes the call; the contract requires the
+    // pending admin's auth, so it must be rejected.
+    dao.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &dao.client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&dao.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(dao.client.try_accept_admin().is_err());
+    assert_eq!(dao.client.get_admin(), old);
+    assert_eq!(dao.client.get_pending_admin(), Some(new_admin));
+}
+
+#[test]
+fn only_admin_can_propose_or_cancel() {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+    let (dao, _) = setup(0);
+    let outsider = Address::generate(&dao.env);
+    let new_admin = Address::generate(&dao.env);
+    dao.env.mock_auths(&[MockAuth {
+        address: &outsider,
+        invoke: &MockAuthInvoke {
+            contract: &dao.client.address,
+            fn_name: "propose_admin",
+            args: (&new_admin,).into_val(&dao.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(dao.client.try_propose_admin(&new_admin).is_err());
+    assert_eq!(dao.client.get_pending_admin(), None);
 }

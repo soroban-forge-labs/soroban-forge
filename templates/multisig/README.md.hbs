@@ -15,6 +15,11 @@ and signatures from *every* signer for changes to the account itself
 > **Warning**: account contracts guard real funds and require rigorous review.
 > This template is a learning/starting point, not an audited wallet.
 
+## Events
+
+- `rotate` — published when `rotate_signers` replaces the signer set and threshold. Data: `(new_signer_count, new_threshold)`.
+- `thresh` — published when `set_threshold` updates the signature threshold. Data: `new_threshold`.
+
 ## Develop
 
 ```sh

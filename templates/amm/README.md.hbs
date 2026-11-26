@@ -17,6 +17,17 @@ implementing the standard Soroban token interface (e.g. Stellar Asset
 Contracts). The 0.3% swap fee stays in the pool, so the constant product `k`
 grows as the pool is traded.
 
+## Events
+
+Each event is a `#[contractevent]` struct, so the schema appears in the
+contract spec.
+
+| Event | Topics | Data |
+| --- | --- | --- |
+| `Deposit` | `"deposit"`, `to` | `[amount_a, amount_b, shares]` |
+| `Swap` | `"swap"`, `to` | `[buy_a, in_amount, out_amount]` |
+| `Withdraw` | `"withdraw"`, `to` | `[shares, amount_a, amount_b]` |
+
 ## Develop
 
 ```sh

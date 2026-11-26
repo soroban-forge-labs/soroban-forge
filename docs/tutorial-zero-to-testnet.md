@@ -10,7 +10,8 @@ knowledge needed. (~20 minutes)
 
 Soroban is Stellar's smart-contract platform; contracts are Rust compiled to
 WebAssembly. You'll scaffold a token contract, run its tests, wire up CI, and
-deploy it to the free public testnet with the official `stellar` CLI.
+deploy it to the free public testnet with `soroban-forge` (which wraps the
+official `stellar` CLI).
 
 ## 1. Install the toolchain
 
@@ -76,43 +77,50 @@ The deployable file lands in `target/wasm32v1-none/release/my_token.wasm`.
 
 ## 5. Create and fund a testnet identity
 
-Testnet is free; friendbot funds new accounts:
+`soroban-forge` stores test identities in `~/.config/soroban-forge/identities.json`;
+secret keys stay local and are masked by default. Testnet is free — friendbot
+funds new accounts:
 
 ```sh
-stellar keys generate alice --network testnet --fund
-stellar keys address alice     # your public key, G...
+soroban-forge identity generate alice
+soroban-forge identity fund alice
+
+# public key (G...) for constructor/invoke args; the secret stays redacted
+ALICE=$(soroban-forge identity show alice | sed -n 's/^  public key: //p')
+echo "$ALICE"
 ```
 
 ## 6. Deploy
 
-The token's constructor needs an admin plus metadata — pass constructor args
-after `--`:
+The token's constructor needs an admin plus metadata — pass constructor args as
+repeatable `--arg NAME=VALUE` (deploy builds the wasm if needed and records the
+result in `deployments.json`):
 
 ```sh
-stellar contract deploy \
-  --wasm target/wasm32v1-none/release/my_token.wasm \
-  --source-account alice \
+soroban-forge deploy \
+  --source alice \
   --network testnet \
   --alias my_token \
-  -- \
-  --admin "$(stellar keys address alice)" \
-  --decimals 7 \
-  --name "My Token" \
-  --symbol MYT
+  --arg "admin=$ALICE" \
+  --arg decimals=7 \
+  --arg "name=My Token" \
+  --arg symbol=MYT
 ```
 
 The printed `C...` address is your live contract.
 
 ## 7. Invoke it
 
+`deploy` recorded the contract in `deployments.json`; `invoke` uses that record
+when you omit the contract ID (pass `my_token` explicitly if you prefer the
+stellar-cli alias):
+
 ```sh
 # mint 100.0000000 MYT (7 decimals) to alice
-stellar contract invoke --id my_token --source-account alice --network testnet \
-  -- mint --to "$(stellar keys address alice)" --amount 1000000000
+soroban-forge invoke --source alice mint --to "$ALICE" --amount 1000000000
 
 # check the balance
-stellar contract invoke --id my_token --source-account alice --network testnet \
-  -- balance --id "$(stellar keys address alice)"
+soroban-forge invoke --source alice balance --id "$ALICE"
 ```
 
 ## 8. Add CI

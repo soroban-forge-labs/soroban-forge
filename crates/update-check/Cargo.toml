@@ -13,3 +13,6 @@ serde.workspace = true
 serde_json.workspace = true
 dirs = "6"
 semver = "1"
+
+[dev-dependencies]
+tempfile.workspace = true

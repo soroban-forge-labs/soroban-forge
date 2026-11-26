@@ -16,6 +16,10 @@ pub const DAY_IN_LEDGERS: u32 = 17280; // estimated (5s/ledger)
 pub const BALANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Extend a balance entry's TTL when it drops below this threshold.
 pub const BALANCE_TTL_THRESHOLD: u32 = BALANCE_TTL - DAY_IN_LEDGERS;
+/// Instance storage (admin and metadata) is bumped to this many ledgers on
+/// every state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -25,6 +29,7 @@ pub enum Error {
     InsufficientBalance = 2,
     InsufficientAllowance = 3,
     InvalidExpiration = 4,
+    NoPendingAdmin = 5,
 }
 
 #[contracttype]
@@ -45,11 +50,18 @@ pub struct AllowanceValue {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Name,
     Symbol,
     Decimals,
     Balance(Address),
     Allowance(AllowanceKey),
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 }
 
 fn check_nonnegative(env: &Env, amount: i128) {
@@ -160,6 +172,7 @@ impl TokenContract {
         env.storage().instance().set(&DataKey::Decimals, &decimals);
         env.storage().instance().set(&DataKey::Name, &name);
         env.storage().instance().set(&DataKey::Symbol, &symbol);
+        extend_instance_ttl(&env);
     }
 
     /// Mint `amount` new units to `to`. Only the admin may call this.
@@ -167,6 +180,7 @@ impl TokenContract {
         check_nonnegative(&env, amount);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
         receive_balance(&env, &to, amount);
         env.events()
             .publish((symbol_short!("mint"), admin, to), amount);
@@ -175,6 +189,42 @@ impl TokenContract {
     /// The current admin address.
     pub fn admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Step one of an admin handover: the current admin nominates `new_admin`.
+    /// Overwrites any earlier proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("propose"), admin), new_admin);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = match env.storage().instance().get(&DataKey::PendingAdmin) {
+            Some(pending) => pending,
+            None => panic_with_error!(&env, Error::NoPendingAdmin),
+        };
+        pending.require_auth();
+        let old: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish((symbol_short!("accept"), old), pending);
+    }
+
+    /// The current admin withdraws an outstanding proposal.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            panic_with_error!(&env, Error::NoPendingAdmin);
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish((symbol_short!("cancel"), admin), ());
     }
 }
 
@@ -186,6 +236,7 @@ impl TokenInterface for TokenContract {
 
     fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
         from.require_auth();
+        extend_instance_ttl(&env);
         check_nonnegative(&env, amount);
         write_allowance(&env, &from, &spender, amount, expiration_ledger);
         env.events().publish(
@@ -202,6 +253,7 @@ impl TokenInterface for TokenContract {
     // are tracked against its underlying Address.
     fn transfer(env: Env, from: Address, to: MuxedAddress, amount: i128) {
         from.require_auth();
+        extend_instance_ttl(&env);
         check_nonnegative(&env, amount);
         let to = to.address();
         spend_balance(&env, &from, amount);
@@ -212,6 +264,7 @@ impl TokenInterface for TokenContract {
 
     fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
+        extend_instance_ttl(&env);
         check_nonnegative(&env, amount);
         spend_allowance(&env, &from, &spender, amount);
         spend_balance(&env, &from, amount);
@@ -222,6 +275,7 @@ impl TokenInterface for TokenContract {
 
     fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
+        extend_instance_ttl(&env);
         check_nonnegative(&env, amount);
         spend_balance(&env, &from, amount);
         env.events().publish((symbol_short!("burn"), from), amount);
@@ -229,6 +283,7 @@ impl TokenInterface for TokenContract {
 
     fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
         spender.require_auth();
+        extend_instance_ttl(&env);
         check_nonnegative(&env, amount);
         spend_allowance(&env, &from, &spender, amount);
         spend_balance(&env, &from, amount);

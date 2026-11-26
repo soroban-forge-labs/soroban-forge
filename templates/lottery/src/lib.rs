@@ -31,7 +31,15 @@
 
 #![no_std]
 
-use soroban_sdk::{contracterror, contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec, panic_with_error};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, symbol_short, Address, Bytes, BytesN, Env, Vec,
+};
+
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -50,12 +58,42 @@ pub enum Error {
     WinnerAlreadyDrawn = 11,
     NoValidReveals = 12,
     WinnerNotDrawnYet = 13,
+    /// `accept_admin` or `cancel_admin_proposal` was called with no handover pending.
+    NoPendingAdmin = 14,
 }
 
+
+/// Emitted when the current admin proposes a new admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes the admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the current admin cancels a pending handover.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
+}
 
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     CommitDeadline,
     RevealDeadline,
     Entrants,
@@ -103,6 +141,70 @@ impl LotteryContract {
         env.storage().instance().set(&DataKey::Drawn, &false);
     }
 
+    /// Propose `new_admin` as the next admin. Current admin only.
+    ///
+    /// Nothing changes until `new_admin` calls `accept_admin`. Calling this
+    /// again replaces any earlier pending proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed {
+            admin,
+            pending: new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Accept a pending admin handover. Pending admin only.
+    ///
+    /// Fails with `NoPendingAdmin` if no handover is pending. Only the
+    /// proposed address can satisfy the auth check, so any other caller is
+    /// rejected.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending admin handover. Current admin only.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled { admin, pending }.publish(&env);
+        Ok(())
+    }
+
+    /// Return the current admin.
+    pub fn admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Return the pending admin, if a handover is in progress.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
     /// Compute the commitment for an entrant and nonce: `sha256(entrant_xdr || nonce)`.
     pub fn commitment(env: Env, entrant: Address, nonce: BytesN<32>) -> BytesN<32> {
         let mut buf = Bytes::new(&env);
@@ -118,6 +220,9 @@ impl LotteryContract {
     /// passed to `reveal` later. Must be called before the commit deadline.
     pub fn enter(env: Env, entrant: Address, commitment: BytesN<32>) {
         entrant.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 
         let now = env.ledger().timestamp();
         let commit_deadline: u64 = env
@@ -142,8 +247,10 @@ impl LotteryContract {
         env.storage().instance().set(&key, &commitment);
 
         let mut entrants: Vec<Address> = env.storage().instance().get(&DataKey::Entrants).unwrap();
-        entrants.push_back(entrant);
+        entrants.push_back(entrant.clone());
         env.storage().instance().set(&DataKey::Entrants, &entrants);
+
+        env.events().publish((symbol_short!("enter"), entrant), ());
     }
 
     /// Reveal the nonce behind a prior commitment.
@@ -153,6 +260,9 @@ impl LotteryContract {
     /// commitment submitted in `enter`.
     pub fn reveal(env: Env, entrant: Address, nonce: BytesN<32>) {
         entrant.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
 
         let now = env.ledger().timestamp();
         let commit_deadline: u64 = env
@@ -190,6 +300,9 @@ impl LotteryContract {
         }
 
         env.storage().instance().set(&revealed_key, &nonce);
+
+        env.events()
+            .publish((symbol_short!("reveal"), entrant), ());
     }
 
     /// Draw the winner from the entrants who successfully revealed.
@@ -198,6 +311,10 @@ impl LotteryContract {
     /// seed is derived by XOR-ing every revealed nonce together, so no
     /// single entrant controls the outcome.
     pub fn draw(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+        
         let now = env.ledger().timestamp();
         let reveal_deadline: u64 = env
             .storage()
@@ -240,6 +357,9 @@ impl LotteryContract {
 
         env.storage().instance().set(&DataKey::Winner, &winner);
         env.storage().instance().set(&DataKey::Drawn, &true);
+
+        env.events()
+            .publish((symbol_short!("draw"),), winner.clone());
 
         winner
     }

@@ -27,8 +27,8 @@
 //! or identifiers are sent. See `docs/privacy.md`.
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -173,6 +173,7 @@ pub fn spawn(
 
     let handle = std::thread::spawn(move || -> Option<String> {
         let path = state_path()?;
+        let state = load_state(&path);
         let current_secs = now_secs();
 
         if current_secs.saturating_sub(state.last_checked_secs) < CHECK_INTERVAL_SECS {

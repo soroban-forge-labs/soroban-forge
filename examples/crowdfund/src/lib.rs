@@ -7,9 +7,48 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
     Address, Env,
 };
+
+/// Emitted when a backer pledges. Topics: ("pledge", from); data: amount.
+#[contractevent(topics = ["pledge"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pledge {
+    #[topic]
+    pub from: Address,
+    pub amount: i128,
+}
+
+/// Emitted when the owner claims funds. Topics: ("claim", owner); data: total.
+#[contractevent(topics = ["claim"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Claim {
+    #[topic]
+    pub owner: Address,
+    pub total: i128,
+}
+
+/// Emitted when a backer is refunded. Topics: ("refund", to); data: amount.
+#[contractevent(topics = ["refund"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Refund {
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+}
+
+// Ledger lifetimes, independent of the campaign's timestamp-based deadline.
+// Renew below 29 days to retain 30 days at five-second ledger closes.
+const DAY_IN_LEDGERS: u32 = 17_280;
+const TTL_THRESHOLD: u32 = 29 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -61,10 +100,16 @@ fn total_pledged(env: &Env) -> i128 {
 }
 
 fn pledge_of(env: &Env, backer: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Pledge(backer.clone()))
-        .unwrap_or(0)
+    let key = DataKey::Pledge(backer.clone());
+    if let Some(amount) = env.storage().persistent().get::<_, i128>(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        amount
+    } else {
+        // extend_ttl traps on absent entries; keep unpledged getters harmless.
+        0
+    }
 }
 
 #[contract]
@@ -91,6 +136,7 @@ impl CrowdfundContract {
         env.storage().instance().set(&DataKey::Deadline, &deadline);
         env.storage().instance().set(&DataKey::TotalPledged, &0i128);
         env.storage().instance().set(&DataKey::Claimed, &false);
+        extend_instance_ttl(&env);
     }
 
     /// Pledge `amount` of the campaign token. Only possible before the
@@ -111,15 +157,17 @@ impl CrowdfundContract {
         );
 
         let new_pledge = pledge_of(&env, &from) + amount;
+        let key = DataKey::Pledge(from.clone());
+        env.storage().persistent().set(&key, &new_pledge);
         env.storage()
             .persistent()
-            .set(&DataKey::Pledge(from.clone()), &new_pledge);
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
         env.storage()
             .instance()
             .set(&DataKey::TotalPledged, &(total_pledged(&env) + amount));
+        extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("pledge"), from), amount);
+        Pledge { from, amount }.publish(&env);
     }
 
     /// Owner claims the escrowed funds after a successful campaign.
@@ -144,8 +192,8 @@ impl CrowdfundContract {
             &owner,
             &total,
         );
-        env.events()
-            .publish((symbol_short!("claim"), owner), total);
+        extend_instance_ttl(&env);
+        Claim { owner, total }.publish(&env);
     }
 
     /// Refund `to`'s pledge after a failed campaign. Anyone may trigger a
@@ -174,7 +222,8 @@ impl CrowdfundContract {
             &to,
             &amount,
         );
-        env.events().publish((symbol_short!("refund"), to), amount);
+        extend_instance_ttl(&env);
+        Refund { to, amount }.publish(&env);
     }
 
     // --- read-only getters ---

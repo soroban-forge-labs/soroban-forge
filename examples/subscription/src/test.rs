@@ -80,6 +80,8 @@ fn subscribing_charges_the_first_period() {
     assert_eq!(sub.next_charge, START_TS + INTERVAL);
     // The next period is not due yet.
     assert!(!f.contract.is_due(&f.subscriber));
+
+    assert_eq!(env.events().all().len(), 1);
 }
 
 #[test]
@@ -100,6 +102,9 @@ fn charges_once_the_interval_has_elapsed() {
     assert_eq!(sub.charges, 2);
     assert_eq!(sub.next_charge, START_TS + INTERVAL * 2);
     assert!(!f.contract.is_due(&f.subscriber));
+
+    // subscribe + charge events published so far.
+    assert_eq!(env.events().all().len(), 2);
 }
 
 #[test]
@@ -160,6 +165,8 @@ fn cancelling_deactivates_the_subscription() {
     f.contract.cancel(&f.subscriber);
 
     assert!(!f.contract.is_active(&f.subscriber));
+    // subscribe + cancel events published so far.
+    assert_eq!(env.events().all().len(), 2);
     // Even once the interval has elapsed, nothing is due any more.
     env.ledger()
         .with_mut(|li| li.timestamp = START_TS + INTERVAL);
@@ -222,4 +229,33 @@ fn an_attacker_cannot_reinitialize_to_become_the_merchant() {
     f.contract.charge(&f.subscriber);
     assert_eq!(f.token.client.balance(&f.merchant), 2 * AMOUNT);
     assert_eq!(f.token.client.balance(&attacker), 0);
+}
+
+#[test]
+fn storage_survives_past_the_default_ttl() {
+    use soroban_sdk::testutils::storage::Instance as _;
+
+    let env = Env::default();
+    let f = setup(&env);
+    f.contract.subscribe(&f.subscriber);
+
+    let instance_ttl =
+        || env.as_contract(&f.contract.address, || env.storage().instance().get_ttl());
+    let default_ttl = env.ledger().get().min_persistent_entry_ttl;
+    // Inspect before advancing so recording-mode auto-restore cannot mask an expired entry.
+    assert!(instance_ttl() > default_ttl);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number += default_ttl + 1;
+        li.timestamp = START_TS + INTERVAL;
+    });
+
+    assert_eq!(f.contract.merchant(), f.merchant);
+    assert!(f.contract.is_due(&f.subscriber));
+    assert_eq!(f.contract.charge(&f.subscriber), AMOUNT);
+    assert_eq!(f.contract.subscription(&f.subscriber).charges, 2);
+    assert!(instance_ttl() >= INSTANCE_TTL_THRESHOLD);
+
+    f.contract.cancel(&f.subscriber);
+    assert!(!f.contract.is_active(&f.subscriber));
 }

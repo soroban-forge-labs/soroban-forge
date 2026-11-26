@@ -18,7 +18,9 @@
 
 #![no_std]
 
-use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, panic_with_error};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -33,6 +35,17 @@ pub enum Error {
     IntervalHasNotElapsed = 7,
 }
 
+const LEDGERS_PER_DAY: u32 = 17_280;
+/// Renew the instance (plan and subscriptions) once fewer than this many ledgers remain.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
+/// Renew the instance to this many ledgers.
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 60 * LEDGERS_PER_DAY;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -87,6 +100,7 @@ impl SubscriptionContract {
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Amount, &amount);
         env.storage().instance().set(&DataKey::Interval, &interval);
+        extend_instance_ttl(&env);
     }
 
     /// Subscribe `subscriber` and charge the first period immediately.
@@ -116,6 +130,10 @@ impl SubscriptionContract {
                 charges: 1,
             },
         );
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("subscribe"), subscriber), ());
     }
 
     /// Charge `subscriber` for the period that has come due.
@@ -144,7 +162,11 @@ impl SubscriptionContract {
         sub.charges += 1;
         env.storage()
             .instance()
-            .set(&DataKey::Sub(subscriber), &sub);
+            .set(&DataKey::Sub(subscriber.clone()), &sub);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("charge"), subscriber), amount);
 
         amount
     }
@@ -161,7 +183,11 @@ impl SubscriptionContract {
         sub.active = false;
         env.storage()
             .instance()
-            .set(&DataKey::Sub(subscriber), &sub);
+            .set(&DataKey::Sub(subscriber.clone()), &sub);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("cancel"), subscriber), ());
     }
 
     /// Whether `subscriber` has an active subscription.

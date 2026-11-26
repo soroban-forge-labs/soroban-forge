@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contract, contractimpl, contracttype, token, Address, Env, panic_with_error};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -15,6 +17,15 @@ pub enum Error {
     TimeoutHasNotBeenReachedYet = 7,
 }
 
+const LEDGERS_PER_DAY: u32 = 17_280;
+const INSTANCE_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
+const INSTANCE_TTL_EXTEND_TO: u32 = 60 * LEDGERS_PER_DAY;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
 
 /// State of the escrow.
 #[contracttype]
@@ -83,12 +94,14 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Pending);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit the escrowed amount into this contract.
     ///
     /// Must be called by the depositor after `initialize`.
     pub fn deposit(env: Env) {
+        extend_instance_ttl(&env);
         let state: EscrowState = env
             .storage()
             .instance()
@@ -110,12 +123,16 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Funded);
+
+        env.events()
+            .publish((symbol_short!("deposit"), depositor), amount);
     }
 
     /// Release funds to the recipient.
     ///
     /// Must be called by the approver while the escrow is in `Funded` state.
     pub fn approve_release(env: Env) {
+        extend_instance_ttl(&env);
         let state: EscrowState = env
             .storage()
             .instance()
@@ -138,12 +155,16 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Released);
+
+        env.events()
+            .publish((symbol_short!("release"), recipient), amount);
     }
 
     /// Refund the depositor after the timeout has passed.
     ///
     /// Anyone may call this, but the funds always go back to the depositor.
     pub fn refund_on_timeout(env: Env) {
+        extend_instance_ttl(&env);
         let state: EscrowState = env
             .storage()
             .instance()
@@ -168,10 +189,14 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &EscrowState::Refunded);
+
+        env.events()
+            .publish((symbol_short!("refund"), depositor), amount);
     }
 
     /// Return the current escrow state.
     pub fn get_state(env: Env) -> EscrowState {
+        extend_instance_ttl(&env);
         env.storage()
             .instance()
             .get(&DataKey::State)

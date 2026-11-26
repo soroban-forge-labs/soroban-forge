@@ -676,7 +676,7 @@ impl ForgePlugin for InvokePlugin {
             // Issue #285: simulate and pretty-print.
             let sim = run_stellar_simulate(
                 &contract_id,
-                &source,
+                &source_for_stellar,
                 &network,
                 &function,
                 &fn_args,
@@ -741,7 +741,7 @@ impl ForgePlugin for InvokePlugin {
         if ctx.json {
             let result = run_stellar_invoke_json(
                 &contract_id,
-                &source,
+                &source_for_stellar,
                 &network,
                 &function,
                 &fn_args,
@@ -758,7 +758,7 @@ impl ForgePlugin for InvokePlugin {
         } else {
             run_stellar_invoke(
                 &contract_id,
-                &source,
+                &source_for_stellar,
                 &network,
                 &function,
                 &fn_args,

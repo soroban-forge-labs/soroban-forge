@@ -126,6 +126,28 @@ not in these functions — a programmatic caller that passes `force` means it.
 
 `cargo test -p soroban-forge-scaffold`
 
+## Crowdfund storage lifetime
+
+The `crowdfund` template renews the campaign instance on construction and
+successful pledge/claim/refund calls. Existing pledge reads and writes renew
+only the addressed backer's persistent entry, using named 29-day threshold
+and 30-day extension constants in ledger units. Missing pledge reads remain
+zero and create no state. The generated crowdfund tests cover operation past
+the default TTL, renewal boundaries and unchanged escrow payouts. Idle state
+can still archive after its extended lifetime; see the generated README.
+
+## Flash-loan storage lifetime
+
+The `flash-loan` template renews its instance on construction and on every
+`deposit`, `withdraw` and `flash_loan` call, and keeps each depositor's LP
+shares in their own persistent entry renewed on write and on the `shares`
+read path. Named 29-day threshold and 30-day extension constants are in
+ledger units; a read for a non-depositor returns zero and creates no entry.
+The generated flash-loan tests record lifetimes before advancing past the
+default TTL and then exercise a loan, a withdrawal and share reads. Idle
+state can still archive after its extended lifetime; see the generated
+flash-loan README.
+
 ## Empty staking pools
 
 The `staking` template rejects `distribute` when total stake is zero with

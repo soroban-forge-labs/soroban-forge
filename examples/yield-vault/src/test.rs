@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{storage::Instance as _, storage::Persistent as _, Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
@@ -267,4 +267,38 @@ fn test_transfer_from_without_allowance_fails() {
 
     ctx.vault.deposit(&ctx.alice, &500);
     ctx.vault.transfer_from(&ctx.bob, &ctx.alice, &ctx.bob, &100);
+}
+
+#[test]
+fn test_storage_outlives_the_default_ttl() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    ctx.vault.deposit(&ctx.alice, &1_000);
+
+    // Past the default instance/persistent TTL (4096 ledgers), within the extended ones.
+    env.ledger().with_mut(|li| li.sequence_number += 50_000);
+
+    assert_eq!(ctx.vault.balance_of(&ctx.alice), 1_000);
+    assert_eq!(ctx.vault.withdraw(&ctx.alice, &400), 400);
+    assert_eq!(ctx.vault.balance_of(&ctx.alice), 600);
+    assert_eq!(ctx.vault.total_shares(), 600);
+
+    env.as_contract(&ctx.contract_id, || {
+        let instance_ttl = env.storage().instance().get_ttl();
+        assert!(
+            instance_ttl >= INSTANCE_TTL_THRESHOLD,
+            "instance TTL was not extended: {}",
+            instance_ttl
+        );
+        let shares_ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Shares(ctx.alice.clone()));
+        assert!(
+            shares_ttl >= SHARES_TTL_THRESHOLD,
+            "share balance TTL was not extended: {}",
+            shares_ttl
+        );
+    });
 }

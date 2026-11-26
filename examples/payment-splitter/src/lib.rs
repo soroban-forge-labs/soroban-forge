@@ -38,6 +38,30 @@ pub enum Error {
 }
 
 
+/// 1 day in ledgers, assuming 5 seconds per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Instance storage TTL is extended to 30 days.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which instance storage TTL is extended (29 days).
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+
+/// Persistent storage TTL is extended to 30 days.
+pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which persistent storage TTL is extended (29 days).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
+fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+}
+
 #[contracttype]
 pub enum DataKey {
     Token,
@@ -91,19 +115,25 @@ impl PaymentSplitterContract {
             if share == 0 {
                 panic_with_error!(&env, Error::ShareMustBePositive);
             }
+            let shares_key = DataKey::Shares(payee.clone());
             if env
                 .storage()
-                .instance()
-                .has(&DataKey::Shares(payee.clone()))
+                .persistent()
+                .has(&shares_key)
             {
                 panic_with_error!(&env, Error::DuplicatePayee);
             }
             env.storage()
-                .instance()
-                .set(&DataKey::Shares(payee.clone()), &share);
+                .persistent()
+                .set(&shares_key, &share);
+            extend_persistent_ttl(&env, &shares_key);
+
+            let released_key = DataKey::Released(payee);
             env.storage()
-                .instance()
-                .set(&DataKey::Released(payee), &0_i128);
+                .persistent()
+                .set(&released_key, &0_i128);
+            extend_persistent_ttl(&env, &released_key);
+
             total_shares += share;
         }
 
@@ -118,6 +148,7 @@ impl PaymentSplitterContract {
         env.storage()
             .instance()
             .set(&DataKey::TotalReleased, &0_i128);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit `amount` tokens from `from` into the splitter.
@@ -143,23 +174,27 @@ impl PaymentSplitterContract {
         env.storage()
             .instance()
             .set(&DataKey::TotalReceived, &(received + amount));
+        extend_instance_ttl(&env);
     }
 
     /// Shares held by `payee`. Panics for an address that is not a payee.
     pub fn shares(env: Env, payee: Address) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Shares(payee))
-            .unwrap_or_else(|| panic_with_error!(&env, Error::NotAPayee))
+        let key = DataKey::Shares(payee);
+        if let Some(shares) = env.storage().persistent().get::<_, u32>(&key) {
+            extend_persistent_ttl(&env, &key);
+            shares
+        } else {
+            panic_with_error!(&env, Error::NotAPayee)
+        }
     }
 
     /// Total the payee has already withdrawn.
     pub fn released(env: Env, payee: Address) -> i128 {
         Self::shares(env.clone(), payee.clone());
-        env.storage()
-            .instance()
-            .get(&DataKey::Released(payee))
-            .unwrap_or(0)
+        let key = DataKey::Released(payee);
+        let released = env.storage().persistent().get(&key).unwrap_or(0);
+        extend_persistent_ttl(&env, &key);
+        released
     }
 
     /// Everything the payee has earned over the splitter's lifetime,
@@ -188,14 +223,17 @@ impl PaymentSplitterContract {
         }
 
         let released: i128 = Self::released(env.clone(), payee.clone());
+        let released_key = DataKey::Released(payee.clone());
         env.storage()
-            .instance()
-            .set(&DataKey::Released(payee.clone()), &(released + amount));
+            .persistent()
+            .set(&released_key, &(released + amount));
+        extend_persistent_ttl(&env, &released_key);
 
         let total_released: i128 = Self::total_released(env.clone());
         env.storage()
             .instance()
             .set(&DataKey::TotalReleased, &(total_released + amount));
+        extend_instance_ttl(&env);
 
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         token::Client::new(&env, &token).transfer(&env.current_contract_address(), &payee, &amount);

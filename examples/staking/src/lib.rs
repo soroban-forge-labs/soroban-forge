@@ -7,6 +7,12 @@ use soroban_sdk::{
 
 const SCALE: i128 = 1_000_000_000_000_000_000;
 
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -21,12 +27,15 @@ pub enum Error {
     /// is possible for 18-decimal tokens once `amount` exceeds roughly
     /// 1.7 × 10²⁰ base units (~170 tokens at 18 decimals).
     Overflow = 6,
+    /// `accept_admin` / `cancel_admin_proposal` called with no proposal pending.
+    NoPendingAdmin = 7,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     StakeToken,
     RewardToken,
     AccRewardPerShare,
@@ -72,29 +81,53 @@ fn set_total_staked(env: &Env, val: i128) {
 }
 
 fn read_staked(env: &Env, user: &Address) -> i128 {
-    env.storage()
+    let key = DataKey::Staked(user.clone());
+    let val = env
+        .storage()
         .persistent()
-        .get(&DataKey::Staked(user.clone()))
-        .unwrap_or(0)
+        .get(&key)
+        .unwrap_or(0);
+    if val > 0 {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+    }
+    val
 }
 
 fn write_staked(env: &Env, user: &Address, val: i128) {
+    let key = DataKey::Staked(user.clone());
     env.storage()
         .persistent()
-        .set(&DataKey::Staked(user.clone()), &val);
+        .set(&key, &val);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
 fn reward_debt(env: &Env, user: &Address) -> i128 {
-    env.storage()
+    let key = DataKey::RewardDebt(user.clone());
+    let val = env
+        .storage()
         .persistent()
-        .get(&DataKey::RewardDebt(user.clone()))
-        .unwrap_or(0)
+        .get(&key)
+        .unwrap_or(0);
+    if val > 0 {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+    }
+    val
 }
 
 fn set_reward_debt(env: &Env, user: &Address, val: i128) {
+    let key = DataKey::RewardDebt(user.clone());
     env.storage()
         .persistent()
-        .set(&DataKey::RewardDebt(user.clone()), &val);
+        .set(&key, &val);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
 }
 
 fn pending(env: &Env, user: &Address) -> i128 {
@@ -155,6 +188,9 @@ impl StakingContract {
 
     pub fn deposit(env: Env, user: Address, amount: i128) {
         user.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -179,6 +215,9 @@ impl StakingContract {
 
     pub fn withdraw(env: Env, user: Address, amount: i128) {
         user.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
@@ -207,6 +246,9 @@ impl StakingContract {
 
     pub fn distribute(env: Env, amount: i128) {
         admin(&env).require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         let total = total_staked(&env);
         if total == 0 {
             panic_with_error!(&env, Error::NoStakers);
@@ -231,12 +273,64 @@ impl StakingContract {
 
     pub fn claim(env: Env, user: Address) -> i128 {
         user.require_auth();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
         let amt = _claim(&env, &user);
         if amt == 0 {
             panic_with_error!(&env, Error::NoRewards);
         }
         env.events().publish((symbol_short!("claim"), user), amt);
         amt
+    }
+
+    /// Step 1 of the admin handover: current admin nominates `new_admin`.
+    /// Overwrites any earlier unaccepted proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let current = admin(&env);
+        current.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_prop"), current), new_admin);
+    }
+
+    /// Step 2: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        pending.require_auth();
+        let old = admin(&env);
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_acc"), old), pending);
+    }
+
+    /// Current admin withdraws an unaccepted proposal.
+    pub fn cancel_admin_proposal(env: Env) {
+        let current = admin(&env);
+        current.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_canc"), current), pending);
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        admin(&env)
+    }
+
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     pub fn get_staked(env: Env, user: Address) -> i128 {
