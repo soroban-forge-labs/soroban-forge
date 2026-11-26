@@ -12,7 +12,19 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token, Address, Env,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    AmountPerClaimMustBePositive = 2,
+    WithdrawalAmountMustBePositive = 3,
+    CooldownNotElapsed = 4,
+}
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
 /// Instance storage (admin and faucet settings) is bumped to this many ledgers
@@ -86,12 +98,12 @@ impl FaucetContract {
         // admin, `amount_per_claim` equal to the whole balance and no
         // cooldown, then drain the faucet in a single claim.
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         admin.require_auth();
 
         if amount_per_claim <= 0 {
-            panic!("amount per claim must be positive");
+            panic_with_error!(&env, Error::AmountPerClaimMustBePositive);
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -186,7 +198,7 @@ impl FaucetContract {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if amount <= 0 {
-            panic!("withdrawal amount must be positive");
+            panic_with_error!(&env, Error::WithdrawalAmountMustBePositive);
         }
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         token::Client::new(&env, &token).transfer(&env.current_contract_address(), &admin, &amount);
@@ -197,7 +209,7 @@ impl FaucetContract {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if amount_per_claim <= 0 {
-            panic!("amount per claim must be positive");
+            panic_with_error!(&env, Error::AmountPerClaimMustBePositive);
         }
         env.storage()
             .instance()
@@ -225,7 +237,7 @@ impl FaucetContract {
         let key = DataKey::LastClaim(to.clone());
         if let Some(last_claim) = env.storage().persistent().get::<_, u64>(&key) {
             if now < last_claim + cooldown {
-                panic!("cooldown not elapsed");
+                panic_with_error!(&env, Error::CooldownNotElapsed);
             }
         }
 

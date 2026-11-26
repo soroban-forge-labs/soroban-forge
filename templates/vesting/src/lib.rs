@@ -15,8 +15,19 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, symbol_short, token, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env,
 };
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    TotalAmountMustBePositive = 2,
+    AlreadyFunded = 3,
+    AlreadyRevoked = 4,
+    NothingToClaim = 5,
+}
 
 /// Ledgers per day, assuming ~5s per ledger.
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -88,7 +99,7 @@ impl VestingContract {
     /// * `cliff_duration` — seconds from now until first tokens vest
     /// * `vesting_duration` — seconds from cliff end until fully vested
     /// * `total_amount` — total tokens to vest over the schedule
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         admin: Address,
         token: Address,
@@ -97,15 +108,10 @@ impl VestingContract {
         vesting_duration: u64,
         total_amount: i128,
     ) {
-        admin.require_auth();
         extend_instance_ttl(&env);
 
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
-        }
-
         if total_amount <= 0 {
-            panic!("total amount must be positive");
+            panic_with_error!(&env, Error::TotalAmountMustBePositive);
         }
 
         let now = env.ledger().timestamp();
@@ -144,7 +150,7 @@ impl VestingContract {
             .get::<_, bool>(&DataKey::Funded)
             .unwrap_or(false)
         {
-            panic!("already funded");
+            panic_with_error!(&env, Error::AlreadyFunded);
         }
         env.storage().instance().set(&DataKey::Funded, &true);
 
@@ -171,7 +177,7 @@ impl VestingContract {
             .get::<_, bool>(&DataKey::Revoked)
             .unwrap_or(false)
         {
-            panic!("already revoked");
+            panic_with_error!(&env, Error::AlreadyRevoked);
         }
 
         let vested = Self::get_vested_amount(env.clone());
@@ -310,7 +316,7 @@ impl VestingContract {
 
         let claimable = Self::get_claimable_amount(env.clone());
         if claimable <= 0 {
-            panic!("nothing to claim");
+            panic_with_error!(&env, Error::NothingToClaim);
         }
 
         let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap();

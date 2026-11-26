@@ -12,10 +12,20 @@
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, token::TokenInterface, Address, Env,
-    MuxedAddress, String,
-};
+use soroban_sdk::{contracterror, contract, contractimpl, contracttype, symbol_short, token, token::TokenInterface, Address, Env, MuxedAddress, String, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AmountMustNotBeNegative = 1,
+    ExpirationLedgerIsInThePast = 2,
+    InsufficientAllowance = 3,
+    AlreadyInitialized = 4,
+    AmountMustBePositive = 5,
+    InsufficientWrapperBalance = 6,
+}
+
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
 pub const BALANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
@@ -103,10 +113,10 @@ fn write_allowance(
     expiration_ledger: u32,
 ) {
     if amount < 0 {
-        panic!("amount must not be negative");
+        panic_with_error!(&env, Error::AmountMustNotBeNegative);
     }
     if amount > 0 && expiration_ledger < env.ledger().sequence() {
-        panic!("expiration_ledger is in the past");
+        panic_with_error!(&env, Error::ExpirationLedgerIsInThePast);
     }
     let key = DataKey::Allowance(AllowanceKey {
         from: from.clone(),
@@ -130,7 +140,7 @@ fn write_allowance(
 fn spend_allowance(env: &Env, from: &Address, spender: &Address, amount: i128) {
     let allowance = read_allowance(env, from, spender);
     if allowance.amount < amount {
-        panic!("insufficient allowance");
+        panic_with_error!(&env, Error::InsufficientAllowance);
     }
     if amount > 0 {
         write_allowance(
@@ -156,7 +166,7 @@ impl WrappedAssetContract {
     /// Initialize the wrapper for a given underlying SEP-41 token.
     pub fn initialize(env: Env, underlying: Address) {
         if env.storage().instance().has(&DataKey::Underlying) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         env.storage()
             .instance()
@@ -172,7 +182,7 @@ impl WrappedAssetContract {
         extend_instance(&env);
 
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(&env, Error::AmountMustBePositive);
         }
 
         let underlying: Address = env.storage().instance().get(&DataKey::Underlying).unwrap();
@@ -198,12 +208,12 @@ impl WrappedAssetContract {
         extend_instance(&env);
 
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(&env, Error::AmountMustBePositive);
         }
 
         let balance = read_balance(&env, &from);
         if balance < amount {
-            panic!("insufficient wrapper balance");
+            panic_with_error!(&env, Error::InsufficientWrapperBalance);
         }
         write_balance(&env, &from, balance - amount);
 
@@ -255,12 +265,12 @@ impl TokenInterface for WrappedAssetContract {
         from.require_auth();
         extend_instance(&env);
         if amount < 0 {
-            panic!("amount must not be negative");
+            panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }
         let to = to.address();
         let from_bal = read_balance(&env, &from);
         if from_bal < amount {
-            panic!("insufficient wrapper balance");
+            panic_with_error!(&env, Error::InsufficientWrapperBalance);
         }
         write_balance(&env, &from, from_bal - amount);
         let to_bal = read_balance(&env, &to);
@@ -273,12 +283,12 @@ impl TokenInterface for WrappedAssetContract {
         spender.require_auth();
         extend_instance(&env);
         if amount < 0 {
-            panic!("amount must not be negative");
+            panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }
         spend_allowance(&env, &from, &spender, amount);
         let from_bal = read_balance(&env, &from);
         if from_bal < amount {
-            panic!("insufficient wrapper balance");
+            panic_with_error!(&env, Error::InsufficientWrapperBalance);
         }
         write_balance(&env, &from, from_bal - amount);
         let to_bal = read_balance(&env, &to);
@@ -291,11 +301,11 @@ impl TokenInterface for WrappedAssetContract {
         from.require_auth();
         extend_instance(&env);
         if amount < 0 {
-            panic!("amount must not be negative");
+            panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }
         let from_bal = read_balance(&env, &from);
         if from_bal < amount {
-            panic!("insufficient wrapper balance");
+            panic_with_error!(&env, Error::InsufficientWrapperBalance);
         }
         write_balance(&env, &from, from_bal - amount);
         let total_supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap();
@@ -309,12 +319,12 @@ impl TokenInterface for WrappedAssetContract {
         spender.require_auth();
         extend_instance(&env);
         if amount < 0 {
-            panic!("amount must not be negative");
+            panic_with_error!(&env, Error::AmountMustNotBeNegative);
         }
         spend_allowance(&env, &from, &spender, amount);
         let from_bal = read_balance(&env, &from);
         if from_bal < amount {
-            panic!("insufficient wrapper balance");
+            panic_with_error!(&env, Error::InsufficientWrapperBalance);
         }
         write_balance(&env, &from, from_bal - amount);
         let total_supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap();
@@ -330,11 +340,13 @@ impl TokenInterface for WrappedAssetContract {
     }
 
     fn name(env: Env) -> String {
-        String::from_str(&env, "Wrapped Asset")
+        let underlying: Address = env.storage().instance().get(&DataKey::Underlying).unwrap();
+        token::Client::new(&env, &underlying).name()
     }
 
     fn symbol(env: Env) -> String {
-        String::from_str(&env, "WRAP")
+        let underlying: Address = env.storage().instance().get(&DataKey::Underlying).unwrap();
+        token::Client::new(&env, &underlying).symbol()
     }
 }
 

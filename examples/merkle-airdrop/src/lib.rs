@@ -21,9 +21,25 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    xdr::ToXdr, Address, Bytes, BytesN, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec,
 };
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    AmountMustBePositive = 2,
+    ClaimWindowHasClosed = 3,
+    AlreadyClaimed = 4,
+    InvalidProof = 5,
+    ClaimWindowIsStillOpen = 6,
+    NothingToSweep = 7,
+    /// `accept_admin` or `cancel_admin_proposal` was called with no admin
+    /// handover in progress.
+    NoPendingAdmin = 8,
+}
+
 
 /// Claim markers are persistent (they must outlive the instance), so they are
 /// bumped past the archival threshold as they are written.
@@ -39,15 +55,6 @@ fn extend_instance(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum Error {
-    /// `accept_admin` or `cancel_admin_proposal` was called with no admin
-    /// handover in progress.
-    NoPendingAdmin = 1,
 }
 
 #[contracttype]
@@ -81,7 +88,7 @@ impl MerkleAirdropContract {
     /// `sweep` the funded balance or `set_root` to approve their own claims.
     pub fn initialize(env: Env, admin: Address, token: Address, root: BytesN<32>) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -104,7 +111,7 @@ impl MerkleAirdropContract {
         admin.require_auth();
         extend_instance(&env);
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(&env, Error::AmountMustBePositive);
         }
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let airdrop = env.current_contract_address();
@@ -229,17 +236,17 @@ impl MerkleAirdropContract {
         extend_instance(&env);
         if let Some(deadline) = env.storage().instance().get::<_, u64>(&DataKey::Deadline) {
             if env.ledger().timestamp() >= deadline {
-                panic!("claim window has closed");
+                panic_with_error!(&env, Error::ClaimWindowHasClosed);
             }
         }
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(&env, Error::AmountMustBePositive);
         }
         if Self::has_claimed(env.clone(), claimant.clone()) {
-            panic!("already claimed");
+            panic_with_error!(&env, Error::AlreadyClaimed);
         }
         if !Self::verify(env.clone(), claimant.clone(), amount, proof) {
-            panic!("invalid proof");
+            panic_with_error!(&env, Error::InvalidProof);
         }
 
         // Mark before transferring so a re-entrant token can't double-pay.
@@ -268,7 +275,7 @@ impl MerkleAirdropContract {
 
         if let Some(deadline) = env.storage().instance().get::<_, u64>(&DataKey::Deadline) {
             if env.ledger().timestamp() < deadline {
-                panic!("claim window is still open");
+                panic_with_error!(&env, Error::ClaimWindowIsStillOpen);
             }
         }
 
@@ -276,7 +283,7 @@ impl MerkleAirdropContract {
         let client = token::Client::new(&env, &token);
         let balance = client.balance(&env.current_contract_address());
         if balance <= 0 {
-            panic!("nothing to sweep");
+            panic_with_error!(&env, Error::NothingToSweep);
         }
         client.transfer(&env.current_contract_address(), &admin, &balance);
         balance

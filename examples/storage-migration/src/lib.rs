@@ -8,7 +8,15 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Env, String};
+use soroban_sdk::{contracterror, contract, contractimpl, contracttype, Env, String, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+}
+
 
 /// Ledgers per day, assuming ~5s per ledger.
 pub const DAY_IN_LEDGERS: u32 = 17280;
@@ -125,7 +133,7 @@ impl StorageMigration {
             || persistent.has(&DataKey::CounterV1)
             || instance.has(&DataKey::CounterV1)
         {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
 
         // Set the v2 state

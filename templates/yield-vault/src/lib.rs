@@ -27,6 +27,7 @@ pub enum VaultError {
     ZeroShares = 5,
     ZeroAssets = 6,
     EmptyVaultYield = 7,
+    InsufficientAllowance = 8,
 }
 
 #[contracttype]
@@ -36,6 +37,7 @@ enum DataKey {
     TotalShares,
     TotalAssets,
     Shares(Address),
+    Allowance(Address, Address),
 }
 
 fn extend_instance_ttl(env: &Env) {
@@ -57,18 +59,14 @@ pub struct YieldVaultContract;
 
 #[contractimpl]
 impl YieldVaultContract {
-    /// Initialize the vault with an underlying SEP-41 token.
-    pub fn initialize(env: Env, asset: Address) -> Result<(), VaultError> {
-        if env.storage().instance().has(&DataKey::Asset) {
-            return Err(VaultError::AlreadyInitialized);
-        }
-
+    /// Deploy-time setup with the underlying SEP-41 token. Runs atomically
+    /// with deployment, so there is no window where an attacker could race
+    /// a separate initialize call to pick the vault's asset.
+    pub fn __constructor(env: Env, asset: Address) {
         env.storage().instance().set(&DataKey::Asset, &asset);
         env.storage().instance().set(&DataKey::TotalShares, &0_i128);
         env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
         extend_instance_ttl(&env);
-
-        Ok(())
     }
 
     /// Return the underlying asset token address.
@@ -284,6 +282,102 @@ impl YieldVaultContract {
             .publish((symbol_short!("yield"), from), yield_amount);
 
         Ok(())
+    }
+
+    /// Transfer `amount` of vault shares from the caller to `to`.
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<(), VaultError> {
+        from.require_auth();
+        if amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        let from_shares = Self::balance_of(env.clone(), from.clone());
+        if from_shares < amount {
+            return Err(VaultError::InsufficientBalance);
+        }
+
+        Self::write_shares(&env, &from, from_shares - amount);
+        let to_shares = Self::balance_of(env.clone(), to.clone());
+        Self::write_shares(&env, &to, to_shares + amount);
+
+        env.events()
+            .publish((symbol_short!("transfer"), from, to), amount);
+
+        Ok(())
+    }
+
+    /// Allow `spender` to transfer up to `amount` of the caller's shares.
+    pub fn approve(env: Env, from: Address, spender: Address, amount: i128) -> Result<(), VaultError> {
+        from.require_auth();
+        if amount < 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        env.storage()
+            .temporary()
+            .set(&DataKey::Allowance(from.clone(), spender.clone()), &amount);
+
+        env.events()
+            .publish((symbol_short!("approve"), from, spender), amount);
+
+        Ok(())
+    }
+
+    /// Return the amount `spender` is allowed to transfer from `from`'s shares.
+    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        env.storage()
+            .temporary()
+            .get(&DataKey::Allowance(from, spender))
+            .unwrap_or(0)
+    }
+
+    /// Transfer `amount` of shares from `from` to `to`, drawing on an allowance
+    /// previously set by `from` for the caller (`spender`).
+    pub fn transfer_from(
+        env: Env,
+        spender: Address,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), VaultError> {
+        spender.require_auth();
+        if amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        let key = DataKey::Allowance(from.clone(), spender.clone());
+        let current_allowance: i128 = env.storage().temporary().get(&key).unwrap_or(0);
+        if current_allowance < amount {
+            return Err(VaultError::InsufficientAllowance);
+        }
+
+        let from_shares = Self::balance_of(env.clone(), from.clone());
+        if from_shares < amount {
+            return Err(VaultError::InsufficientBalance);
+        }
+
+        env.storage()
+            .temporary()
+            .set(&key, &(current_allowance - amount));
+
+        Self::write_shares(&env, &from, from_shares - amount);
+        let to_shares = Self::balance_of(env.clone(), to.clone());
+        Self::write_shares(&env, &to, to_shares + amount);
+
+        env.events()
+            .publish((symbol_short!("transfer"), from, to), amount);
+
+        Ok(())
+    }
+
+    fn write_shares(env: &Env, account: &Address, amount: i128) {
+        if amount == 0 {
+            env.storage().persistent().remove(&DataKey::Shares(account.clone()));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Shares(account.clone()), &amount);
+        }
     }
 }
 

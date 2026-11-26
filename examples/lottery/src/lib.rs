@@ -32,8 +32,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, symbol_short, Address, Bytes,
-    BytesN, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, symbol_short, Address, Bytes, BytesN, Env, Vec,
 };
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -46,9 +45,23 @@ pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum Error {
+    AlreadyInitialized = 1,
+    RevealDeadlineMustBeAfterCommitDeadline = 2,
+    CommitPhaseHasEnded = 3,
+    AlreadyEntered = 4,
+    DuplicateCommitment = 5,
+    NotInRevealPhase = 6,
+    NoEntryToReveal = 7,
+    AlreadyRevealed = 8,
+    NonceDoesNotMatchCommitment = 9,
+    RevealPhaseHasNotEnded = 10,
+    WinnerAlreadyDrawn = 11,
+    NoValidReveals = 12,
+    WinnerNotDrawnYet = 13,
     /// `accept_admin` or `cancel_admin_proposal` was called with no handover pending.
-    NoPendingAdmin = 1,
+    NoPendingAdmin = 14,
 }
+
 
 /// Emitted when the current admin proposes a new admin.
 #[contractevent]
@@ -107,12 +120,12 @@ impl LotteryContract {
     /// admin, move the deadlines and wipe the entrants or a drawn winner.
     pub fn initialize(env: Env, admin: Address, commit_deadline: u64, reveal_deadline: u64) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         admin.require_auth();
 
         if reveal_deadline <= commit_deadline {
-            panic!("reveal deadline must be after commit deadline");
+            panic_with_error!(&env, Error::RevealDeadlineMustBeAfterCommitDeadline);
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -218,17 +231,17 @@ impl LotteryContract {
             .get(&DataKey::CommitDeadline)
             .unwrap();
         if now >= commit_deadline {
-            panic!("commit phase has ended");
+            panic_with_error!(&env, Error::CommitPhaseHasEnded);
         }
 
         let key = DataKey::Commitment(entrant.clone());
         if env.storage().instance().has(&key) {
-            panic!("already entered");
+            panic_with_error!(&env, Error::AlreadyEntered);
         }
 
         let comm_used_key = DataKey::CommitmentUsed(commitment.clone());
         if env.storage().instance().has(&comm_used_key) {
-            panic!("duplicate commitment");
+            panic_with_error!(&env, Error::DuplicateCommitment);
         }
         env.storage().instance().set(&comm_used_key, &true);
         env.storage().instance().set(&key, &commitment);
@@ -263,18 +276,18 @@ impl LotteryContract {
             .get(&DataKey::RevealDeadline)
             .unwrap();
         if now < commit_deadline || now >= reveal_deadline {
-            panic!("not in reveal phase");
+            panic_with_error!(&env, Error::NotInRevealPhase);
         }
 
         let commitment: BytesN<32> = env
             .storage()
             .instance()
             .get(&DataKey::Commitment(entrant.clone()))
-            .unwrap_or_else(|| panic!("no entry to reveal"));
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoEntryToReveal));
 
         let revealed_key = DataKey::Revealed(entrant.clone());
         if env.storage().instance().has(&revealed_key) {
-            panic!("already revealed");
+            panic_with_error!(&env, Error::AlreadyRevealed);
         }
 
         let mut buf = Bytes::new(&env);
@@ -283,7 +296,7 @@ impl LotteryContract {
         buf.append(&nonce_bytes);
         let computed: BytesN<32> = env.crypto().sha256(&buf).into();
         if computed != commitment {
-            panic!("nonce does not match commitment");
+            panic_with_error!(&env, Error::NonceDoesNotMatchCommitment);
         }
 
         env.storage().instance().set(&revealed_key, &nonce);
@@ -309,12 +322,12 @@ impl LotteryContract {
             .get(&DataKey::RevealDeadline)
             .unwrap();
         if now < reveal_deadline {
-            panic!("reveal phase has not ended");
+            panic_with_error!(&env, Error::RevealPhaseHasNotEnded);
         }
 
         let drawn: bool = env.storage().instance().get(&DataKey::Drawn).unwrap();
         if drawn {
-            panic!("winner already drawn");
+            panic_with_error!(&env, Error::WinnerAlreadyDrawn);
         }
 
         let entrants: Vec<Address> = env.storage().instance().get(&DataKey::Entrants).unwrap();
@@ -333,7 +346,7 @@ impl LotteryContract {
         }
 
         if revealed_entrants.is_empty() {
-            panic!("no valid reveals");
+            panic_with_error!(&env, Error::NoValidReveals);
         }
 
         let mut index_bytes = [0_u8; 8];
@@ -356,7 +369,7 @@ impl LotteryContract {
         env.storage()
             .instance()
             .get(&DataKey::Winner)
-            .unwrap_or_else(|| panic!("winner not drawn yet"))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::WinnerNotDrawnYet))
     }
 }
 

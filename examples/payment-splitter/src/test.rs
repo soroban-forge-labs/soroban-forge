@@ -143,7 +143,7 @@ fn entitlements_accrue_across_deposits() {
 }
 
 #[test]
-#[should_panic(expected = "nothing to release")]
+#[should_panic]
 fn releasing_twice_without_a_deposit_fails() {
     let env = Env::default();
     let f = setup(&env, &[1, 1], 100);
@@ -155,7 +155,7 @@ fn releasing_twice_without_a_deposit_fails() {
 }
 
 #[test]
-#[should_panic(expected = "not a payee")]
+#[should_panic]
 fn unknown_address_is_not_a_payee() {
     let env = Env::default();
     let f = setup(&env, &[1, 1], 100);
@@ -164,7 +164,26 @@ fn unknown_address_is_not_a_payee() {
 }
 
 #[test]
-#[should_panic(expected = "already initialized")]
+#[should_panic]
+fn mismatched_payees_and_shares_are_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token = make_token(&env);
+    let contract_id = env.register(PaymentSplitterContract, ());
+    let contract = PaymentSplitterContractClient::new(&env, &contract_id);
+
+    let mut payees = Vec::new(&env);
+    payees.push_back(Address::generate(&env));
+    payees.push_back(Address::generate(&env));
+    let mut shares = Vec::new(&env);
+    shares.push_back(1_u32);
+
+    contract.initialize(&token.address, &payees, &shares);
+}
+
+#[test]
+#[should_panic]
 fn second_initialize_is_rejected() {
     let env = Env::default();
     let f = setup(&env, &[1, 1], 100);

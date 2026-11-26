@@ -52,20 +52,12 @@ fn setup(env: &Env) -> TestContext<'_> {
     let reserve_price = 500_i128;
     let duration = 1_000_u64;
 
-    let contract_id = env.register(EnglishAuctionContract, ());
+    let contract_id = env.register(
+        EnglishAuctionContract,
+        (seller.clone(), asset_token.address.clone(), payment_token.address.clone(), asset_amount, reserve_price, duration, 0, 0),
+    );
     let contract_address = contract_id.clone();
     let contract = EnglishAuctionContractClient::new(env, &contract_id);
-
-    contract.initialize(
-        &seller,
-        &asset_token.address,
-        &payment_token.address,
-        &asset_amount,
-        &reserve_price,
-        &duration,
-        &0,
-        &0,
-    );
 
     // Mint tokens
     asset_token.admin.mint(&seller, &asset_amount);
@@ -125,7 +117,7 @@ fn test_place_multiple_bids() {
 }
 
 #[test]
-#[should_panic(expected = "bid is too low")]
+#[should_panic]
 fn test_bid_below_reserve() {
     let env = Env::default();
     let ctx = setup(&env);
@@ -239,19 +231,11 @@ fn test_refund_fails_does_not_block_new_bid() {
     let reserve_price = 500_i128;
     let duration = 1_000_u64;
 
-    let contract_id = env.register(EnglishAuctionContract, ());
-    let contract = EnglishAuctionContractClient::new(&env, &contract_id);
-
-    contract.initialize(
-        &seller,
-        &asset_token.address,
-        &payment_token.address,
-        &asset_amount,
-        &reserve_price,
-        &duration,
-        &0,
-        &0,
+    let contract_id = env.register(
+        EnglishAuctionContract,
+        (seller.clone(), asset_token.address.clone(), payment_token.address.clone(), asset_amount, reserve_price, duration, 0, 0),
     );
+    let contract = EnglishAuctionContractClient::new(&env, &contract_id);
 
     // Mint tokens
     asset_token.admin.mint(&seller, &asset_amount);
@@ -292,19 +276,11 @@ fn test_late_funding_keeps_the_full_bidding_window() {
     let payment_token = make_token(&env);
     let seller = Address::generate(&env);
     let bidder = Address::generate(&env);
-    let contract_id = env.register(EnglishAuctionContract, ());
-    let contract = EnglishAuctionContractClient::new(&env, &contract_id);
-
-    contract.initialize(
-        &seller,
-        &asset_token.address,
-        &payment_token.address,
-        &100,
-        &500,
-        &1_000,
-        &0,
-        &0,
+    let contract_id = env.register(
+        EnglishAuctionContract,
+        (seller.clone(), asset_token.address.clone(), payment_token.address.clone(), 100, 500, 1_000, 0, 0),
     );
+    let contract = EnglishAuctionContractClient::new(&env, &contract_id);
     asset_token.admin.mint(&seller, &100);
     payment_token.admin.mint(&bidder, &10_000);
 

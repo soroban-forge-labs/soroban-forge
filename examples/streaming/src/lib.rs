@@ -13,7 +13,21 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    TotalAmountMustBePositive = 2,
+    DurationMustBePositive = 3,
+    AlreadyFunded = 4,
+    AlreadyCancelled = 5,
+    NothingToClaim = 6,
+}
 
 const LEDGERS_PER_DAY: u32 = 17_280;
 /// Renew the instance (stream schedule and claimed amount) once fewer than this many ledgers remain.
@@ -65,15 +79,15 @@ impl StreamingContract {
         // the recipient, schedule and amount and reset `Claimed`, redirecting
         // tokens the original sender already funded.
         if env.storage().instance().has(&DataKey::Sender) {
-            panic!("already initialized");
+            panic_with_error!(&env, Error::AlreadyInitialized);
         }
         sender.require_auth();
 
         if total_amount <= 0 {
-            panic!("total amount must be positive");
+            panic_with_error!(&env, Error::TotalAmountMustBePositive);
         }
         if duration_seconds == 0 {
-            panic!("duration must be positive");
+            panic_with_error!(&env, Error::DurationMustBePositive);
         }
 
         let now = env.ledger().timestamp();
@@ -109,7 +123,7 @@ impl StreamingContract {
             .get::<_, bool>(&DataKey::Funded)
             .unwrap_or(false)
         {
-            panic!("already funded");
+            panic_with_error!(&env, Error::AlreadyFunded);
         }
         env.storage().instance().set(&DataKey::Funded, &true);
         extend_instance_ttl(&env);
@@ -136,7 +150,7 @@ impl StreamingContract {
             .get::<_, bool>(&DataKey::Cancelled)
             .unwrap_or(false)
         {
-            panic!("already cancelled");
+            panic_with_error!(&env, Error::AlreadyCancelled);
         }
 
         let streamed = Self::get_streamed_amount(env.clone());
@@ -229,7 +243,7 @@ impl StreamingContract {
 
         let claimable = Self::get_claimable_amount(env.clone());
         if claimable <= 0 {
-            panic!("nothing to claim");
+            panic_with_error!(&env, Error::NothingToClaim);
         }
 
         let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap();

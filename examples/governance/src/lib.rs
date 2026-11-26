@@ -20,9 +20,31 @@
 //! voted with repeatedly.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Symbol, Val, Vec,
 };
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    QuorumMustBePositive = 2,
+    VotingPeriodMustBePositive = 3,
+    AlreadyAMember = 4,
+    NotAMember = 5,
+    OnlyMembersCanCreateProposals = 6,
+    AlreadyVotedOnThisProposal = 7,
+    VotingPeriodHasEnded = 8,
+    NotEligibleToVoteOnThisProposal = 9,
+    VotingPeriodHasNotEndedYet = 10,
+    ProposalAlreadyExecuted = 11,
+    QuorumNotReached = 12,
+    ProposalDidNotPass = 13,
+    /// `accept_admin` or `cancel_admin_proposal` was called with no admin
+    /// handover in progress.
+    NoPendingAdmin = 14,
+}
+
 
 /// Votes counted for each eligible voter.
 pub const VOTE_WEIGHT: i128 = 1;
@@ -57,15 +79,6 @@ pub struct Proposal {
     pub votes_against: i128,
     /// Whether the proposal has been executed.
     pub executed: bool,
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum Error {
-    /// `accept_admin` or `cancel_admin_proposal` was called with no admin
-    /// handover in progress.
-    NoPendingAdmin = 1,
 }
 
 #[contracttype]
@@ -126,16 +139,12 @@ impl GovernanceContract {
     /// * `quorum`        — minimum total votes (for + against) required to execute;
     ///   with one vote per member this is a number of members
     /// * `voting_period` — voting window in ledgers (~5 s per ledger on mainnet)
-    pub fn initialize(env: Env, admin: Address, quorum: i128, voting_period: u32) {
-        admin.require_auth();
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
-        }
+    pub fn __constructor(env: Env, admin: Address, quorum: i128, voting_period: u32) {
         if quorum <= 0 {
-            panic!("quorum must be positive");
+            panic_with_error!(&env, Error::QuorumMustBePositive);
         }
         if voting_period == 0 {
-            panic!("voting period must be positive");
+            panic_with_error!(&env, Error::VotingPeriodMustBePositive);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Quorum, &quorum);
@@ -208,7 +217,7 @@ impl GovernanceContract {
         extend_instance(&env);
         let key = DataKey::MemberSince(member);
         if env.storage().persistent().has(&key) {
-            panic!("already a member");
+            panic_with_error!(&env, Error::AlreadyAMember);
         }
         env.storage()
             .persistent()
@@ -229,7 +238,7 @@ impl GovernanceContract {
         extend_instance(&env);
         let key = DataKey::MemberSince(member);
         if !env.storage().persistent().has(&key) {
-            panic!("not a member");
+            panic_with_error!(&env, Error::NotAMember);
         }
         env.storage().persistent().remove(&key);
         let count: u32 = Self::member_count(env.clone());
@@ -266,7 +275,7 @@ impl GovernanceContract {
         proposer.require_auth();
         extend_instance(&env);
         if !Self::is_member(env.clone(), proposer.clone()) {
-            panic!("only members can create proposals");
+            panic_with_error!(&env, Error::OnlyMembersCanCreateProposals);
         }
 
         let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(0);
@@ -313,7 +322,7 @@ impl GovernanceContract {
         // Prevent double-voting.
         let voted_key = DataKey::Voted(proposal_id, voter.clone());
         if env.storage().persistent().has(&voted_key) {
-            panic!("already voted on this proposal");
+            panic_with_error!(&env, Error::AlreadyVotedOnThisProposal);
         }
 
         let prop_key = DataKey::Proposal(proposal_id);
@@ -324,12 +333,12 @@ impl GovernanceContract {
             .expect("proposal not found");
 
         if env.ledger().sequence() > proposal.voting_deadline {
-            panic!("voting period has ended");
+            panic_with_error!(&env, Error::VotingPeriodHasEnded);
         }
 
         let power = voting_power(&env, &voter, &proposal);
         if power <= 0 {
-            panic!("not eligible to vote on this proposal");
+            panic_with_error!(&env, Error::NotEligibleToVoteOnThisProposal);
         }
 
         if in_favour {
@@ -364,19 +373,19 @@ impl GovernanceContract {
             .expect("proposal not found");
 
         if env.ledger().sequence() <= proposal.voting_deadline {
-            panic!("voting period has not ended yet");
+            panic_with_error!(&env, Error::VotingPeriodHasNotEndedYet);
         }
         if proposal.executed {
-            panic!("proposal already executed");
+            panic_with_error!(&env, Error::ProposalAlreadyExecuted);
         }
 
         let quorum: i128 = env.storage().instance().get(&DataKey::Quorum).unwrap_or(1);
         let total = proposal.votes_for + proposal.votes_against;
         if total < quorum {
-            panic!("quorum not reached");
+            panic_with_error!(&env, Error::QuorumNotReached);
         }
         if proposal.votes_for <= proposal.votes_against {
-            panic!("proposal did not pass");
+            panic_with_error!(&env, Error::ProposalDidNotPass);
         }
 
         proposal.executed = true;

@@ -38,9 +38,8 @@ fn setup(env: &Env) -> TestContext<'_> {
     env.mock_all_auths();
 
     let asset = make_token(env);
-    let contract_id = env.register(YieldVaultContract, ());
+    let contract_id = env.register(YieldVaultContract, (asset.address.clone(),));
     let vault = YieldVaultContractClient::new(env, &contract_id);
-    vault.initialize(&asset.address);
 
     let alice = Address::generate(env);
     let bob = Address::generate(env);
@@ -189,14 +188,6 @@ fn test_rounding_favours_vault() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #1)")]
-fn test_cannot_reinitialize() {
-    let env = Env::default();
-    let ctx = setup(&env);
-    ctx.vault.initialize(&ctx.asset.address);
-}
-
-#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_cannot_deposit_zero() {
     let env = Env::default();
@@ -219,9 +210,8 @@ fn test_cannot_add_yield_to_empty_vault() {
     let env = Env::default();
     env.mock_all_auths();
     let asset = make_token(&env);
-    let contract_id = env.register(YieldVaultContract, ());
+    let contract_id = env.register(YieldVaultContract, (asset.address.clone(),));
     let vault = YieldVaultContractClient::new(&env, &contract_id);
-    vault.initialize(&asset.address);
 
     let provider = Address::generate(&env);
     asset.admin.mint(&provider, &1_000);
@@ -234,6 +224,49 @@ fn test_cannot_seed_empty_vault_with_dust_deposit() {
     let env = Env::default();
     let ctx = setup(&env);
     ctx.vault.deposit(&ctx.alice, &1);
+}
+
+#[test]
+fn test_transfer_shares_and_withdraw_by_receiver() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    ctx.vault.deposit(&ctx.alice, &500);
+    assert_eq!(ctx.vault.balance_of(&ctx.alice), 500);
+
+    ctx.vault.transfer(&ctx.alice, &ctx.bob, &200);
+    assert_eq!(ctx.vault.balance_of(&ctx.alice), 300);
+    assert_eq!(ctx.vault.balance_of(&ctx.bob), 200);
+
+    // Bob, who received shares via transfer, can redeem them himself.
+    let assets = ctx.vault.withdraw(&ctx.bob, &200);
+    assert_eq!(assets, 200);
+    assert_eq!(ctx.vault.balance_of(&ctx.bob), 0);
+}
+
+#[test]
+fn test_approve_and_transfer_from() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    ctx.vault.deposit(&ctx.alice, &500);
+    ctx.vault.approve(&ctx.alice, &ctx.bob, &150);
+    assert_eq!(ctx.vault.allowance(&ctx.alice, &ctx.bob), 150);
+
+    ctx.vault.transfer_from(&ctx.bob, &ctx.alice, &ctx.bob, &100);
+    assert_eq!(ctx.vault.balance_of(&ctx.alice), 400);
+    assert_eq!(ctx.vault.balance_of(&ctx.bob), 100);
+    assert_eq!(ctx.vault.allowance(&ctx.alice, &ctx.bob), 50);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_transfer_from_without_allowance_fails() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    ctx.vault.deposit(&ctx.alice, &500);
+    ctx.vault.transfer_from(&ctx.bob, &ctx.alice, &ctx.bob, &100);
 }
 
 #[test]

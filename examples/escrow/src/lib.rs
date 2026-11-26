@@ -1,6 +1,21 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    AmountMustBePositive = 2,
+    TimeoutMustBeAFutureAbsoluteLedgerSequence = 3,
+    DepositCanOnlyBeMadeInPendingState = 4,
+    FundsNotDepositedYet = 5,
+    FundsNotDepositedOrAlreadySettled = 6,
+    TimeoutHasNotBeenReachedYet = 7,
+}
 
 const LEDGERS_PER_DAY: u32 = 17_280;
 const INSTANCE_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
@@ -51,7 +66,7 @@ impl EscrowContract {
     /// * `amount`     — token amount to be escrowed
     /// * `timeout`    — absolute ledger sequence after which the depositor may
     ///                  claim a refund via `refund_on_timeout`
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         depositor: Address,
         recipient: Address,
@@ -60,15 +75,11 @@ impl EscrowContract {
         amount: i128,
         timeout: u32,
     ) {
-        depositor.require_auth();
-        if env.storage().instance().has(&DataKey::Depositor) {
-            panic!("already initialized");
-        }
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(&env, Error::AmountMustBePositive);
         }
         if timeout <= env.ledger().sequence() {
-            panic!("timeout must be a future absolute ledger sequence");
+            panic_with_error!(&env, Error::TimeoutMustBeAFutureAbsoluteLedgerSequence);
         }
         env.storage()
             .instance()
@@ -97,7 +108,7 @@ impl EscrowContract {
             .get(&DataKey::State)
             .expect("escrow not initialized");
         if state != EscrowState::Pending {
-            panic!("deposit can only be made in Pending state");
+            panic_with_error!(&env, Error::DepositCanOnlyBeMadeInPendingState);
         }
 
         let depositor: Address = env.storage().instance().get(&DataKey::Depositor).unwrap();
@@ -128,7 +139,7 @@ impl EscrowContract {
             .get(&DataKey::State)
             .expect("escrow not initialized");
         if state != EscrowState::Funded {
-            panic!("funds not deposited yet");
+            panic_with_error!(&env, Error::FundsNotDepositedYet);
         }
 
         let approver: Address = env.storage().instance().get(&DataKey::Approver).unwrap();
@@ -160,12 +171,12 @@ impl EscrowContract {
             .get(&DataKey::State)
             .expect("escrow not initialized");
         if state != EscrowState::Funded {
-            panic!("funds not deposited or already settled");
+            panic_with_error!(&env, Error::FundsNotDepositedOrAlreadySettled);
         }
 
         let timeout: u32 = env.storage().instance().get(&DataKey::Timeout).unwrap();
         if env.ledger().sequence() <= timeout {
-            panic!("timeout has not been reached yet");
+            panic_with_error!(&env, Error::TimeoutHasNotBeenReachedYet);
         }
 
         let token_id: Address = env.storage().instance().get(&DataKey::TokenId).unwrap();

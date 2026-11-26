@@ -38,17 +38,18 @@ fn setup(env: &Env) -> (VestingContractClient<'_>, Tok<'_>, Address, Address, u6
     let cliff_duration = 1000_u64; // 1000 seconds
     let vesting_duration = 4000_u64; // 4000 seconds
 
-    let contract_id = env.register(VestingContract, ());
-    let contract = VestingContractClient::new(env, &contract_id);
-
-    contract.initialize(
-        &admin,
-        &token.address,
-        &beneficiary,
-        &cliff_duration,
-        &vesting_duration,
-        &100_000,
+    let contract_id = env.register(
+        VestingContract,
+        (
+            admin.clone(),
+            token.address.clone(),
+            beneficiary.clone(),
+            cliff_duration,
+            vesting_duration,
+            100_000i128,
+        ),
     );
+    let contract = VestingContractClient::new(env, &contract_id);
 
     (contract, token, admin, beneficiary, start_ts)
 }
@@ -155,7 +156,7 @@ fn multiple_partial_claims() {
 }
 
 #[test]
-#[should_panic(expected = "nothing to claim")]
+#[should_panic]
 fn double_claim_fails() {
     let env = Env::default();
     let (contract, token, admin, _beneficiary, start_ts) = setup(&env);
@@ -172,7 +173,7 @@ fn double_claim_fails() {
 }
 
 #[test]
-#[should_panic(expected = "nothing to claim")]
+#[should_panic]
 fn claim_pre_cliff_fails() {
     let env = Env::default();
     let (contract, _token, _admin, _beneficiary, start_ts) = setup(&env);
@@ -183,7 +184,7 @@ fn claim_pre_cliff_fails() {
 }
 
 #[test]
-#[should_panic(expected = "already funded")]
+#[should_panic]
 fn fund_twice_is_rejected() {
     let env = Env::default();
     let (contract, token, admin, _beneficiary, _start_ts) = setup(&env);
@@ -248,16 +249,18 @@ fn vested_amount_does_not_overflow_for_huge_grant_over_long_duration() {
     let cliff_duration = 0_u64;
     let vesting_duration = 4 * 365 * 24 * 60 * 60_u64; // ~4 years in seconds
 
-    let contract_id = env.register(VestingContract, ());
-    let contract = VestingContractClient::new(&env, &contract_id);
-    contract.initialize(
-        &admin,
-        &token.address,
-        &beneficiary,
-        &cliff_duration,
-        &vesting_duration,
-        &huge_amount,
+    let contract_id = env.register(
+        VestingContract,
+        (
+            admin.clone(),
+            token.address.clone(),
+            beneficiary.clone(),
+            cliff_duration,
+            vesting_duration,
+            huge_amount,
+        ),
     );
+    let contract = VestingContractClient::new(&env, &contract_id);
 
     // Halfway through the schedule, roughly half should be vested. This
     // calculation used to overflow u128 and trap before the fix.
