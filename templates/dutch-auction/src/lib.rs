@@ -10,6 +10,23 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
+/// Ledgers per day, assuming ~5s per ledger.
+pub const DAY_IN_LEDGERS: u32 = 17_280;
+/// Target TTL for contract instance storage (~30 days).
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold below which instance storage TTL is extended (~29 days).
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL_EXTEND_TO - DAY_IN_LEDGERS;
+/// Target TTL for persistent storage entries (~30 days).
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold below which persistent storage TTL is extended (~29 days).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL_EXTEND_TO - DAY_IN_LEDGERS;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AuctionState {
@@ -102,6 +119,7 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Pending);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit the asset tokens into the auction contract to open the auction.
@@ -132,6 +150,7 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Open);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("fund"), seller), asset_amount);
@@ -206,6 +225,7 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::SettledPrice, &current_price);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("buy"), buyer), current_price);
@@ -238,6 +258,7 @@ impl DutchAuctionContract {
         env.storage()
             .instance()
             .set(&DataKey::State, &AuctionState::Canceled);
+        extend_instance_ttl(&env);
 
         env.events()
             .publish((symbol_short!("cancel"), seller), asset_amount);
