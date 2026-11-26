@@ -87,10 +87,10 @@ depends on which storage durability it uses:
   entry's footprint for the life of the contract, with no per-entry
   expiration — fine for the bounded state these templates keep, worth
   watching if you add unbounded per-user data to instance storage yourself.
-- **Persistent storage, TTL managed** (`access-control`, `merkle-airdrop`,
-  `multi-token`, `nft`, `nft-marketplace`, `soulbound`, `token`,
-  `yield-vault`): per-entry state (balances, ownership, claims) lives in
-  persistent storage, and every read/write path calls `extend_ttl` on that
+- **Persistent storage, TTL managed** (`access-control`, `flash-loan`,
+  `merkle-airdrop`, `multi-token`, `nft`, `nft-marketplace`, `soulbound`,
+  `token`, `yield-vault`): per-entry state (balances, ownership, claims) lives
+  in persistent storage, and every read/write path calls `extend_ttl` on that
   entry, following the [TTL bump pattern](storage-ttl.md).
 - **Persistent storage, TTL *not* managed — known gap** (`staking`,
   `timelock`): both templates store per-user or per-operation state in

@@ -56,15 +56,56 @@ to re-enter the pool mid-callback.
 | entrypoint | who may call | notes |
 |------------|--------------|-------|
 | `flash_loan(receiver, amount)` | anyone | the loan; reverts unless repaid with fee |
-| `deposit(from, amount)` | anyone | add liquidity |
-| `withdraw(to, amount)` | admin | remove liquidity |
+| `deposit(from, amount)` | anyone | mints LP shares to `from` at the current price |
+| `withdraw(to, amount)` | `to` (must hold shares) | redeems shares and sends tokens at the current price |
 | `fee_for(amount)` | anyone | quote the fee, rounded up |
 | `balance()` / `token()` / `fee_bps()` / `admin()` | anyone | views |
+| `shares(who)` / `total_shares()` | anyone | LP accounting views |
+
+## Ownership of the liquidity
+
+This pool is an **LP pool**, not an admin-controlled treasury. Anyone may
+deposit and receive shares; anyone may later withdraw by redeeming shares at
+the current share price. Fees earned on loans accrue to the whole pool, so a
+depositor's redemption value grows while their liquidity is deployed.
+
+- The `admin` passed to the constructor is the **first** LP and the fee setter.
+  It is *not* a privileged withdrawer — `withdraw` requires the destination
+  address to authenticate and to hold enough shares.
+- Shares are minted at `amount * total_shares / pool_balance_before`, rounded
+  down. Dust stays in the pool and accrues to existing LPs.
+- Withdrawals redeem `amount * total_shares / pool_balance`, rounded up in
+  shares, so an LP always gets back at least the token amount they asked for.
+- If you want a single-owner pool where only one address can deposit *and*
+  withdraw, keep the `admin` field but gate `deposit` on it instead of issuing
+  shares — see caveat 6.
+
+## Storage lifetime
+
+Soroban archives storage entries whose TTL runs out, and an archived entry is
+unreadable until someone restores it. This pool keeps its own state alive:
+
+- the pool settings and `TotalShares` live in instance storage, renewed on
+  construction and on every `deposit`, `withdraw` and `flash_loan` call;
+- each depositor's LP shares live in their own persistent entry, renewed both
+  when the pool writes it (`deposit`, `withdraw`) and when it reads it
+  (`shares`, and the read inside a deposit or withdrawal).
+
+`TTL_THRESHOLD` and `TTL_EXTEND_TO` are named ledger constants: an entry with
+less than 29 days of life left is extended back to 30 days, assuming
+five-second ledger closes. Reading `shares` for an address that never
+deposited returns zero and creates no entry.
+
+Renewal happens on use, not on a schedule: renewal cannot resurrect an entry
+that has already been archived, and a pool nobody calls for ~30 days will
+still archive. The tests record lifetimes *before* advancing past the
+network's default TTL, then run a loan, a withdrawal and share reads, so the
+SDK's test-only auto-restoration cannot mask a lapsed entry.
 
 ## Develop
 
 ```sh
-cargo test                 # 13 unit tests, including both borrower outcomes
+cargo test                 # 23 unit tests, including both borrower outcomes
 stellar contract build     # build the deployable wasm
 ```
 
@@ -101,6 +142,18 @@ stellar contract invoke \
   -- flash_loan \
   --receiver <BORROWER_CONTRACT_ADDRESS> \
   --amount 100000
+```
+
+Withdraw your share (you must authenticate as the LP you deposited as):
+
+```sh
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --source-account <LENDER_IDENTITY> \
+  --network testnet \
+  -- withdraw \
+  --to <LENDER_ADDRESS> \
+  --amount 1000000
 ```
 
 ## Security caveats
@@ -148,15 +201,16 @@ so the first two caveats matter even if you never deploy this contract.
    with authorizations cleared to show this guard works without a signature.
 
 6. **The fee model is deliberately minimal.** `fee_bps` is a flat cut with no
-   accrual, no utilization curve, no per-ledger loan cap and no LP shares —
-   `deposit` credits nothing to the depositor, and only the admin can withdraw.
-   Anything resembling a real money market needs all of that; this contract
-   keeps it out so the atomicity mechanism stays readable.
+    accrual curve, no per-ledger loan cap and no per-account tracking. Fees
+    accrue to the whole pool and are paid out to whoever redeems shares — the
+    LP model means depositors get their share of the fees. `deposit` mints
+    shares and `withdraw` redeems them at the current price; there is no
+    separate accrual ledger.
 
 7. **There is no pause switch and no upgrade path.** Both were left out for
-   the same reason. If you deploy this for real, add them — see the
-   `upgradeable` template — and think about who holds the admin key, since
-   that address can drain every deposit.
+    the same reason. If you deploy this for real, add them — see the
+    `upgradeable` template — and think about who holds the admin key, since
+    that address can change the fee and is the first LP.
 
 8. **Fees round up, amounts do not.** `fee_for` rounds in the pool's favour so
    a small loan is never free. Overflow checks are on in the release profile,

@@ -1,5 +1,5 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::testutils::Events as _;
 use soroban_sdk::{
     symbol_short, token::StellarAssetClient, token::TokenClient, Address, Env, IntoVal, InvokeError,
@@ -145,7 +145,7 @@ fn setup(env: &Env) -> Fixture<'_> {
 fn register_borrower(env: &Env, fx: &Fixture, funded: bool) -> Address {
     let id = env.register(GoodBorrower, (fx.pool_id.clone(),));
     if funded {
-        StellarAssetClient::new(env, &fx.token_id).mint(&id, &BORROWER_RESERVES);
+        StellarAssetClient::new(&env, &fx.token_id).mint(&id, &BORROWER_RESERVES);
     }
     id
 }
@@ -165,7 +165,7 @@ fn empty_pool(env: &Env, fee_bps: u32) -> EmptyPool<'_> {
     let issuer = Address::generate(env);
     let token_id = env.register_stellar_asset_contract_v2(issuer).address();
     let admin = Address::generate(env);
-    let pool_id = env.register(FlashLoanPool, (admin, token_id, fee_bps));
+    let pool_id = env.register(FlashLoanPool, (admin, token_id.clone(), fee_bps));
 
     EmptyPool {
         pool: FlashLoanPoolClient::new(env, &pool_id),
@@ -429,7 +429,7 @@ fn a_shareholder_cannot_withdraw_more_than_their_share() {
     let env = Env::default();
     let fx = setup(&env);
     let lp = Address::generate(&env);
-    StellarAssetClient::new(env, &fx.token_id).mint(&lp, &100_000);
+    StellarAssetClient::new(&env, &fx.token_id).mint(&lp, &100_000);
     fx.pool.deposit(&lp, &100_000);
 
     // The LP owns 100k of 1.1M ≈ 9%. Asking for more than that fails.
@@ -444,7 +444,7 @@ fn deposit_then_full_redeem_returns_principal() {
     let env = Env::default();
     let fx = setup(&env);
     let lp = Address::generate(&env);
-    StellarAssetClient::new(env, &fx.token_id).mint(&lp, &50_000);
+    StellarAssetClient::new(&env, &fx.token_id).mint(&lp, &50_000);
     fx.pool.deposit(&lp, &50_000);
 
     fx.pool.withdraw(&lp, &50_000);
@@ -458,7 +458,7 @@ fn second_depositor_gets_proportional_shares() {
     let env = Env::default();
     let fx = setup(&env);
     let lp = Address::generate(&env);
-    StellarAssetClient::new(env, &fx.token_id).mint(&lp, &100_000);
+    StellarAssetClient::new(&env, &fx.token_id).mint(&lp, &100_000);
     fx.pool.deposit(&lp, &100_000);
 
     // Pool holds 1.1M backed by 1M shares; the LP holds 100_000 / 1.1M ≈
@@ -601,4 +601,120 @@ fn cancel_publishes_an_event() {
         new_admin.into_val(&env),
     );
     assert_eq!(env.events().all(), soroban_sdk::vec![&env, cancel]);
+}
+
+fn advance_ledgers(env: &Env, count: u32) {
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += count;
+    });
+}
+
+fn instance_ttl(env: &Env, pool: &Address) -> u32 {
+    use soroban_sdk::testutils::storage::Instance as _;
+    env.as_contract(pool, || env.storage().instance().get_ttl())
+}
+
+fn shares_ttl(env: &Env, pool: &Address, who: &Address) -> u32 {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    env.as_contract(pool, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::Shares(who.clone()))
+    })
+}
+
+#[test]
+fn pool_state_survives_past_the_default_ttl() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let default_ttl = env.ledger().get().min_persistent_entry_ttl;
+
+    // Inspect lifetimes before advancing: the SDK's test-only auto-restore
+    // would otherwise turn a lapsed entry into a false passing assertion.
+    assert!(instance_ttl(&env, &fx.pool_id) > default_ttl);
+    assert!(shares_ttl(&env, &fx.pool_id, &fx.admin) > default_ttl);
+
+    advance_ledgers(&env, default_ttl + 1);
+
+    // Every entry the pool reads is still live: settings, accounting and the
+    // admin's LP position.
+    assert_eq!(fx.pool.fee_bps(), FEE_BPS);
+    assert_eq!(fx.pool.total_shares(), POOL_LIQUIDITY);
+    assert_eq!(fx.pool.shares(&fx.admin), POOL_LIQUIDITY);
+
+    // And the hot paths still work: a loan accrues a fee, a withdrawal pays
+    // out at the current share price.
+    let borrower = register_borrower(&env, &fx, true);
+    fx.pool.flash_loan(&borrower, &LOAN);
+    assert_eq!(fx.token.balance(&fx.pool_id), POOL_LIQUIDITY + LOAN_FEE);
+
+    fx.pool.withdraw(&fx.admin, &1_000);
+    assert_eq!(fx.token.balance(&fx.admin), 1_000);
+    assert_eq!(fx.pool.shares(&fx.admin), POOL_LIQUIDITY - 1_000);
+}
+
+#[test]
+fn every_state_change_renews_the_instance() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let lender = Address::generate(&env);
+    StellarAssetClient::new(&env, &fx.token_id).mint(&lender, &10_000);
+    let borrower = register_borrower(&env, &fx, true);
+
+    assert_eq!(instance_ttl(&env, &fx.pool_id), TTL_EXTEND_TO);
+
+    advance_ledgers(&env, 2 * DAY_IN_LEDGERS);
+    fx.pool.deposit(&lender, &10_000);
+    assert_eq!(instance_ttl(&env, &fx.pool_id), TTL_EXTEND_TO);
+
+    advance_ledgers(&env, 2 * DAY_IN_LEDGERS);
+    fx.pool.flash_loan(&borrower, &LOAN);
+    assert_eq!(instance_ttl(&env, &fx.pool_id), TTL_EXTEND_TO);
+
+    advance_ledgers(&env, 2 * DAY_IN_LEDGERS);
+    fx.pool.withdraw(&lender, &10_000);
+    assert_eq!(instance_ttl(&env, &fx.pool_id), TTL_EXTEND_TO);
+}
+
+#[test]
+fn lp_share_entries_are_renewed_by_writes_and_reads() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    StellarAssetClient::new(&env, &fx.token_id).mint(&alice, &200_000);
+    StellarAssetClient::new(&env, &fx.token_id).mint(&bob, &50_000);
+
+    fx.pool.deposit(&alice, &100_000);
+    fx.pool.deposit(&bob, &50_000);
+    assert_eq!(shares_ttl(&env, &fx.pool_id, &alice), TTL_EXTEND_TO);
+
+    // Alice's next write renews her entry only.
+    advance_ledgers(&env, 2 * DAY_IN_LEDGERS);
+    fx.pool.deposit(&alice, &100_000);
+    assert_eq!(shares_ttl(&env, &fx.pool_id, &alice), TTL_EXTEND_TO);
+    assert_eq!(
+        shares_ttl(&env, &fx.pool_id, &bob),
+        TTL_EXTEND_TO - 2 * DAY_IN_LEDGERS
+    );
+
+    // A read renews Bob's too: the `shares` view is a hot path for an LP.
+    assert_eq!(fx.pool.shares(&bob), 50_000);
+    assert_eq!(shares_ttl(&env, &fx.pool_id, &bob), TTL_EXTEND_TO);
+}
+
+#[test]
+fn reading_a_missing_share_entry_creates_and_extends_nothing() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let stranger = Address::generate(&env);
+
+    env.mock_auths(&[]);
+    assert_eq!(fx.pool.shares(&stranger), 0);
+    env.as_contract(&fx.pool_id, || {
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&DataKey::Shares(stranger.clone())));
+    });
 }
