@@ -15,6 +15,18 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
+const LEDGERS_PER_DAY: u32 = 17_280;
+/// Renew the instance (stream schedule and claimed amount) once fewer than this many ledgers remain.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 30 * LEDGERS_PER_DAY;
+/// Renew the instance to this many ledgers.
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 60 * LEDGERS_PER_DAY;
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
 #[contracttype]
 pub enum DataKey {
     Sender,
@@ -81,6 +93,7 @@ impl StreamingContract {
         env.storage().instance().set(&DataKey::Claimed, &0_i128);
         env.storage().instance().set(&DataKey::Funded, &false);
         env.storage().instance().set(&DataKey::Cancelled, &false);
+        extend_instance_ttl(&env);
     }
 
     /// Deposit the full stream amount into this contract.
@@ -99,6 +112,7 @@ impl StreamingContract {
             panic!("already funded");
         }
         env.storage().instance().set(&DataKey::Funded, &true);
+        extend_instance_ttl(&env);
 
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let total_amount: i128 = env.storage().instance().get(&DataKey::TotalAmount).unwrap();
@@ -139,6 +153,7 @@ impl StreamingContract {
         env.storage()
             .instance()
             .set(&DataKey::End, &env.ledger().timestamp());
+        extend_instance_ttl(&env);
 
         if env
             .storage()
@@ -221,6 +236,7 @@ impl StreamingContract {
         env.storage()
             .instance()
             .set(&DataKey::Claimed, &(claimed + claimable));
+        extend_instance_ttl(&env);
 
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token);

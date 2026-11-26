@@ -1,5 +1,6 @@
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::storage::Instance as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, Bytes, BytesN, Env, IntoVal, Symbol, TryIntoVal};
 
 fn setup(env: &Env) -> (UpgradeableContractClient<'_>, Address) {
@@ -143,4 +144,33 @@ fn non_pending_address_cannot_accept() {
     }]);
     client.propose_admin(&new_admin);
     client.accept_admin();
+}
+
+fn instance_ttl(env: &Env, client: &UpgradeableContractClient<'_>) -> u32 {
+    env.as_contract(&client.address, || env.storage().instance().get_ttl())
+}
+
+#[test]
+fn instance_storage_survives_past_the_default_ttl() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let default_ttl = env.ledger().get().min_persistent_entry_ttl;
+    // Inspect before advancing so recording-mode auto-restore cannot mask an expired entry.
+    assert!(instance_ttl(&env, &client) > default_ttl);
+
+    env.ledger()
+        .with_mut(|li| li.sequence_number += default_ttl + 1);
+
+    assert_eq!(client.admin(), admin);
+    assert_eq!(client.version(), 1);
+
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&new_admin);
+    assert!(instance_ttl(&env, &client) >= INSTANCE_TTL_THRESHOLD);
+    client.accept_admin();
+    assert_eq!(client.admin(), new_admin);
+
+    client.upgrade(&test_wasm_hash(&env));
+    assert_eq!(client.version(), 2);
+    assert!(instance_ttl(&env, &client) >= INSTANCE_TTL_THRESHOLD);
 }
