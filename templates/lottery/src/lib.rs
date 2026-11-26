@@ -32,7 +32,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, symbol_short, Address, Bytes,
+    BytesN, Env, Vec,
 };
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -41,9 +42,45 @@ pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    /// `accept_admin` or `cancel_admin_proposal` was called with no handover pending.
+    NoPendingAdmin = 1,
+}
+
+/// Emitted when the current admin proposes a new admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes the admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the current admin cancels a pending handover.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     CommitDeadline,
     RevealDeadline,
     Entrants,
@@ -89,6 +126,70 @@ impl LotteryContract {
             .instance()
             .set(&DataKey::Entrants, &Vec::<Address>::new(&env));
         env.storage().instance().set(&DataKey::Drawn, &false);
+    }
+
+    /// Propose `new_admin` as the next admin. Current admin only.
+    ///
+    /// Nothing changes until `new_admin` calls `accept_admin`. Calling this
+    /// again replaces any earlier pending proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed {
+            admin,
+            pending: new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Accept a pending admin handover. Pending admin only.
+    ///
+    /// Fails with `NoPendingAdmin` if no handover is pending. Only the
+    /// proposed address can satisfy the auth check, so any other caller is
+    /// rejected.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending admin handover. Current admin only.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled { admin, pending }.publish(&env);
+        Ok(())
+    }
+
+    /// Return the current admin.
+    pub fn admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Return the pending admin, if a handover is in progress.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// Compute the commitment for an entrant and nonce: `sha256(entrant_xdr || nonce)`.

@@ -449,3 +449,125 @@ fn test_batch_execution_requires_predecessor() {
 
     let _ = batch_id;
 }
+
+#[test]
+fn test_admin_handover_propose_and_accept() {
+    let env = Env::default();
+    let ctx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    assert_eq!(ctx.timelock.get_pending_admin(), Some(new_admin.clone()));
+
+    ctx.timelock.accept_admin(&new_admin);
+    assert_eq!(ctx.timelock.get_pending_admin(), None);
+    assert!(ctx.timelock.has_role(&Role::Admin, &new_admin));
+    assert!(!ctx.timelock.has_role(&Role::Admin, &ctx.admin));
+}
+
+#[test]
+fn test_admin_handover_cancel() {
+    let env = Env::default();
+    let ctx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    ctx.timelock.cancel_admin_proposal(&ctx.admin);
+    assert_eq!(ctx.timelock.get_pending_admin(), None);
+    assert!(ctx.timelock.has_role(&Role::Admin, &ctx.admin));
+
+    assert_eq!(
+        ctx.timelock.try_accept_admin(&new_admin),
+        Err(Ok(TimelockError::NoPendingAdmin))
+    );
+}
+
+#[test]
+fn test_admin_handover_rejects_non_pending_accept() {
+    let env = Env::default();
+    let ctx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    assert_eq!(
+        ctx.timelock.try_accept_admin(&ctx.mallory),
+        Err(Ok(TimelockError::Unauthorized))
+    );
+    assert!(ctx.timelock.has_role(&Role::Admin, &ctx.admin));
+}
+
+#[test]
+fn test_admin_handover_propose_requires_admin() {
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    assert_eq!(
+        ctx.timelock.try_propose_admin(&ctx.mallory, &ctx.mallory),
+        Err(Ok(TimelockError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_storage_survives_past_the_default_ttl() {
+    use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+
+    let env = Env::default();
+    let ctx = setup(&env);
+    let default_ttl = env.ledger().get().min_persistent_entry_ttl;
+
+    let start_ts = 1_000_000_u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let fn_name = Symbol::new(&env, "set_value");
+    let args: Vec<Val> = vec![&env, 7_u32.into_val(&env)];
+    let salt: BytesN<32> = BytesN::from_array(&env, &[9u8; 32]);
+    let op_id = ctx.timelock.queue(
+        &ctx.proposer,
+        &ctx.target_id,
+        &fn_name,
+        &args,
+        &ctx.min_delay,
+        &salt,
+    );
+
+    let instance_ttl = || env.as_contract(&ctx.contract_id, || env.storage().instance().get_ttl());
+    let persistent_ttl = |key: DataKey| {
+        env.as_contract(&ctx.contract_id, || env.storage().persistent().get_ttl(&key))
+    };
+
+    // Inspect before advancing so recording-mode auto-restore cannot mask an expired entry.
+    assert!(instance_ttl() > default_ttl);
+    assert!(persistent_ttl(DataKey::Role(Role::Admin, ctx.admin.clone())) > default_ttl);
+    assert!(persistent_ttl(DataKey::Role(Role::Proposer, ctx.proposer.clone())) > default_ttl);
+    assert!(persistent_ttl(DataKey::Role(Role::Executor, ctx.executor.clone())) > default_ttl);
+    assert!(persistent_ttl(DataKey::Op(op_id.clone())) > default_ttl);
+
+    // The mock target is test scaffolding, not part of the timelock; keep it alive.
+    env.as_contract(&ctx.target_id, || {
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO)
+    });
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number += default_ttl + 1;
+        li.timestamp = start_ts + ctx.min_delay;
+    });
+
+    assert_eq!(ctx.timelock.get_min_delay(), ctx.min_delay);
+    assert!(ctx.timelock.has_role(&Role::Executor, &ctx.executor));
+    assert_eq!(
+        ctx.timelock.get_operation_state(&op_id),
+        OperationStatus::Ready
+    );
+
+    ctx.timelock
+        .execute(&ctx.executor, &ctx.target_id, &fn_name, &args, &salt);
+    assert_eq!(ctx.target.get_value(), 7);
+    assert_eq!(
+        ctx.timelock.get_operation_state(&op_id),
+        OperationStatus::Executed
+    );
+    assert!(instance_ttl() >= INSTANCE_TTL_THRESHOLD);
+    assert!(persistent_ttl(DataKey::Op(op_id)) >= PERSISTENT_TTL_THRESHOLD);
+}

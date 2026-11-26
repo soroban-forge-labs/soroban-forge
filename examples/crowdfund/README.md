@@ -33,6 +33,17 @@ default persistent TTL, then exercise claim and refund with local token
 fixtures. This avoids mistaking the SDK's test-only auto-restoration for
 production TTL retention.
 
+## Events
+
+Each event is a `#[contractevent]` struct, so the schema appears in the
+contract spec.
+
+| Event | Topics | Data |
+| --- | --- | --- |
+| `Pledge` | `"pledge"`, `from` | `amount` |
+| `Claim` | `"claim"`, `owner` | `total` |
+| `Refund` | `"refund"`, `to` | `amount` |
+
 ## Develop
 
 ```sh

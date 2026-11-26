@@ -27,8 +27,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error, token,
-    Address, Env,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error, symbol_short,
+    token, Address, Env,
 };
 
 /// Fee ceiling in basis points (10%), enforced at construction.
@@ -75,6 +75,9 @@ pub enum Error {
     NotRepaid = 4,
     /// The caller holds no LP shares.
     Unauthorized = 5,
+    /// `accept_admin` or `cancel_admin_proposal` was called with no handover
+    /// pending.
+    NoPendingAdmin = 6,
 }
 
 #[contracttype]
@@ -85,6 +88,8 @@ pub enum DataKey {
     TotalShares,
     /// LP shares owned by one depositor, in persistent storage.
     Shares(Address),
+    /// The address an admin handover has been proposed to, if any.
+    PendingAdmin,
 }
 
 /// The interface a borrower must expose to receive a flash loan.
@@ -288,6 +293,48 @@ impl FlashLoanPool {
         env.storage().instance().get(&DataKey::Admin).unwrap()
     }
 
+    /// Propose handing the admin role to `new_admin`. Current admin only.
+    ///
+    /// Nothing changes until `new_admin` calls `accept_admin`, so a typo'd or
+    /// unreachable address cannot lock the pool out of its admin. Proposing
+    /// again replaces any earlier pending proposal.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("adm_prop"), admin), new_admin);
+    }
+
+    /// Complete a handover. Only the pending admin can call this; its
+    /// authorization is required, so any other address is rejected.
+    pub fn accept_admin(env: Env) {
+        let pending = Self::pending_admin_or_fail(&env);
+        pending.require_auth();
+        let previous = Self::admin(env.clone());
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_acc"), previous), pending);
+    }
+
+    /// Withdraw a pending handover. Current admin only.
+    pub fn cancel_admin_proposal(env: Env) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        let pending = Self::pending_admin_or_fail(&env);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("adm_canc"), admin), pending);
+    }
+
+    /// The address a handover is pending to, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
     /// LP shares held by `who`, in share units.
     ///
     /// Reading an existing position renews that depositor's entry; an address
@@ -303,6 +350,13 @@ impl FlashLoanPool {
 }
 
 impl FlashLoanPool {
+    fn pending_admin_or_fail(env: &Env) -> Address {
+        match env.storage().instance().get(&DataKey::PendingAdmin) {
+            Some(pending) => pending,
+            None => panic_with_error!(env, Error::NoPendingAdmin),
+        }
+    }
+
     fn token_address(env: &Env) -> Address {
         env.storage().instance().get(&DataKey::Token).unwrap()
     }

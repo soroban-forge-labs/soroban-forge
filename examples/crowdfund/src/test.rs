@@ -1,7 +1,17 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Symbol, TryFromVal};
+
+/// Decode the last published event into (name, topic address, data).
+fn last_event(env: &Env) -> (Symbol, Address, i128) {
+    let events = env.events().all();
+    let (_contract, topics, data) = events.iter().last().unwrap();
+    let name = Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
+    let who = Address::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+    let data = i128::try_from_val(env, &data).unwrap();
+    (name, who, data)
+}
 
 const START: u64 = 100;
 const DEADLINE: u64 = 1_000;
@@ -289,4 +299,38 @@ fn refund_works_after_default_ttl_without_backer_authorization() {
     assert_eq!(s.campaign.get_total_pledged(), 0);
     assert!(s.campaign.try_refund(&alice).is_err());
     assert_eq!(s.token.balance(&alice), 300);
+}
+
+#[test]
+fn pledge_claim_refund_publish_contractevents() {
+    // Successful campaign: pledge then claim.
+    let env = Env::default();
+    let s = setup(&env);
+    let backer = Address::generate(&env);
+    s.token_admin.mint(&backer, &TARGET);
+    s.campaign.pledge(&backer, &TARGET);
+    let (name, who, data) = last_event(&env);
+    assert_eq!(name, Symbol::new(&env, "pledge"));
+    assert_eq!(who, backer);
+    assert_eq!(data, TARGET);
+
+    advance_past_deadline(&env);
+    s.campaign.claim();
+    let (name, who, data) = last_event(&env);
+    assert_eq!(name, Symbol::new(&env, "claim"));
+    assert_eq!(who, s.owner);
+    assert_eq!(data, TARGET);
+
+    // Failed campaign: pledge then refund.
+    let env = Env::default();
+    let s = setup(&env);
+    let backer = Address::generate(&env);
+    s.token_admin.mint(&backer, &100);
+    s.campaign.pledge(&backer, &100);
+    advance_past_deadline(&env);
+    s.campaign.refund(&backer);
+    let (name, who, data) = last_event(&env);
+    assert_eq!(name, Symbol::new(&env, "refund"));
+    assert_eq!(who, backer);
+    assert_eq!(data, 100);
 }

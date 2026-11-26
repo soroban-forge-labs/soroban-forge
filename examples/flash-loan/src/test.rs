@@ -1,6 +1,9 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{token::StellarAssetClient, token::TokenClient, Address, Env, InvokeError};
+use soroban_sdk::testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::Events as _;
+use soroban_sdk::{
+    symbol_short, token::StellarAssetClient, token::TokenClient, Address, Env, IntoVal, InvokeError,
+};
 
 const FEE_BPS: u32 = 30; // 0.30%
 /// A high fee so accrual survives the integer rounding in share accounting.
@@ -142,7 +145,7 @@ fn setup(env: &Env) -> Fixture<'_> {
 fn register_borrower(env: &Env, fx: &Fixture, funded: bool) -> Address {
     let id = env.register(GoodBorrower, (fx.pool_id.clone(),));
     if funded {
-        StellarAssetClient::new(env, &fx.token_id).mint(&id, &BORROWER_RESERVES);
+        StellarAssetClient::new(&env, &fx.token_id).mint(&id, &BORROWER_RESERVES);
     }
     id
 }
@@ -463,6 +466,141 @@ fn second_depositor_gets_proportional_shares() {
     // have accrued), proving the price mechanism is fair, not arbitrary.
     fx.pool.withdraw(&lp, &100_000);
     assert_eq!(fx.token.balance(&lp), 100_000);
+}
+
+#[test]
+fn admin_can_propose_and_pending_admin_accepts() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    fx.pool.propose_admin(&new_admin);
+    // Proposing alone changes nothing.
+    assert_eq!(fx.pool.admin(), fx.admin);
+    assert_eq!(fx.pool.pending_admin(), Some(new_admin.clone()));
+
+    fx.pool.accept_admin();
+    assert_eq!(fx.pool.admin(), new_admin);
+    assert_eq!(fx.pool.pending_admin(), None);
+}
+
+#[test]
+fn admin_can_cancel_a_proposal() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    fx.pool.propose_admin(&new_admin);
+    fx.pool.cancel_admin_proposal();
+
+    assert_eq!(fx.pool.pending_admin(), None);
+    assert_eq!(fx.pool.admin(), fx.admin);
+    // Nothing is left to accept.
+    assert_eq!(
+        fx.pool.try_accept_admin(),
+        Err(contract_err(Error::NoPendingAdmin))
+    );
+}
+
+#[test]
+fn accept_without_a_proposal_fails() {
+    let env = Env::default();
+    let fx = setup(&env);
+    assert_eq!(
+        fx.pool.try_accept_admin(),
+        Err(contract_err(Error::NoPendingAdmin))
+    );
+    assert_eq!(
+        fx.pool.try_cancel_admin_proposal(),
+        Err(contract_err(Error::NoPendingAdmin))
+    );
+}
+
+#[test]
+fn a_non_pending_address_cannot_accept() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let new_admin = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    fx.pool.propose_admin(&new_admin);
+
+    // Only the stranger authorizes the call; the pending admin does not.
+    fx.pool
+        .mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &fx.pool_id,
+                fn_name: "accept_admin",
+                args: soroban_sdk::Vec::new(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_accept_admin()
+        .unwrap_err();
+
+    assert_eq!(fx.pool.admin(), fx.admin);
+    assert_eq!(fx.pool.pending_admin(), Some(new_admin));
+}
+
+#[test]
+fn only_the_admin_can_propose() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let stranger = Address::generate(&env);
+
+    fx.pool
+        .mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &fx.pool_id,
+                fn_name: "propose_admin",
+                args: (stranger.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_propose_admin(&stranger)
+        .unwrap_err();
+
+    assert_eq!(fx.pool.pending_admin(), None);
+}
+
+#[test]
+fn handover_publishes_events() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    fx.pool.propose_admin(&new_admin);
+    let propose = (
+        fx.pool_id.clone(),
+        (symbol_short!("adm_prop"), fx.admin.clone()).into_val(&env),
+        new_admin.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), soroban_sdk::vec![&env, propose]);
+
+    fx.pool.accept_admin();
+    let accept = (
+        fx.pool_id.clone(),
+        (symbol_short!("adm_acc"), fx.admin.clone()).into_val(&env),
+        new_admin.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), soroban_sdk::vec![&env, accept]);
+}
+
+#[test]
+fn cancel_publishes_an_event() {
+    let env = Env::default();
+    let fx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    fx.pool.propose_admin(&new_admin);
+    fx.pool.cancel_admin_proposal();
+    let cancel = (
+        fx.pool_id.clone(),
+        (symbol_short!("adm_canc"), fx.admin.clone()).into_val(&env),
+        new_admin.into_val(&env),
+    );
+    assert_eq!(env.events().all(), soroban_sdk::vec![&env, cancel]);
 }
 
 fn advance_ledgers(env: &Env, count: u32) {

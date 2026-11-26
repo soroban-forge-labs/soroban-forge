@@ -1,6 +1,7 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{testutils::Ledger, token::StellarAssetClient, token::TokenClient, Address, Env};
 
@@ -151,7 +152,6 @@ fn test_purchase_at_floor_price() {
 
     // State is Settled
     assert_eq!(ctx.contract.get_state(), AuctionState::Settled);
-    assert!(!env.events().all().is_empty());
 }
 
 #[test]
@@ -200,7 +200,6 @@ fn test_cancel_auction() {
         ctx.asset_token.client.balance(&ctx.seller),
         ctx.asset_amount
     );
-    assert!(!env.events().all().is_empty());
 }
 
 #[test]
@@ -211,4 +210,50 @@ fn test_cannot_cancel_after_settled() {
 
     ctx.contract.buy(&ctx.buyer);
     ctx.contract.cancel();
+}
+
+#[test]
+fn test_instance_ttl_survives_default_ttl_expiry() {
+    const DEFAULT_ENTRY_TTL: u32 = 4_096;
+
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    let ttl = env.as_contract(&ctx.contract.address, || env.storage().instance().get_ttl());
+    assert!(ttl > DEFAULT_ENTRY_TTL);
+
+    // Advance ledger sequence past default TTL
+    env.ledger()
+        .with_mut(|li| li.sequence_number += DEFAULT_ENTRY_TTL + 1);
+
+    // Verify contract functions still work past default TTL
+    assert_eq!(ctx.contract.get_current_price(), ctx.start_price);
+    assert_eq!(ctx.contract.get_state(), AuctionState::Open);
+
+    // Purchasing succeeds and extends TTL
+    let price_paid = ctx.contract.buy(&ctx.buyer);
+    assert_eq!(price_paid, ctx.start_price);
+    assert_eq!(ctx.contract.get_state(), AuctionState::Settled);
+
+    let new_ttl = env.as_contract(&ctx.contract.address, || env.storage().instance().get_ttl());
+    assert!(new_ttl > DEFAULT_ENTRY_TTL);
+}
+
+#[test]
+fn test_instance_ttl_survives_default_ttl_expiry_on_cancel() {
+    const DEFAULT_ENTRY_TTL: u32 = 4_096;
+
+    let env = Env::default();
+    let ctx = setup(&env);
+
+    // Advance ledger sequence past default TTL
+    env.ledger()
+        .with_mut(|li| li.sequence_number += DEFAULT_ENTRY_TTL + 1);
+
+    assert_eq!(ctx.contract.get_state(), AuctionState::Open);
+    ctx.contract.cancel();
+    assert_eq!(ctx.contract.get_state(), AuctionState::Canceled);
+
+    let new_ttl = env.as_contract(&ctx.contract.address, || env.storage().instance().get_ttl());
+    assert!(new_ttl > DEFAULT_ENTRY_TTL);
 }

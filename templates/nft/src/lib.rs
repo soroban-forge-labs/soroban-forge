@@ -4,7 +4,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env, String,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address, Env, String,
 };
 
 /// Ledgers per day, assuming ~5s per ledger.
@@ -13,6 +13,11 @@ pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Threshold to trigger TTL extension.
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage TTL (30 days): admin and collection metadata are bumped on
+/// every state-changing call so the contract is not archived while in use.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold to trigger instance TTL extension.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -21,12 +26,15 @@ pub enum Error {
     NotAuthorized = 1,
     TokenNotFound = 2,
     TokenAlreadyExists = 3,
+    /// `accept_admin` or `cancel_admin_proposal` called with no proposal pending.
+    NoPendingAdmin = 4,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     Name,
     Symbol,
     Owner(u32),
@@ -40,6 +48,39 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL);
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
+
+/// Emitted when the admin proposes a successor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts and becomes admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the admin cancels a pending proposal.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
 }
 
 #[contract]
@@ -56,11 +97,60 @@ impl NftContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Name, &name);
         env.storage().instance().set(&DataKey::Symbol, &symbol);
+        extend_instance_ttl(&env);
     }
 
     /// Return the admin address.
     pub fn admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    /// Return the pending admin, if a handover has been proposed.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Step one of a handover: the current admin nominates `new_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        AdminProposed { admin, new_admin }.publish(&env);
+    }
+
+    /// Step two: the pending admin accepts and becomes the admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminAccepted {
+            old_admin,
+            new_admin: pending,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// The current admin withdraws a pending proposal.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled { admin, pending }.publish(&env);
+        Ok(())
     }
 
     /// Return the collection name.
@@ -113,6 +203,7 @@ impl NftContract {
     pub fn mint(env: Env, to: Address, token_id: u32, uri: String) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+        extend_instance_ttl(&env);
 
         let owner_key = DataKey::Owner(token_id);
         if env.storage().persistent().has(&owner_key) {
@@ -138,6 +229,7 @@ impl NftContract {
     /// Requires `from` authorization.
     pub fn transfer(env: Env, from: Address, to: Address, token_id: u32) {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         let owner = Self::owner_of(env.clone(), token_id);
         if owner != from {
@@ -169,6 +261,7 @@ impl NftContract {
     /// Requires `from` authorization.
     pub fn burn(env: Env, from: Address, token_id: u32) {
         from.require_auth();
+        extend_instance_ttl(&env);
 
         let owner = Self::owner_of(env.clone(), token_id);
         if owner != from {
@@ -196,6 +289,7 @@ impl NftContract {
     pub fn approve(env: Env, to: Address, token_id: u32) {
         let owner = Self::owner_of(env.clone(), token_id);
         owner.require_auth();
+        extend_instance_ttl(&env);
 
         let key = DataKey::Approved(token_id);
         env.storage().persistent().set(&key, &to);
@@ -220,6 +314,7 @@ impl NftContract {
     pub fn set_approval_for_all(env: Env, operator: Address, approved: bool) {
         let caller = env.invoker();
         caller.require_auth();
+        extend_instance_ttl(&env);
 
         let key = DataKey::ApprovedForAll(caller.clone(), operator);
         if approved {
@@ -245,6 +340,7 @@ impl NftContract {
     /// Requires authorization from either the owner or an approved operator.
     /// Clears single-token approval after successful transfer.
     pub fn transfer_from(env: Env, from: Address, to: Address, token_id: u32) {
+        extend_instance_ttl(&env);
         let owner = Self::owner_of(env.clone(), token_id);
         let caller = env.invoker();
 

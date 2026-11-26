@@ -188,3 +188,31 @@ fn streamed_amount_does_not_overflow_for_huge_grant_over_long_duration() {
         .with_mut(|li| li.timestamp = start_ts + duration_seconds);
     assert_eq!(contract.get_streamed_amount(), huge_amount);
 }
+
+#[test]
+fn storage_survives_past_the_default_ttl() {
+    use soroban_sdk::testutils::storage::Instance as _;
+
+    let env = Env::default();
+    let (contract, token, _sender, recipient, start_ts) = setup(&env);
+
+    let instance_ttl =
+        || env.as_contract(&contract.address, || env.storage().instance().get_ttl());
+    let default_ttl = env.ledger().get().min_persistent_entry_ttl;
+    // Inspect before advancing so recording-mode auto-restore cannot mask an expired entry.
+    assert!(instance_ttl() > default_ttl);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number += default_ttl + 1;
+        li.timestamp = start_ts + 1000;
+    });
+
+    assert_eq!(contract.get_claimable_amount(), 25_000);
+    assert_eq!(contract.claim(), 25_000);
+    assert_eq!(token.client.balance(&recipient), 25_000);
+    assert!(instance_ttl() >= INSTANCE_TTL_THRESHOLD);
+
+    env.ledger().with_mut(|li| li.timestamp = start_ts + 4000);
+    assert_eq!(contract.claim(), 75_000);
+    assert_eq!(token.client.balance(&recipient), 100_000);
+}

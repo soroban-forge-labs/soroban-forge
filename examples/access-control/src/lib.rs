@@ -21,6 +21,12 @@ pub const DAY_IN_LEDGERS: u32 = 17280;
 pub const PERSISTENT_TTL: u32 = 30 * DAY_IN_LEDGERS;
 /// Threshold at which a read or write extends the TTL.
 pub const PERSISTENT_TTL_THRESHOLD: u32 = PERSISTENT_TTL - DAY_IN_LEDGERS;
+/// Instance storage TTL (30 days). Instance storage (total supply) lives and is
+/// archived with the contract instance, so it is bumped on every
+/// state-changing call.
+pub const INSTANCE_TTL: u32 = 30 * DAY_IN_LEDGERS;
+/// Threshold at which a state-changing call extends the instance TTL.
+pub const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_TTL - DAY_IN_LEDGERS;
 
 /// The bootstrap role. It administers itself and every role that has not been
 /// given an explicit admin with `set_role_admin`.
@@ -43,6 +49,8 @@ pub enum Error {
     InvalidAmount = 3,
     /// Not enough balance to burn.
     InsufficientBalance = 4,
+    /// No admin handover is pending.
+    NoPendingAdmin = 5,
 }
 
 #[contracttype]
@@ -55,6 +63,9 @@ pub enum DataKey {
     RoleAdmin(Symbol),
     /// How many addresses currently hold a role.
     RoleCount(Symbol),
+    /// Admin handover in flight: `(proposer, proposed admin)`. Absent when no
+    /// handover is pending.
+    PendingAdmin,
     /// Demo ledger: balance of an address.
     Balance(Address),
     /// Demo ledger: tokens in circulation.
@@ -94,6 +105,35 @@ pub struct RoleAdminChanged {
     pub admin_role: Symbol,
 }
 
+/// `proposer` offered [`ADMIN_ROLE`] to `new_admin`; it takes effect once
+/// `new_admin` accepts.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub proposer: Address,
+    pub new_admin: Address,
+}
+
+/// `new_admin` accepted the handover and now holds [`ADMIN_ROLE`] in place of
+/// `old_admin`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferred {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// The pending handover to `new_admin` was cancelled.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub cancelled_by: Address,
+    pub new_admin: Address,
+}
+
 /// Demo ledger: `amount` was minted to `to`.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -118,6 +158,12 @@ pub struct Burn {
 // its TTL. That matters more here than for a balance: an expired role entry
 // reads back as "does not hold the role", so a rarely-used admin would
 // silently lose its powers.
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+}
 
 fn read_has_role(env: &Env, role: &Symbol, account: &Address) -> bool {
     let key = DataKey::HasRole(role.clone(), account.clone());
@@ -275,6 +321,7 @@ impl AccessControlContract {
     /// Deploy-time setup. Grants [`ADMIN_ROLE`] to `admin`, who can then grant
     /// every other role.
     pub fn __constructor(env: Env, admin: Address) {
+        extend_instance_ttl(&env);
         grant(&env, &ADMIN_ROLE, &admin);
     }
 
@@ -299,6 +346,7 @@ impl AccessControlContract {
     /// Granting a role the account already holds does nothing and emits no
     /// event.
     pub fn grant_role(env: Env, caller: Address, role: Symbol, account: Address) {
+        extend_instance_ttl(&env);
         let admin_role = read_role_admin(&env, &role);
         require_role(&env, &caller, &admin_role);
         grant(&env, &role, &account);
@@ -309,6 +357,7 @@ impl AccessControlContract {
     /// Revoking a role the account does not hold does nothing. Revoking the
     /// last [`ADMIN_ROLE`] holder fails with [`Error::LastAdmin`].
     pub fn revoke_role(env: Env, caller: Address, role: Symbol, account: Address) {
+        extend_instance_ttl(&env);
         let admin_role = read_role_admin(&env, &role);
         require_role(&env, &caller, &admin_role);
         revoke(&env, &role, &account);
@@ -317,6 +366,7 @@ impl AccessControlContract {
     /// Give up one of your own roles. Takes no admin role and can only ever
     /// affect the caller, so it cannot be used to strip someone else.
     pub fn renounce_role(env: Env, account: Address, role: Symbol) {
+        extend_instance_ttl(&env);
         account.require_auth();
         revoke(&env, &role, &account);
     }
@@ -326,6 +376,7 @@ impl AccessControlContract {
     /// Requires [`ADMIN_ROLE`] — re-parenting the role graph stays a top-level
     /// privilege rather than something a delegated admin can do on its own.
     pub fn set_role_admin(env: Env, caller: Address, role: Symbol, admin_role: Symbol) {
+        extend_instance_ttl(&env);
         require_role(&env, &caller, &ADMIN_ROLE);
         let key = DataKey::RoleAdmin(role.clone());
         env.storage().persistent().set(&key, &admin_role);
@@ -335,8 +386,75 @@ impl AccessControlContract {
         RoleAdminChanged { role, admin_role }.publish(&env);
     }
 
+    /// Step one of a two-step admin handover: offer [`ADMIN_ROLE`] to
+    /// `new_admin`. `caller` must hold [`ADMIN_ROLE`].
+    ///
+    /// Nothing changes until `new_admin` calls `accept_admin`, so a typo in the
+    /// address cannot lock the contract out. Proposing again replaces any
+    /// earlier pending proposal.
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address) {
+        require_role(&env, &caller, &ADMIN_ROLE);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &(caller.clone(), new_admin.clone()));
+        AdminProposed {
+            proposer: caller,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Step two: the proposed admin takes over [`ADMIN_ROLE`] and the proposer
+    /// gives it up. Requires authorization from the pending admin; any other
+    /// address fails with [`Error::Unauthorized`].
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        let (old_admin, pending): (Address, Address) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        if pending != new_admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        // Grant first so the swap can never leave zero admins.
+        grant(&env, &ADMIN_ROLE, &new_admin);
+        revoke(&env, &ADMIN_ROLE, &old_admin);
+        AdminTransferred {
+            old_admin,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Cancel a pending handover. `caller` must hold [`ADMIN_ROLE`].
+    pub fn cancel_admin_proposal(env: Env, caller: Address) {
+        require_role(&env, &caller, &ADMIN_ROLE);
+        let (_, new_admin): (Address, Address) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        AdminProposalCancelled {
+            cancelled_by: caller,
+            new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// The address currently offered [`ADMIN_ROLE`], if a handover is pending.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<_, (Address, Address)>(&DataKey::PendingAdmin)
+            .map(|(_, pending)| pending)
+    }
+
     /// Demo entrypoint gated on [`MINTER_ROLE`] — see `require_role`.
     pub fn mint(env: Env, caller: Address, to: Address, amount: i128) {
+        extend_instance_ttl(&env);
         require_role(&env, &caller, &MINTER_ROLE);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -348,6 +466,7 @@ impl AccessControlContract {
 
     /// Ordinary burn: the owner authorizes burning their own balance.
     pub fn burn(env: Env, from: Address, amount: i128) {
+        extend_instance_ttl(&env);
         from.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -364,6 +483,7 @@ impl AccessControlContract {
     /// Admin-only burn: holders of [`BURNER_ROLE`] may burn any holder's
     /// balance without that holder's authorization.
     pub fn force_burn(env: Env, caller: Address, from: Address, amount: i128) {
+        extend_instance_ttl(&env);
         require_role(&env, &caller, &BURNER_ROLE);
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);

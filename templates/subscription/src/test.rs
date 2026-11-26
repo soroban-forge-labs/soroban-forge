@@ -230,3 +230,32 @@ fn an_attacker_cannot_reinitialize_to_become_the_merchant() {
     assert_eq!(f.token.client.balance(&f.merchant), 2 * AMOUNT);
     assert_eq!(f.token.client.balance(&attacker), 0);
 }
+
+#[test]
+fn storage_survives_past_the_default_ttl() {
+    use soroban_sdk::testutils::storage::Instance as _;
+
+    let env = Env::default();
+    let f = setup(&env);
+    f.contract.subscribe(&f.subscriber);
+
+    let instance_ttl =
+        || env.as_contract(&f.contract.address, || env.storage().instance().get_ttl());
+    let default_ttl = env.ledger().get().min_persistent_entry_ttl;
+    // Inspect before advancing so recording-mode auto-restore cannot mask an expired entry.
+    assert!(instance_ttl() > default_ttl);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number += default_ttl + 1;
+        li.timestamp = START_TS + INTERVAL;
+    });
+
+    assert_eq!(f.contract.merchant(), f.merchant);
+    assert!(f.contract.is_due(&f.subscriber));
+    assert_eq!(f.contract.charge(&f.subscriber), AMOUNT);
+    assert_eq!(f.contract.subscription(&f.subscriber).charges, 2);
+    assert!(instance_ttl() >= INSTANCE_TTL_THRESHOLD);
+
+    f.contract.cancel(&f.subscriber);
+    assert!(!f.contract.is_active(&f.subscriber));
+}
