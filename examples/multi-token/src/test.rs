@@ -262,3 +262,64 @@ fn non_pending_address_cannot_accept() {
     client.propose_admin(&new_admin);
     client.accept_admin();
 }
+
+#[test]
+fn single_and_batch_ops_publish_contractevents() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{symbol_short, IntoVal};
+    let env = Env::default();
+    let (mt, admin) = setup(&env);
+    let id = mt.address.clone();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let ids = vec![&env, 1_u32, 2_u32];
+    let amounts = vec![&env, 10_i128, 20_i128];
+
+    mt.mint(&alice, &1, &100);
+    let expected = (
+        id.clone(),
+        (symbol_short!("mint"), admin.clone(), alice.clone(), 1_u32).into_val(&env),
+        100_i128.into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    mt.mint_batch(&alice, &ids, &amounts);
+    let expected = (
+        id.clone(),
+        (symbol_short!("mintbatch"), admin.clone(), alice.clone()).into_val(&env),
+        (ids.clone(), amounts.clone()).into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    mt.transfer(&alice, &bob, &1, &40);
+    let expected = (
+        id.clone(),
+        (symbol_short!("transfer"), alice.clone(), bob.clone(), 1_u32).into_val(&env),
+        40_i128.into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    mt.transfer_batch(&alice, &bob, &ids, &amounts);
+    let expected = (
+        id.clone(),
+        (symbol_short!("xferbatch"), alice.clone(), bob.clone()).into_val(&env),
+        (ids.clone(), amounts.clone()).into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    mt.burn(&bob, &1, &5);
+    let expected = (
+        id.clone(),
+        (symbol_short!("burn"), bob.clone(), 1_u32).into_val(&env),
+        5_i128.into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    mt.burn_batch(&bob, &ids, &amounts);
+    let expected = (
+        id,
+        (symbol_short!("burnbatch"), bob.clone()).into_val(&env),
+        (ids, amounts).into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+}

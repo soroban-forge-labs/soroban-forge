@@ -4,7 +4,8 @@ use super::*;
 use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
 use soroban_sdk::{
-    contract, contractimpl, token::StellarAssetClient, token::TokenClient, Address, Env, IntoVal, String,
+    contract, contractimpl, symbol_short, token::StellarAssetClient, token::TokenClient, vec, Address,
+    Env, IntoVal, String,
 };
 
 /// Mock NFT contract implementing the `nft` template interface.
@@ -304,12 +305,12 @@ fn test_admin_handover_two_step() {
     let new_admin = Address::generate(&env);
 
     ctx.marketplace.propose_admin(&new_admin);
-    assert_eq!(env.events().all().len(), 1);
+    assert_eq!(env.events().all().events().len(), 1);
     assert_eq!(ctx.marketplace.pending_admin(), Some(new_admin.clone()));
     assert_eq!(ctx.marketplace.admin(), old_admin);
 
     ctx.marketplace.accept_admin();
-    assert_eq!(env.events().all().len(), 1);
+    assert_eq!(env.events().all().events().len(), 1);
     assert_eq!(ctx.marketplace.admin(), new_admin);
     assert_eq!(ctx.marketplace.pending_admin(), None);
 }
@@ -536,4 +537,46 @@ fn test_instance_storage_outlives_the_default_ttl() {
 
     let ttl = env.as_contract(&ctx.marketplace_id, || env.storage().instance().get_ttl());
     assert!(ttl >= INSTANCE_TTL_THRESHOLD, "instance TTL was not extended: {}", ttl);
+}
+
+/// Events the contract under test published in the most recent invocation.
+fn own_events(env: &Env, contract: &Address) -> soroban_sdk::testutils::ContractEvents {
+    env.events().all().filter_by_contract(contract)
+}
+
+#[test]
+fn test_list_buy_cancel_publish_contractevents() {
+    let env = Env::default();
+    let ctx = setup(&env, 500);
+    let uri = String::from_str(&env, "https://example.com/1");
+    ctx.nft.mint(&ctx.seller, &1, &uri);
+    ctx.nft.mint(&ctx.seller, &2, &uri);
+
+    ctx.marketplace
+        .list(&ctx.seller, &ctx.nft_id, &1, &ctx.payment.address, &1_000);
+    let expected = (
+        ctx.marketplace_id.clone(),
+        (symbol_short!("list"), ctx.seller.clone()).into_val(&env),
+        (ctx.nft_id.clone(), 1_u32, 1_000_i128).into_val(&env),
+    );
+    assert_eq!(own_events(&env, &ctx.marketplace_id), vec![&env, expected]);
+
+    ctx.payment.admin.mint(&ctx.buyer, &2_000);
+    ctx.marketplace.buy(&ctx.buyer, &ctx.nft_id, &1);
+    let expected = (
+        ctx.marketplace_id.clone(),
+        (symbol_short!("buy"), ctx.buyer.clone()).into_val(&env),
+        (ctx.nft_id.clone(), 1_u32, 1_000_i128).into_val(&env),
+    );
+    assert_eq!(own_events(&env, &ctx.marketplace_id), vec![&env, expected]);
+
+    ctx.marketplace
+        .list(&ctx.seller, &ctx.nft_id, &2, &ctx.payment.address, &500);
+    ctx.marketplace.cancel(&ctx.seller, &ctx.nft_id, &2);
+    let expected = (
+        ctx.marketplace_id.clone(),
+        (symbol_short!("cancel"), ctx.seller.clone()).into_val(&env),
+        (ctx.nft_id.clone(), 2_u32).into_val(&env),
+    );
+    assert_eq!(own_events(&env, &ctx.marketplace_id), vec![&env, expected]);
 }

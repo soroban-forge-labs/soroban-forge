@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
-    BytesN, Env, Symbol, Val, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, xdr::ToXdr, Address,
+    Bytes, BytesN, Env, Symbol, Val, Vec,
 };
 
 #[contracterror]
@@ -60,6 +60,69 @@ pub struct Operation {
     pub executed: bool,
     pub cancelled: bool,
     pub predecessor: Option<BytesN<32>>,
+}
+
+/// Emitted when the admin proposes a handover. Topics: ("adm_prop", admin); data: new_admin.
+#[contractevent(topics = ["adm_prop"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts. Topics: ("adm_acc", old_admin); data: new_admin.
+#[contractevent(topics = ["adm_acc"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the admin cancels a pending handover. Topics: ("adm_canc"); data: admin.
+#[contractevent(topics = ["adm_canc"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    pub admin: Address,
+}
+
+/// Emitted when an operation or batch is queued. Topics: ("queue", id); data: (ready_at, target).
+/// For a batch, `target` is the first call's target.
+#[contractevent(topics = ["queue"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationQueued {
+    #[topic]
+    pub id: BytesN<32>,
+    pub ready_at: u64,
+    pub target: Address,
+}
+
+/// Emitted when a single operation executes. Topics: ("exec", id); data: target.
+#[contractevent(topics = ["exec"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationExecuted {
+    #[topic]
+    pub id: BytesN<32>,
+    pub target: Address,
+}
+
+/// Emitted when a batch executes. Topics: ("exec", id); data: calls.
+#[contractevent(topics = ["exec"], data_format = "single-value")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchExecuted {
+    #[topic]
+    pub id: BytesN<32>,
+    pub calls: Vec<OperationCall>,
+}
+
+/// Emitted when an operation is cancelled. Topics: ("cancel", id); data: canceller.
+#[contractevent(topics = ["cancel"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationCancelled {
+    #[topic]
+    pub id: BytesN<32>,
+    pub canceller: Address,
 }
 
 #[contracttype]
@@ -185,8 +248,11 @@ impl TimelockContract {
             .set(&DataKey::PendingAdmin, &new_admin);
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("adm_prop"), caller), new_admin);
+        AdminProposed {
+            admin: caller,
+            new_admin,
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -220,8 +286,11 @@ impl TimelockContract {
         env.storage().instance().remove(&DataKey::PendingAdmin);
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("adm_acc"), old_admin), caller);
+        AdminAccepted {
+            old_admin,
+            new_admin: caller,
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -237,7 +306,7 @@ impl TimelockContract {
         env.storage().instance().remove(&DataKey::PendingAdmin);
         extend_instance_ttl(&env);
 
-        env.events().publish((symbol_short!("adm_canc"),), caller);
+        AdminProposalCancelled { admin: caller }.publish(&env);
 
         Ok(())
     }
@@ -436,8 +505,12 @@ impl TimelockContract {
         write_operation(&env, &id, &operation);
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("queue"), id.clone()), (ready_at, target));
+        OperationQueued {
+            id: id.clone(),
+            ready_at,
+            target,
+        }
+        .publish(&env);
 
         Ok(id)
     }
@@ -494,8 +567,12 @@ impl TimelockContract {
         write_operation(&env, &id, &operation);
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("queue"), id.clone()), (ready_at, first.target.clone()));
+        OperationQueued {
+            id: id.clone(),
+            ready_at,
+            target: first.target.clone(),
+        }
+        .publish(&env);
 
         Ok(id)
     }
@@ -554,8 +631,11 @@ impl TimelockContract {
         write_operation(&env, &id, &operation);
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("exec"), id), target.clone());
+        OperationExecuted {
+            id,
+            target: target.clone(),
+        }
+        .publish(&env);
 
         // Invoke the target contract call
         let result = env.invoke_contract::<Val>(&target, &function_name, args);
@@ -611,7 +691,11 @@ impl TimelockContract {
         write_operation(&env, &id, &operation);
         extend_instance_ttl(&env);
 
-        env.events().publish((symbol_short!("exec"), id), calls.clone());
+        BatchExecuted {
+            id,
+            calls: calls.clone(),
+        }
+        .publish(&env);
 
         let mut iter = calls.iter();
         let first_call = iter.next().unwrap();
@@ -653,8 +737,11 @@ impl TimelockContract {
         write_operation(&env, &id, &operation);
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("cancel"), id), caller);
+        OperationCancelled {
+            id,
+            canceller: caller,
+        }
+        .publish(&env);
 
         Ok(())
     }

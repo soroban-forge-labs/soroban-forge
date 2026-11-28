@@ -15,7 +15,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
-    symbol_short, token, Address, Env,
+    token, Address, Env,
 };
 
 /// Maximum protocol fee in basis points (1000 = 10%).
@@ -72,6 +72,38 @@ pub struct AdminAccepted {
     #[topic]
     pub old_admin: Address,
     pub new_admin: Address,
+}
+
+/// Emitted when an NFT is listed. Topics: ("list", seller); data: [nft_contract, token_id, price].
+#[contractevent(topics = ["list"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Listed {
+    #[topic]
+    pub seller: Address,
+    pub nft_contract: Address,
+    pub token_id: u32,
+    pub price: i128,
+}
+
+/// Emitted when a listing is bought. Topics: ("buy", buyer); data: [nft_contract, token_id, price].
+#[contractevent(topics = ["buy"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Bought {
+    #[topic]
+    pub buyer: Address,
+    pub nft_contract: Address,
+    pub token_id: u32,
+    pub price: i128,
+}
+
+/// Emitted when a seller cancels. Topics: ("cancel", seller); data: [nft_contract, token_id].
+#[contractevent(topics = ["cancel"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListingCancelled {
+    #[topic]
+    pub seller: Address,
+    pub nft_contract: Address,
+    pub token_id: u32,
 }
 
 #[contracttype]
@@ -249,10 +281,13 @@ impl NftMarketplaceContract {
         env.storage().persistent().set(&key, &listing);
         extend_persistent_ttl(&env, &key);
 
-        env.events().publish(
-            (symbol_short!("list"), seller),
-            (nft_contract, token_id, price),
-        );
+        Listed {
+            seller,
+            nft_contract,
+            token_id,
+            price,
+        }
+        .publish(&env);
     }
 
     /// Buy a listed NFT.
@@ -290,10 +325,13 @@ impl NftMarketplaceContract {
         nft_client.transfer(&env.current_contract_address(), &buyer, &token_id);
         env.storage().persistent().remove(&key);
 
-        env.events().publish(
-            (symbol_short!("buy"), buyer),
-            (nft_contract, token_id, listing.price),
-        );
+        Bought {
+            buyer,
+            nft_contract,
+            token_id,
+            price: listing.price,
+        }
+        .publish(&env);
     }
 
     /// Cancel an active listing and return the escrowed NFT to `seller`.
@@ -318,8 +356,12 @@ impl NftMarketplaceContract {
 
         env.storage().persistent().remove(&key);
 
-        env.events()
-            .publish((symbol_short!("cancel"), seller), (nft_contract, token_id));
+        ListingCancelled {
+            seller,
+            nft_contract,
+            token_id,
+        }
+        .publish(&env);
     }
 
     /// Get details of an active listing, or `None` if not listed.

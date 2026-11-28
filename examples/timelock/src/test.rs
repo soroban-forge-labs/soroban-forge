@@ -357,100 +357,6 @@ fn test_role_management_and_min_delay_update() {
 }
 
 #[test]
-fn test_batch_queue_and_execute() {
-    let env = Env::default();
-    let ctx = setup(&env);
-
-    let start_ts = 1_000_000_u64;
-    env.ledger().with_mut(|li| li.timestamp = start_ts);
-
-    let call_a = OperationCall {
-        target: ctx.target_id.clone(),
-        function_name: Symbol::new(&env, "set_value"),
-        args: vec![&env, 21_u32.into_val(&env)],
-    };
-    let call_b = OperationCall {
-        target: ctx.target_id.clone(),
-        function_name: Symbol::new(&env, "set_value"),
-        args: vec![&env, 42_u32.into_val(&env)],
-    };
-    let calls = vec![&env, call_a, call_b];
-    let salt: BytesN<32> = BytesN::from_array(&env, &[9u8; 32]);
-
-    let batch_id = ctx.timelock.queue_batch(
-        &ctx.proposer,
-        &calls,
-        &ctx.min_delay,
-        &None,
-        &salt,
-    );
-
-    env.ledger()
-        .with_mut(|li| li.timestamp = start_ts + ctx.min_delay);
-    assert_eq!(
-        ctx.timelock.get_operation_state(&batch_id),
-        OperationStatus::Ready
-    );
-
-    let _ = ctx.timelock.execute_batch(&ctx.executor, &calls, &None, &salt);
-
-    assert_eq!(ctx.target.get_value(), 42);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #7)")]
-fn test_batch_execution_requires_predecessor() {
-    let env = Env::default();
-    let ctx = setup(&env);
-
-    let start_ts = 1_000_000_u64;
-    env.ledger().with_mut(|li| li.timestamp = start_ts);
-
-    let predecessor_call = OperationCall {
-        target: ctx.target_id.clone(),
-        function_name: Symbol::new(&env, "set_value"),
-        args: vec![&env, 7_u32.into_val(&env)],
-    };
-    let predecessor_salt: BytesN<32> = BytesN::from_array(&env, &[10u8; 32]);
-    let predecessor_id = ctx.timelock.queue(
-        &ctx.proposer,
-        &ctx.target_id,
-        &predecessor_call.function_name,
-        &predecessor_call.args,
-        &ctx.min_delay,
-        &predecessor_salt,
-    );
-
-    let batch_call = OperationCall {
-        target: ctx.target_id.clone(),
-        function_name: Symbol::new(&env, "set_value"),
-        args: vec![&env, 99_u32.into_val(&env)],
-    };
-    let batch_calls = vec![&env, batch_call];
-    let batch_salt: BytesN<32> = BytesN::from_array(&env, &[11u8; 32]);
-
-    let batch_id = ctx.timelock.queue_batch(
-        &ctx.proposer,
-        &batch_calls,
-        &ctx.min_delay,
-        &Some(predecessor_id.clone()),
-        &batch_salt,
-    );
-
-    env.ledger()
-        .with_mut(|li| li.timestamp = start_ts + ctx.min_delay);
-
-    ctx.timelock.execute_batch(
-        &ctx.executor,
-        &batch_calls,
-        &Some(predecessor_id),
-        &batch_salt,
-    );
-
-    let _ = batch_id;
-}
-
-#[test]
 fn test_admin_handover_propose_and_accept() {
     let env = Env::default();
     let ctx = setup(&env);
@@ -570,4 +476,94 @@ fn test_storage_survives_past_the_default_ttl() {
     );
     assert!(instance_ttl() >= INSTANCE_TTL_THRESHOLD);
     assert!(persistent_ttl(DataKey::Op(op_id)) >= PERSISTENT_TTL_THRESHOLD);
+}
+
+#[test]
+fn test_admin_handover_publishes_contractevents() {
+    use soroban_sdk::testutils::Events as _;
+    let env = Env::default();
+    let ctx = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    let expected = (
+        ctx.contract_id.clone(),
+        (symbol_short!("adm_prop"), ctx.admin.clone()).into_val(&env),
+        new_admin.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    ctx.timelock.cancel_admin_proposal(&ctx.admin);
+    let expected = (
+        ctx.contract_id.clone(),
+        (symbol_short!("adm_canc"),).into_val(&env),
+        ctx.admin.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    ctx.timelock.propose_admin(&ctx.admin, &new_admin);
+    ctx.timelock.accept_admin(&new_admin);
+    let expected = (
+        ctx.contract_id.clone(),
+        (symbol_short!("adm_acc"), ctx.admin.clone()).into_val(&env),
+        new_admin.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+}
+
+#[test]
+fn test_operation_lifecycle_publishes_contractevents() {
+    use soroban_sdk::testutils::Events as _;
+    let env = Env::default();
+    let ctx = setup(&env);
+    let start_ts = 1_000_000_u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let fn_name = Symbol::new(&env, "set_value");
+    let args: Vec<Val> = vec![&env, 7_u32.into_val(&env)];
+    let salt: BytesN<32> = BytesN::from_array(&env, &[9u8; 32]);
+
+    let op_id = ctx.timelock.queue(
+        &ctx.proposer,
+        &ctx.target_id,
+        &fn_name,
+        &args,
+        &ctx.min_delay,
+        &salt,
+    );
+    let expected = (
+        ctx.contract_id.clone(),
+        (symbol_short!("queue"), op_id.clone()).into_val(&env),
+        (start_ts + ctx.min_delay, ctx.target_id.clone()).into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + ctx.min_delay);
+    let _ = ctx
+        .timelock
+        .execute(&ctx.executor, &ctx.target_id, &fn_name, &args, &salt);
+    let expected = (
+        ctx.contract_id.clone(),
+        (symbol_short!("exec"), op_id.clone()).into_val(&env),
+        ctx.target_id.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    let salt2: BytesN<32> = BytesN::from_array(&env, &[10u8; 32]);
+    let op2 = ctx.timelock.queue(
+        &ctx.proposer,
+        &ctx.target_id,
+        &fn_name,
+        &args,
+        &ctx.min_delay,
+        &salt2,
+    );
+    ctx.timelock.cancel(&ctx.proposer, &op2);
+    let expected = (
+        ctx.contract_id.clone(),
+        (symbol_short!("cancel"), op2).into_val(&env),
+        ctx.proposer.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
 }

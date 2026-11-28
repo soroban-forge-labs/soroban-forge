@@ -21,6 +21,19 @@ the Soroban NFT template interface:
 4. **Cancelling a Listing** — The seller can call `cancel(seller, nft_contract, token_id)`
    at any time prior to purchase to cancel the listing and reclaim their escrowed NFT.
 
+## Events
+
+Each event is a `#[contractevent]` struct, so the schema appears in the
+contract spec.
+
+| Event | Topics | Data |
+| --- | --- | --- |
+| `Listed` | `"list"`, `seller` | `[nft_contract, token_id, price]` |
+| `Bought` | `"buy"`, `buyer` | `[nft_contract, token_id, price]` |
+| `ListingCancelled` | `"cancel"`, `seller` | `[nft_contract, token_id]` |
+| `AdminProposed` | `"admin_proposed"`, `admin` | `{new_admin}` |
+| `AdminAccepted` | `"admin_accepted"`, `old_admin` | `{new_admin}` |
+
 ## Commands
 
 ```sh
