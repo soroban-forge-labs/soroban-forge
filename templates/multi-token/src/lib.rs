@@ -4,7 +4,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
     Env, String, Vec,
 };
 
@@ -115,6 +115,77 @@ pub struct AdminProposalCancelled {
     pub pending: Address,
 }
 
+/// Emitted on a single mint. Topics: ("mint", admin, to, id); data: amount.
+#[contractevent(topics = ["mint"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Mint {
+    #[topic]
+    pub admin: Address,
+    #[topic]
+    pub to: Address,
+    #[topic]
+    pub id: u32,
+    pub amount: i128,
+}
+
+/// Emitted on a batch mint. Topics: ("mintbatch", admin, to); data: [ids, amounts].
+#[contractevent(topics = ["mintbatch"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MintBatch {
+    #[topic]
+    pub admin: Address,
+    #[topic]
+    pub to: Address,
+    pub ids: Vec<u32>,
+    pub amounts: Vec<i128>,
+}
+
+/// Emitted on a single transfer. Topics: ("transfer", from, to, id); data: amount.
+#[contractevent(topics = ["transfer"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Transfer {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+    #[topic]
+    pub id: u32,
+    pub amount: i128,
+}
+
+/// Emitted on a batch transfer. Topics: ("xferbatch", from, to); data: [ids, amounts].
+#[contractevent(topics = ["xferbatch"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferBatch {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+    pub ids: Vec<u32>,
+    pub amounts: Vec<i128>,
+}
+
+/// Emitted on a single burn. Topics: ("burn", from, id); data: amount.
+#[contractevent(topics = ["burn"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Burn {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub id: u32,
+    pub amount: i128,
+}
+
+/// Emitted on a batch burn. Topics: ("burnbatch", from); data: [ids, amounts].
+#[contractevent(topics = ["burnbatch"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BurnBatch {
+    #[topic]
+    pub from: Address,
+    pub ids: Vec<u32>,
+    pub amounts: Vec<i128>,
+}
+
 #[contract]
 pub struct MultiTokenContract;
 
@@ -206,7 +277,7 @@ impl MultiTokenContract {
         admin.require_auth();
         extend_instance(&env);
         receive_balance(&env, &to, id, amount);
-        env.events().publish((symbol_short!("mint"), admin, to, id), amount);
+        Mint { admin, to, id, amount }.publish(&env);
     }
 
     pub fn mint_batch(env: Env, to: Address, ids: Vec<u32>, amounts: Vec<i128>) {
@@ -220,7 +291,7 @@ impl MultiTokenContract {
             check_nonnegative(&env, amount);
             receive_balance(&env, &to, id, amount);
         }
-        env.events().publish((symbol_short!("mintbatch"), admin, to), (ids, amounts));
+        MintBatch { admin, to, ids, amounts }.publish(&env);
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, id: u32, amount: i128) {
@@ -229,7 +300,7 @@ impl MultiTokenContract {
         check_nonnegative(&env, amount);
         spend_balance(&env, &from, id, amount);
         receive_balance(&env, &to, id, amount);
-        env.events().publish((symbol_short!("transfer"), from, to, id), amount);
+        Transfer { from, to, id, amount }.publish(&env);
     }
 
     pub fn transfer_batch(env: Env, from: Address, to: Address, ids: Vec<u32>, amounts: Vec<i128>) {
@@ -243,7 +314,7 @@ impl MultiTokenContract {
             spend_balance(&env, &from, id, amount);
             receive_balance(&env, &to, id, amount);
         }
-        env.events().publish((symbol_short!("xferbatch"), from, to), (ids, amounts));
+        TransferBatch { from, to, ids, amounts }.publish(&env);
     }
 
     pub fn burn(env: Env, from: Address, id: u32, amount: i128) {
@@ -251,7 +322,7 @@ impl MultiTokenContract {
         extend_instance(&env);
         check_nonnegative(&env, amount);
         spend_balance(&env, &from, id, amount);
-        env.events().publish((symbol_short!("burn"), from, id), amount);
+        Burn { from, id, amount }.publish(&env);
     }
 
     pub fn burn_batch(env: Env, from: Address, ids: Vec<u32>, amounts: Vec<i128>) {
@@ -264,7 +335,7 @@ impl MultiTokenContract {
             check_nonnegative(&env, amount);
             spend_balance(&env, &from, id, amount);
         }
-        env.events().publish((symbol_short!("burnbatch"), from), (ids, amounts));
+        BurnBatch { from, ids, amounts }.publish(&env);
     }
 }
 

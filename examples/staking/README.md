@@ -20,6 +20,21 @@ both "stake token A, earn token B" and the classic single-token setup
 `Error::NoStakers` (code 5) without moving tokens, updating rewards, or emitting
 a `distrib` event. The admin can retry after someone stakes.
 
+## Events
+
+Each event is a `#[contractevent]` struct, so the schema appears in the
+contract spec.
+
+| Event | Topics | Data |
+| --- | --- | --- |
+| `Deposit` | `"deposit"`, `user` | `amount` |
+| `Withdraw` | `"withdraw"`, `user` | `amount` |
+| `Distribute` | `"distrib"` | `amount` |
+| `Claim` | `"claim"`, `user` | `amount` |
+| `AdminProposed` | `"adm_prop"`, `admin` | `new_admin` |
+| `AdminAccepted` | `"adm_acc"`, `old_admin` | `new_admin` |
+| `AdminProposalCancelled` | `"adm_canc"`, `admin` | `pending` |
+
 ## Develop
 
 ```sh

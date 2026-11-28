@@ -27,6 +27,21 @@ The timelock enforces a minimum delay between proposing an on-chain operation an
 - `grant_role(env, admin, role, account)`: Grants a role (`Proposer`, `Executor`, `Admin`).
 - `revoke_role(env, admin, role, account)`: Revokes a role.
 
+## Events
+
+Each event is a `#[contractevent]` struct, so the schema appears in the
+contract spec.
+
+| Event | Topics | Data |
+| --- | --- | --- |
+| `AdminProposed` | `"adm_prop"`, `admin` | `new_admin` |
+| `AdminAccepted` | `"adm_acc"`, `old_admin` | `new_admin` |
+| `AdminProposalCancelled` | `"adm_canc"` | `admin` |
+| `OperationQueued` | `"queue"`, `id` | `[ready_at, target]` |
+| `OperationExecuted` | `"exec"`, `id` | `target` |
+| `BatchExecuted` | `"exec"`, `id` | `calls` |
+| `OperationCancelled` | `"cancel"`, `id` | `canceller` |
+
 ## Testing
 
 ```sh

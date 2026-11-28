@@ -4,6 +4,23 @@ A multi-token (ERC1155-style) smart contract for Stellar/Soroban, generated with
 
 Manages many token ids with independent per-id, per-owner balances in a single contract instance — supports admin-gated minting, transfers, and burning, both one id at a time and in batches.
 
+## Events
+
+Each event is a `#[contractevent]` struct, so the schema appears in the
+contract spec.
+
+| Event | Topics | Data |
+| --- | --- | --- |
+| `Mint` | `"mint"`, `admin`, `to`, `id` | `amount` |
+| `MintBatch` | `"mintbatch"`, `admin`, `to` | `[ids, amounts]` |
+| `Transfer` | `"transfer"`, `from`, `to`, `id` | `amount` |
+| `TransferBatch` | `"xferbatch"`, `from`, `to` | `[ids, amounts]` |
+| `Burn` | `"burn"`, `from`, `id` | `amount` |
+| `BurnBatch` | `"burnbatch"`, `from` | `[ids, amounts]` |
+| `AdminProposed` | `"admin_proposed"`, `admin` | `{new_admin}` |
+| `AdminAccepted` | `"admin_accepted"`, `old_admin` | `{new_admin}` |
+| `AdminProposalCancelled` | `"admin_proposal_cancelled"`, `admin` | `{pending}` |
+
 ## Commands
 
 \`\`\`sh

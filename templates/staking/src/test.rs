@@ -1,7 +1,7 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal};
 
 /// What `setup` mints to each of Alice and Bob, so they can deposit.
 const USER_FUNDS: i128 = 10_000_000_000;
@@ -638,4 +638,80 @@ fn storage_survives_past_default_ttl() {
     sac.mint(&charlie, &USER_FUNDS);
     staking.deposit(&charlie, &500);
     assert_eq!(staking.get_staked(&charlie), 500);
+}
+
+/// Events the contract under test published in the most recent invocation.
+fn own_events(env: &Env, contract: &Address) -> soroban_sdk::testutils::ContractEvents {
+    env.events().all().filter_by_contract(contract)
+}
+
+#[test]
+fn staking_flow_publishes_contractevents() {
+    let env = Env::default();
+    let (staking, _token, _admin, alice, _bob) = setup(&env);
+    let id = staking.address.clone();
+
+    staking.deposit(&alice, &1000);
+    let expected = (
+        id.clone(),
+        (symbol_short!("deposit"), alice.clone()).into_val(&env),
+        1000_i128.into_val(&env),
+    );
+    assert_eq!(own_events(&env, &staking.address), vec![&env, expected]);
+
+    staking.distribute(&500);
+    let expected = (
+        id.clone(),
+        (symbol_short!("distrib"),).into_val(&env),
+        500_i128.into_val(&env),
+    );
+    assert_eq!(own_events(&env, &staking.address), vec![&env, expected]);
+
+    staking.claim(&alice);
+    let expected = (
+        id.clone(),
+        (symbol_short!("claim"), alice.clone()).into_val(&env),
+        500_i128.into_val(&env),
+    );
+    assert_eq!(own_events(&env, &staking.address), vec![&env, expected]);
+
+    staking.withdraw(&alice, &1000);
+    let expected = (
+        id,
+        (symbol_short!("withdraw"), alice.clone()).into_val(&env),
+        1000_i128.into_val(&env),
+    );
+    assert_eq!(own_events(&env, &staking.address), vec![&env, expected]);
+}
+
+#[test]
+fn admin_handover_publishes_contractevents() {
+    let env = Env::default();
+    let (staking, _token, admin, alice, _bob) = setup(&env);
+    let id = staking.address.clone();
+
+    staking.propose_admin(&alice);
+    let expected = (
+        id.clone(),
+        (symbol_short!("adm_prop"), admin.clone()).into_val(&env),
+        alice.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    staking.cancel_admin_proposal();
+    let expected = (
+        id.clone(),
+        (symbol_short!("adm_canc"), admin.clone()).into_val(&env),
+        alice.clone().into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
+
+    staking.propose_admin(&alice);
+    staking.accept_admin();
+    let expected = (
+        id,
+        (symbol_short!("adm_acc"), admin).into_val(&env),
+        alice.into_val(&env),
+    );
+    assert_eq!(env.events().all(), vec![&env, expected]);
 }

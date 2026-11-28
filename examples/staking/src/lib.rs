@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
     Env,
 };
 
@@ -168,6 +168,67 @@ fn _claim(env: &Env, user: &Address) -> i128 {
     amt
 }
 
+/// Emitted on stake. Topics: ("deposit", user); data: amount.
+#[contractevent(topics = ["deposit"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deposit {
+    #[topic]
+    pub user: Address,
+    pub amount: i128,
+}
+
+/// Emitted on unstake. Topics: ("withdraw", user); data: amount.
+#[contractevent(topics = ["withdraw"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Withdraw {
+    #[topic]
+    pub user: Address,
+    pub amount: i128,
+}
+
+/// Emitted when the admin injects rewards. Topics: ("distrib"); data: amount.
+#[contractevent(topics = ["distrib"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Distribute {
+    pub amount: i128,
+}
+
+/// Emitted when a user claims rewards. Topics: ("claim", user); data: amount.
+#[contractevent(topics = ["claim"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Claim {
+    #[topic]
+    pub user: Address,
+    pub amount: i128,
+}
+
+/// Emitted when the admin proposes a handover. Topics: ("adm_prop", admin); data: new_admin.
+#[contractevent(topics = ["adm_prop"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposed {
+    #[topic]
+    pub admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the pending admin accepts. Topics: ("adm_acc", old_admin); data: new_admin.
+#[contractevent(topics = ["adm_acc"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAccepted {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted when the admin withdraws a proposal. Topics: ("adm_canc", admin); data: pending.
+#[contractevent(topics = ["adm_canc"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelled {
+    #[topic]
+    pub admin: Address,
+    pub pending: Address,
+}
+
 #[contract]
 pub struct StakingContract;
 
@@ -209,8 +270,7 @@ impl StakingContract {
             / SCALE;
         set_reward_debt(&env, &user, new_debt);
         set_total_staked(&env, total_staked(&env) + amount);
-        env.events()
-            .publish((symbol_short!("deposit"), user), amount);
+        Deposit { user, amount }.publish(&env);
     }
 
     pub fn withdraw(env: Env, user: Address, amount: i128) {
@@ -240,8 +300,7 @@ impl StakingContract {
             &user,
             &amount,
         );
-        env.events()
-            .publish((symbol_short!("withdraw"), user), amount);
+        Withdraw { user, amount }.publish(&env);
     }
 
     pub fn distribute(env: Env, amount: i128) {
@@ -268,7 +327,7 @@ impl StakingContract {
             &amount,
         );
         set_acc_per_share(&env, acc_per_share(&env) + delta);
-        env.events().publish((symbol_short!("distrib"),), amount);
+        Distribute { amount }.publish(&env);
     }
 
     pub fn claim(env: Env, user: Address) -> i128 {
@@ -280,7 +339,7 @@ impl StakingContract {
         if amt == 0 {
             panic_with_error!(&env, Error::NoRewards);
         }
-        env.events().publish((symbol_short!("claim"), user), amt);
+        Claim { user, amount: amt }.publish(&env);
         amt
     }
 
@@ -292,8 +351,11 @@ impl StakingContract {
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
-        env.events()
-            .publish((symbol_short!("adm_prop"), current), new_admin);
+        AdminProposed {
+            admin: current,
+            new_admin,
+        }
+        .publish(&env);
     }
 
     /// Step 2: the pending admin accepts and becomes the admin.
@@ -307,8 +369,11 @@ impl StakingContract {
         let old = admin(&env);
         env.storage().instance().set(&DataKey::Admin, &pending);
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events()
-            .publish((symbol_short!("adm_acc"), old), pending);
+        AdminAccepted {
+            old_admin: old,
+            new_admin: pending,
+        }
+        .publish(&env);
     }
 
     /// Current admin withdraws an unaccepted proposal.
@@ -321,8 +386,11 @@ impl StakingContract {
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingAdmin));
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events()
-            .publish((symbol_short!("adm_canc"), current), pending);
+        AdminProposalCancelled {
+            admin: current,
+            pending,
+        }
+        .publish(&env);
     }
 
     pub fn get_admin(env: Env) -> Address {
